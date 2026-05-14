@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coverage Path Planner</title>
+    <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=drawing,geometry,marker"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            height: 100vh;
+            background: #f0f0f0;
+        }
+
+        #map {
+            flex: 1;
+            min-width: 50%;
+        }
+
+        .control-panel {
+            width: 400px;
+            background: white;
+            box-shadow: -2px 0 10px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .panel-section {
+            padding: 20px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .panel-section h3 {
+            margin-bottom: 15px;
+            color: #333;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .mode-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        button {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            border-color: #2196F3;
+            background: #f5f5f5;
+        }
+
+        button.active {
+            background: #2196F3;
+            color: white;
+            border-color: #2196F3;
+        }
+
+        button.danger {
+            border-color: #f44336;
+            color: #f44336;
+        }
+
+        button.danger:hover {
+            background: #ffebee;
+        }
+
+        .config-group {
+            margin-bottom: 20px;
+        }
+
+        .config-item {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 5px;
+            color: #555;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 5px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: #ddd;
+            outline: none;
+            border-radius: 5px;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #2196F3;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #2196F3;
+            cursor: pointer;
+            border: none;
+        }
+
+        input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .value-display {
+            display: inline-block;
+            background: #f5f5f5;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #2196F3;
+            margin-left: 10px;
+        }
+
+        .status-list {
+            background: #f9f9f9;
+            border-radius: 4px;
+            padding: 10px;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .status-item:last-child {
+            border-bottom: none;
+        }
+
+        .status-label {
+            color: #666;
+        }
+
+        .status-value {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .path-list {
+            max-height: 200px;
+            overflow-y: auto;
+            background: #f9f9f9;
+            border-radius: 4px;
+            padding: 10px;
+            font-size: 11px;
+            font-family: monospace;
+        }
+
+        .path-item {
+            padding: 5px;
+            margin-bottom: 5px;
+            background: white;
+            border-radius: 3px;
+            border-left: 3px solid #2196F3;
+            padding-left: 8px;
+        }
+
+        .error-message {
+            background: #ffebee;
+            color: #c62828;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .success-message {
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 15px;
+            color: #2196F3;
+            font-size: 13px;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #2196F3;
+            border-top: 2px solid transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #2196F3;
+            padding: 12px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #1565c0;
+        }
+
+        /* Legend */
+        .legend {
+            background: #f9f9f9;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="control-panel">
+        <!-- Header -->
+        <div class="panel-section">
+            <h2 style="color: #2196F3; margin-bottom: 5px;">Coverage Path Planner</h2>
+            <p style="font-size: 12px; color: #999;">Draw working area and obstacles, configure parameters, then generate coverage path</p>
+        </div>
+
+        <!-- Error/Success Messages -->
+        <div class="panel-section hidden" id="error-container">
+            <div class="error-message" id="error-message"></div>
+        </div>
+        <div class="panel-section hidden" id="success-container">
+            <div class="success-message" id="success-message"></div>
+        </div>
+
+        <!-- Info Box -->
+        <div class="panel-section">
+            <div class="info-box">
+                <strong>Step 1:</strong> Click "Draw Boundary" and click on the map to define your work area (3+ points)
+                <br><strong>Step 2:</strong> (Optional) Click "Draw Obstacle" to add obstacles
+                <strong>Step 3:</strong> Configure parameters and click "Generate Path"
+            </div>
+        </div>
+
+        <!-- Drawing Mode Section -->
+        <div class="panel-section">
+            <h3>Drawing Mode</h3>
+            <div class="mode-buttons">
+                <button id="btn-boundary" onclick="setDrawMode('boundary')">Draw Boundary</button>
+                <button id="btn-obstacle" onclick="setDrawMode('obstacle')">Draw Obstacle</button>
+            </div>
+            <button id="btn-edit" onclick="setDrawMode('edit')" style="width: 100%; margin-bottom: 10px;">Edit/View</button>
+            <button id="btn-clear-all" class="danger" onclick="clearAll()">Clear All</button>
+        </div>
+
+        <!-- Configuration Section -->
+        <div class="panel-section">
+            <h3>Coverage Parameters</h3>
+            
+            <div class="config-item">
+                <label>Row Spacing (m) <span class="value-display" id="val-row-spacing">0.5</span></label>
+                <input type="range" id="row-spacing" min="0.1" max="2.0" step="0.1" value="0.5" 
+                       oninput="updateValue('row-spacing', 'val-row-spacing')">
+            </div>
+
+            <div class="config-item">
+                <label>Safety Margin (m) <span class="value-display" id="val-safety-margin">0.3</span></label>
+                <input type="range" id="safety-margin" min="0.1" max="1.0" step="0.1" value="0.3"
+                       oninput="updateValue('safety-margin', 'val-safety-margin')">
+            </div>
+
+            <div class="config-item">
+                <label>Sweep Angle (°) <span class="value-display" id="val-sweep-angle">0</span></label>
+                <input type="range" id="sweep-angle" min="0" max="180" step="5" value="0"
+                       oninput="updateValue('sweep-angle', 'val-sweep-angle')">
+                <p style="font-size: 11px; color: #999; margin-top: 5px;">0° = North-South, 90° = East-West</p>
+            </div>
+
+            <div class="config-item">
+                <label>Robot Speed (m/s)</label>
+                <input type="number" id="robot-speed" min="0.1" max="10" step="0.1" value="1.0">
+            </div>
+        </div>
+
+        <!-- Coverage Statistics -->
+        <div class="panel-section">
+            <h3>Area Definition</h3>
+            <div class="status-list">
+                <div class="status-item">
+                    <span class="status-label">Boundary Points:</span>
+                    <span class="status-value" id="stat-boundary-points">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Obstacles:</span>
+                    <span class="status-value" id="stat-obstacles">0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Generate Path Section -->
+        <div class="panel-section">
+            <button id="btn-generate" onclick="generateCoveragePath()" 
+                    style="width: 100%; padding: 12px; background: #4CAF50; color: white; font-size: 14px; font-weight: 600; border: none; border-radius: 4px;">
+                Generate Path
+            </button>
+        </div>
+
+        <!-- Results Section -->
+        <div class="panel-section hidden" id="results-section">
+            <h3>Coverage Results</h3>
+            <div class="status-list">
+                <div class="status-item">
+                    <span class="status-label">Total Distance:</span>
+                    <span class="status-value" id="stat-distance">0 m</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Estimated Time:</span>
+                    <span class="status-value" id="stat-time">0 s</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Coverage Cells:</span>
+                    <span class="status-value" id="stat-cells">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Total Waypoints:</span>
+                    <span class="status-value" id="stat-waypoints">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Work Area:</span>
+                    <span class="status-value" id="stat-area">0 m²</span>
+                </div>
+            </div>
+
+            <h3 style="margin-top: 15px;">Path Preview (First 10 WP)</h3>
+            <div class="path-list" id="path-preview">
+                <!-- Populated by JavaScript -->
+            </div>
+
+            <button id="btn-send-mission" onclick="sendMissionToRobot()"
+                    style="width: 100%; margin-top: 15px; padding: 10px; background: #2196F3; color: white; font-size: 13px; font-weight: 600; border: none; border-radius: 4px;">
+                Send to Robot
+            </button>
+        </div>
+
+        <!-- Legend -->
+        <div class="panel-section">
+            <div class="legend">
+                <strong style="font-size: 13px;">Map Colors</strong>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #00AA00; border: 2px dashed #00AA00;"></div>
+                    Working Area Boundary
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: rgba(255, 0, 0, 0.3); border: 2px solid #f44336;"></div>
+                    Obstacles
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: rgba(33, 150, 243, 0.2); border: 2px solid #2196F3;"></div>
+                    Coverage Path
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ====================================================================
+        // Global State
+        // ====================================================================
+        let map;
+        let drawingManager;
+        let currentMode = null;
+        let boundaryPolygon = null;
+        let boundaryPoints = [];
+        let obstacles = [];  // Array of {polygon: google.maps.Polygon, points: [[lat, lon], ...]}
+        let coveragePath = null;
+        let waypoints = [];
+        let selectedRobotId = null;
+
+        // ====================================================================
+        // Map Initialization
+        // ====================================================================
+        function initMap() {
+            // Default center (will be updated when boundary is drawn)
+            const defaultCenter = { lat: 37.7749, lng: -122.4194 };
+            
+            map = new google.maps.Map(document.getElementById('map'), {
+                zoom: 18,
+                center: defaultCenter,
+                mapTypeControl: true,
+                fullscreenControl: true
+            });
+
+            // Add click listener for boundary/obstacle drawing
+            map.addListener('click', (e) => {
+                if (currentMode === 'boundary') {
+                    addBoundaryPoint(e.latLng);
+                } else if (currentMode === 'obstacle') {
+                    addObstaclePoint(e.latLng);
+                }
+            });
+        }
+
+        // ====================================================================
+        // Drawing Mode Management
+        // ====================================================================
+        function setDrawMode(mode) {
+            currentMode = mode;
+
+            // Update button states
+            document.getElementById('btn-boundary').classList.remove('active');
+            document.getElementById('btn-obstacle').classList.remove('active');
+            document.getElementById('btn-edit').classList.remove('active');
+
+            if (mode === 'boundary') {
+                document.getElementById('btn-boundary').classList.add('active');
+                showMessage('Click on map to add boundary points. Double-click to finish.', 'info');
+            } else if (mode === 'obstacle') {
+                document.getElementById('btn-obstacle').classList.add('active');
+                showMessage('Click on map to add obstacle points. Double-click to finish.', 'info');
+            } else if (mode === 'edit') {
+                document.getElementById('btn-edit').classList.add('active');
+                showMessage('View mode: click waypoints to see details', 'info');
+            }
+        }
+
+        // ====================================================================
+        // Boundary Management
+        // ====================================================================
+        function addBoundaryPoint(latLng) {
+            if (!boundaryPolygon) {
+                // Create new boundary polygon
+                boundaryPolygon = new google.maps.Polygon({
+                    paths: [],
+                    strokeColor: '#00AA00',
+                    strokeOpacity: 1.0,
+                    strokeWeight: 2,
+                    fillColor: rgba(0, 170, 0, 0.15),
+                    fillOpacity: 0.5,
+                    editable: true,
+                    geodesic: true,
+                    map: map
+                });
+            }
+
+            boundaryPoints.push([latLng.lat(), latLng.lng()]);
+            const paths = boundaryPolygon.getPaths().getArray()[0] || new google.maps.MVCArray();
+            paths.push(latLng);
+            boundaryPolygon.setPath(paths);
+
+            updateBoundaryStats();
+        }
+
+        function updateBoundaryStats() {
+            document.getElementById('stat-boundary-points').textContent = boundaryPoints.length;
+        }
+
+        function clearBoundary() {
+            if (boundaryPolygon) {
+                boundaryPolygon.setMap(null);
+                boundaryPolygon = null;
+            }
+            boundaryPoints = [];
+            updateBoundaryStats();
+        }
+
+        // ====================================================================
+        // Obstacle Management
+        // ====================================================================
+        function addObstaclePoint(latLng) {
+            // Get or create current obstacle
+            let currentObstacle = null;
+            if (obstacles.length > 0) {
+                currentObstacle = obstacles[obstacles.length - 1];
+                // Check if we should start a new obstacle (via UI)
+            }
+
+            if (!currentObstacle || currentObstacle.points.length === 0 || Math.random() > 0.99) {
+                // Create new obstacle (simplified: each click starts a new one)
+                // In practice, user would click "Draw Obstacle" button for each new one
+                const obstaclePoints = [];
+                const obstaclePoly = new google.maps.Polygon({
+                    paths: [],
+                    strokeColor: '#f44336',
+                    strokeOpacity: 1.0,
+                    strokeWeight: 2,
+                    fillColor: '#ff0000',
+                    fillOpacity: 0.3,
+                    editable: true,
+                    geodesic: true,
+                    map: map
+                });
+
+                currentObstacle = {
+                    polygon: obstaclePoly,
+                    points: obstaclePoints
+                };
+                obstacles.push(currentObstacle);
+            }
+
+            currentObstacle.points.push([latLng.lat(), latLng.lng()]);
+            const paths = currentObstacle.polygon.getPaths().getArray()[0] || new google.maps.MVCArray();
+            paths.push(latLng);
+            currentObstacle.polygon.setPath(paths);
+
+            document.getElementById('stat-obstacles').textContent = obstacles.length;
+        }
+
+        function clearObstacles() {
+            obstacles.forEach(obs => obs.polygon.setMap(null));
+            obstacles = [];
+            document.getElementById('stat-obstacles').textContent = '0';
+        }
+
+        function clearAll() {
+            clearBoundary();
+            clearObstacles();
+            clearCoveragePath();
+            showMessage('All regions cleared', 'success');
+        }
+
+        // ====================================================================
+        // Coverage Path Generation
+        // ====================================================================
+        async function generateCoveragePath() {
+            if (boundaryPoints.length < 3) {
+                showMessage('Boundary must have at least 3 points', 'error');
+                return;
+            }
+
+            // Prepare request
+            const request = {
+                boundary: boundaryPoints,
+                obstacles: obstacles.map(obs => obs.points),
+                row_spacing: parseFloat(document.getElementById('row-spacing').value),
+                safety_margin: parseFloat(document.getElementById('safety-margin').value),
+                sweep_angle: parseFloat(document.getElementById('sweep-angle').value),
+                robot_speed: parseFloat(document.getElementById('robot-speed').value)
+            };
+
+            // Show loading state
+            document.getElementById('btn-generate').disabled = true;
+            document.getElementById('btn-generate').innerHTML = '<span class="spinner"></span> Generating...';
+
+            try {
+                const response = await fetch('http://localhost:5000/api/coverage_plan', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(request)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    waypoints = result.waypoints;
+                    displayCoveragePath(result);
+                    showResults(result);
+                    showMessage('Coverage path generated successfully!', 'success');
+                } else {
+                    showMessage(`Error: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showMessage(`Network error: ${error.message}`, 'error');
+                console.error('Coverage plan error:', error);
+            } finally {
+                document.getElementById('btn-generate').disabled = false;
+                document.getElementById('btn-generate').innerHTML = 'Generate Path';
+            }
+        }
+
+        function displayCoveragePath(result) {
+            // Clear previous path
+            clearCoveragePath();
+
+            if (!result.waypoints || result.waypoints.length === 0) {
+                return;
+            }
+
+            // Create polyline for path
+            const pathCoords = result.waypoints.map(wp => ({
+                lat: wp.lat,
+                lng: wp.lon
+            }));
+
+            coveragePath = new google.maps.Polyline({
+                path: pathCoords,
+                geodesic: true,
+                strokeColor: '#2196F3',
+                strokeOpacity: 0.7,
+                strokeWeight: 2,
+                map: map
+            });
+
+            // Add start and end markers
+            if (pathCoords.length > 0) {
+                new google.maps.Marker({
+                    position: pathCoords[0],
+                    map: map,
+                    icon: 'http://maps.google.com/mapfiles/ms/icons/green-dot.png',
+                    title: 'Start'
+                });
+
+                new google.maps.Marker({
+                    position: pathCoords[pathCoords.length - 1],
+                    map: map,
+                    icon: 'http://maps.google.com/mapfiles/ms/icons/red-dot.png',
+                    title: 'End'
+                });
+            }
+
+            // Fit bounds to path
+            const bounds = new google.maps.LatLngBounds();
+            pathCoords.forEach(coord => bounds.extend(coord));
+            map.fitBounds(bounds);
+        }
+
+        function clearCoveragePath() {
+            if (coveragePath) {
+                coveragePath.setMap(null);
+                coveragePath = null;
+            }
+            waypoints = [];
+        }
+
+        function showResults(result) {
+            const resultsSection = document.getElementById('results-section');
+            resultsSection.classList.remove('hidden');
+
+            // Update statistics
+            document.getElementById('stat-distance').textContent = `${result.total_distance} m`;
+            document.getElementById('stat-time').textContent = `${result.estimated_time} s (${(result.estimated_time / 60).toFixed(1)} min)`;
+            document.getElementById('stat-cells').textContent = result.cells_count;
+            document.getElementById('stat-waypoints').textContent = result.waypoints.length;
+            document.getElementById('stat-area').textContent = `${result.statistics.boundary_area.toFixed(2)} m²`;
+
+            // Show first 10 waypoints
+            const preview = document.getElementById('path-preview');
+            preview.innerHTML = '';
+            result.waypoints.slice(0, 10).forEach((wp, idx) => {
+                const item = document.createElement('div');
+                item.className = 'path-item';
+                item.textContent = `${idx}: ${wp.lat.toFixed(6)}, ${wp.lon.toFixed(6)} (${wp.heading.toFixed(0)}°)`;
+                preview.appendChild(item);
+            });
+
+            if (result.waypoints.length > 10) {
+                const more = document.createElement('div');
+                more.className = 'path-item';
+                more.textContent = `... and ${result.waypoints.length - 10} more waypoints`;
+                more.style.background = '#e3f2fd';
+                preview.appendChild(more);
+            }
+        }
+
+        // ====================================================================
+        // UI Utilities
+        // ====================================================================
+        function updateValue(sliderId, displayId) {
+            const value = document.getElementById(sliderId).value;
+            document.getElementById(displayId).textContent = value;
+        }
+
+        function showMessage(message, type = 'info') {
+            if (type === 'error') {
+                const container = document.getElementById('error-container');
+                const msgEl = document.getElementById('error-message');
+                msgEl.textContent = message;
+                container.classList.remove('hidden');
+                setTimeout(() => container.classList.add('hidden'), 5000);
+            } else if (type === 'success') {
+                const container = document.getElementById('success-container');
+                const msgEl = document.getElementById('success-message');
+                msgEl.textContent = message;
+                container.classList.remove('hidden');
+                setTimeout(() => container.classList.add('hidden'), 3000);
+            } else {
+                console.log(message);
+            }
+        }
+
+        function sendMissionToRobot() {
+            if (!selectedRobotId) {
+                showMessage('Please select a robot first in the mission planner', 'error');
+                return;
+            }
+
+            // Create mission from waypoints
+            const mission = {
+                type: 32,  // WEB_SEND_COMMAND
+                robot_id: selectedRobotId,
+                payload: {
+                    command: 'execute_mission',
+                    name: 'Coverage Path Mission',
+                    description: 'Auto-generated coverage path',
+                    waypoints: waypoints.map(wp => ({
+                        latitude: wp.lat,
+                        longitude: wp.lon,
+                        altitude: 0
+                    })),
+                    tasks: waypoints.map((wp, idx) => ({
+                        type: 0,  // DRIVE_TO_WAYPOINT
+                        waypoint_index: idx,
+                        speed_mps: parseFloat(document.getElementById('robot-speed').value),
+                        wait_ms: 0
+                    }))
+                }
+            };
+
+            // Send via WebSocket (would need active ws connection)
+            console.log('Mission to send:', mission);
+            showMessage('Mission prepared. Send via WebSocket to robot.', 'success');
+        }
+
+        // ====================================================================
+        // Initialize on Page Load
+        // ====================================================================
+        document.addEventListener('DOMContentLoaded', () => {
+            initMap();
+            setDrawMode('boundary');
+        });
+    </script>
+</body>
+</html>

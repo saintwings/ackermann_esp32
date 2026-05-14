@@ -1,0 +1,3908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Robot Mission Planner v2.0</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .container {
+            display: flex;
+            height: 100vh;
+            gap: 2px;
+            padding: 2px;
+            background: #0a0a0a;
+        }
+        
+        .panel {
+            background: #2d2d2d;
+            border: 1px solid #3d3d3d;
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .panel-header {
+            background: #1a1a1a;
+            padding: 12px 16px;
+            border-bottom: 2px solid #3d3d3d;
+            font-weight: bold;
+            color: #4CAF50;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            position: relative;
+        }
+        
+        #map-panel .panel-content {
+            overflow: visible;
+            padding: 0;
+        }
+        
+        #map-panel {
+            flex: 2;
+        }
+        
+        #map-visualization {
+            width: 100%;
+            height: 100%;
+            background: #1a1a1a;
+            border: 1px solid #3d3d3d;
+            border-radius: 4px;
+            position: relative;
+            overflow: visible;
+        }
+        
+        #map {
+            width: 100%;
+            height: 100%;
+            border-radius: 4px;
+        }
+        
+        /* Telemetry Overlay on Map */
+        .telemetry-overlay {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            background: rgba(45, 45, 45, 0.95);
+            border: 1px solid #3d3d3d;
+            border-radius: 4px;
+            padding: 12px;
+            color: #e0e0e0;
+            font-size: 12px;
+            max-width: 280px;
+            max-height: 80vh;
+            overflow-y: auto;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+        
+        .telemetry-header {
+            font-size: 14px;
+            font-weight: bold;
+            color: #4CAF50;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #3d3d3d;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .telemetry-group {
+            margin-bottom: 10px;
+        }
+        
+        .telemetry-group-title {
+            font-size: 11px;
+            color: #64B5F6;
+            font-weight: bold;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+        }
+        
+        .telemetry-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+            border-bottom: 1px solid #3d3d3d;
+        }
+        
+        .telemetry-item:last-child {
+            border-bottom: none;
+        }
+        
+        .telemetry-label {
+            color: #999;
+            flex: 1;
+        }
+        
+        .telemetry-value {
+            color: #4CAF50;
+            font-weight: 500;
+            text-align: right;
+            flex: 0 0 auto;
+            margin-left: 8px;
+        }
+        
+        #sidebar-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        
+        /* Tab Styles */
+        .tab-container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        
+        .tab-buttons {
+            display: flex;
+            gap: 2px;
+            background: #1a1a1a;
+            padding: 8px;
+            border-bottom: 2px solid #3d3d3d;
+        }
+        
+        .tab-btn {
+            flex: 1;
+            padding: 10px 12px;
+            background: #2d2d2d;
+            border: 1px solid #3d3d3d;
+            color: #999;
+            cursor: pointer;
+            border-radius: 4px 4px 0 0;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .tab-btn:hover {
+            background: #3d3d3d;
+            color: #ccc;
+        }
+        
+        .tab-btn.active {
+            background: #4CAF50;
+            color: #fff;
+            border-color: #4CAF50;
+        }
+        
+        .tab-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            overflow: hidden;
+        }
+        
+        .tab-panel {
+            display: none;
+            flex: 1;
+            overflow: hidden;
+        }
+        
+        .tab-panel.active {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .tab-panel.active .panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        #robot-panel {
+            flex: 1.2;
+        }
+        
+        #telemetry-panel {
+            flex: 1;
+        }
+        
+        #control-panel {
+            flex: 1;
+        }
+        
+        .robot-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        
+        .robot-item {
+            background: #3d3d3d;
+            padding: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 2px solid transparent;
+        }
+        
+        .robot-item:hover {
+            background: #4d4d4d;
+        }
+        
+        .robot-item.selected {
+            border-color: #4CAF50;
+            background: #404040;
+        }
+        
+        .robot-item.offline {
+            opacity: 0.6;
+        }
+        
+        .robot-status {
+            font-size: 12px;
+            color: #b0b0b0;
+            margin-top: 4px;
+        }
+        
+        .robot-online {
+            color: #4CAF50;
+        }
+        
+        .robot-offline {
+            color: #f44336;
+        }
+        
+        .telemetry-group {
+            margin-bottom: 12px;
+            padding: 8px;
+            background: #3d3d3d;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .telemetry-label {
+            color: #64B5F6;
+            font-weight: bold;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+        
+        .telemetry-value {
+            color: #a0a0a0;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .value-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 2px;
+        }
+        
+        .value-key {
+            color: #b0b0b0;
+        }
+        
+        .value-data {
+            color: #4CAF50;
+            font-family: 'Courier New', monospace;
+        }
+        
+        button {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+            margin-bottom: 6px;
+        }
+        
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        
+        .btn-primary {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #45a049;
+        }
+        
+        .btn-primary:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #da190b;
+        }
+        
+        .btn-warning {
+            background: #FF9800;
+            color: white;
+        }
+        
+        .btn-warning:hover {
+            background: #e68900;
+        }
+        
+        .form-group {
+            margin-bottom: 10px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 4px;
+            font-size: 12px;
+            color: #b0b0b0;
+        }
+        
+        input[type="text"],
+        input[type="number"],
+        select {
+            width: 100%;
+            padding: 6px;
+            border: 1px solid #4d4d4d;
+            border-radius: 4px;
+            background: #3d3d3d;
+            color: #e0e0e0;
+            font-size: 12px;
+        }
+        
+        input:focus,
+        select:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        
+        .status-online {
+            background: #4CAF50;
+        }
+        
+        .status-offline {
+            background: #f44336;
+        }
+        
+        .command-section {
+            background: #3d3d3d;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        
+        .command-title {
+            color: #64B5F6;
+            font-weight: bold;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        
+        .button-group button {
+            flex: 1;
+            min-width: 80px;
+        }
+        
+        #status-message {
+            background: #3d3d3d;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #64B5F6;
+            margin-bottom: 10px;
+            border-left: 3px solid #4CAF50;
+        }
+        
+        .scroll-area {
+            overflow-y: auto;
+            flex: 1;
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #2d2d2d;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #4d4d4d;
+            border-radius: 3px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #5d5d5d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Map/Visualization Panel -->
+        <div class="panel" id="map-panel">
+            <div class="panel-header">
+                📍 Visualization
+            </div>
+            <div class="panel-content">
+                <div id="map-visualization" style="position: relative;">
+                    <div id="map"></div>
+                    <!-- Telemetry Overlay -->
+                    <div class="telemetry-overlay" id="telemetry-overlay" style="display: none;">
+                        <div class="telemetry-header">
+                            <div id="telemetry-color-indicator" style="width: 16px; height: 16px; border-radius: 3px; background: #666; border: 2px solid white;"></div>
+                            <div id="telemetry-robot-name" style="flex: 1;">--</div>
+                            <button onclick="clearRobotPath()" style="padding: 4px 8px; font-size: 11px; background: #4CAF50; border: none; border-radius: 3px; color: white; cursor: pointer; white-space: nowrap;" title="Clear this robot's path trail">🔄 Clear Path</button>
+                        </div>
+                        
+                        <!-- Mission Status Display -->
+                        <div id="mission-status-display" style="display: none; margin-bottom: 12px;"></div>
+                        
+                        <!-- IMU Data -->
+                        <div class="telemetry-group">
+                            <div class="telemetry-group-title">IMU Data</div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Accel X</span>
+                                <span class="telemetry-value" id="imu-ax">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Accel Y</span>
+                                <span class="telemetry-value" id="imu-ay">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Accel Z</span>
+                                <span class="telemetry-value" id="imu-az">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Gyro X</span>
+                                <span class="telemetry-value" id="imu-gx">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Gyro Y</span>
+                                <span class="telemetry-value" id="imu-gy">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Gyro Z</span>
+                                <span class="telemetry-value" id="imu-gz">--</span>
+                            </div>
+                        </div>
+                        
+                        <!-- GPS Data -->
+                        <div class="telemetry-group">
+                            <div class="telemetry-group-title">GPS Data</div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Latitude</span>
+                                <span class="telemetry-value" id="gps-lat">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Longitude</span>
+                                <span class="telemetry-value" id="gps-lon">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Altitude</span>
+                                <span class="telemetry-value" id="gps-alt">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">HDOP</span>
+                                <span class="telemetry-value" id="gps-hdop">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Fix Quality</span>
+                                <span class="telemetry-value" id="gps-fix">--</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Status Data -->
+                        <div class="telemetry-group">
+                            <div class="telemetry-group-title">Status</div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Speed</span>
+                                <span class="telemetry-value" id="status-speed">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Heading</span>
+                                <span class="telemetry-value" id="status-heading">--</span>
+                            </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">Battery</span>
+                                <span class="telemetry-value" id="status-battery">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Sidebar with Tabbed Interface -->
+        <div id="sidebar-container">
+            <!-- Tab Buttons -->
+            <div class="tab-buttons">
+                <button class="tab-btn active" data-tab="robots-tab" onclick="switchTab('robots-tab')">
+                    🤖 Robots
+                </button>
+                <button class="tab-btn" data-tab="control-tab" onclick="switchTab('control-tab')">
+                    🎮 Commands
+                </button>
+                <button class="tab-btn" data-tab="mission-tab" onclick="switchTab('mission-tab')">
+                    📋 Mission Plan
+                </button>
+                <button class="tab-btn" data-tab="coverage-tab" onclick="switchTab('coverage-tab')">
+                    🧭 Coverage
+                </button>
+            </div>
+            
+            <!-- Tab Content -->
+            <div class="tab-content">
+                <!-- Robots Tab -->
+                <div class="tab-panel active" id="robots-tab">
+                    <div class="panel" id="robot-panel">
+                        <div class="panel-header">
+                            🤖 Robots
+                            <span id="server-status" style="margin-left: auto; font-size: 12px;">
+                                <span class="status-indicator status-offline"></span>Disconnected
+                            </span>
+                        </div>
+                        <div class="panel-content scroll-area">
+                            <div id="robot-list" class="robot-list">
+                                <div style="color: #666; font-size: 12px;">Waiting for server...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                
+                <!-- Control Tab -->
+                <div class="tab-panel" id="control-tab">
+                    <div class="panel" id="control-panel">
+                        <div class="panel-header">
+                            🎮 Commands
+                        </div>
+                        <div class="panel-content scroll-area">
+                            <div id="command-robot-info" style="background: #3d3d3d; padding: 8px; border-radius: 4px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                                <div id="command-color-indicator" style="width: 16px; height: 16px; border-radius: 3px; background: #666; border: 2px solid white;"></div>
+                                <div id="command-robot-name" style="font-weight: bold; color: #4CAF50; flex: 1;">Select a robot</div>
+                            </div>
+                            <div id="status-message"></div>
+                            
+                            <div class="command-section" id="movement-section">
+                                <div class="command-title">Movement</div>
+                                <div class="form-group">
+                                    <label>Linear Velocity (m/s)</label>
+                                    <input type="number" id="linear-velocity" value="1.0" min="-5" max="5" step="0.1">
+                                </div>
+                                <div class="form-group">
+                                    <label>Angular Velocity (rad/s)</label>
+                                    <input type="number" id="angular-velocity" value="0.5" min="-3.14" max="3.14" step="0.1">
+                                </div>
+                                <div class="form-group">
+                                    <label>Duration (seconds)</label>
+                                    <input type="number" id="movement-duration" value="5" min="0.1" max="300" step="0.1">
+                                </div>
+                                <button class="btn-primary" onclick="sendMoveCommand()" style="width: 100%;">
+                                    Send Move
+                                </button>
+                            </div>
+                            
+                            <div class="command-section" id="waypoint-section">
+                                <div class="command-title">Waypoint Navigation</div>
+                                <div class="form-group">
+                                    <label>Select Waypoint</label>
+                                    <select id="waypoint-selector" onchange="loadWaypointCoordinates()">
+                                        <option value="">-- Manual Entry --</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Latitude</label>
+                                    <input type="number" id="waypoint-lat" value="0.0" step="0.0001">
+                                </div>
+                                <div class="form-group">
+                                    <label>Longitude</label>
+                                    <input type="number" id="waypoint-lon" value="0.0" step="0.0001">
+                                </div>
+                                <div class="form-group">
+                                    <label>Altitude (m)</label>
+                                    <input type="number" id="waypoint-alt" value="0.0" step="0.1">
+                                </div>
+                                <button class="btn-primary" onclick="sendWaypointCommand()" style="width: 100%;">
+                                    Navigate to Waypoint
+                                </button>
+                            </div>
+                            
+                            <div class="command-section">
+                                <div class="command-title">Emergency Controls</div>
+                                <button class="btn-danger" onclick="sendEmergencyStop()" style="width: 100%;">
+                                    🛑 EMERGENCY STOP
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Mission Planning Tab -->
+                <div class="tab-panel" id="mission-tab">
+                    <div class="panel" id="mission-panel">
+                        <div class="panel-header">
+                            📋 Mission Planning
+                        </div>
+                        <div class="panel-content scroll-area">
+                            <div id="mission-robot-info" style="background: #3d3d3d; padding: 8px; border-radius: 4px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                                <div id="mission-color-indicator" style="width: 16px; height: 16px; border-radius: 3px; background: #666; border: 2px solid white;"></div>
+                                <div id="mission-robot-name" style="font-weight: bold; color: #4CAF50; flex: 1;">Select a robot</div>
+                            </div>
+                            
+                            <!-- Mission Name -->
+                            <div class="command-section" style="background: #2d2d2d; padding: 10px; border-radius: 4px; margin-bottom: 12px;">
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label style="color: #4CAF50; font-weight: bold;">Mission Name</label>
+                                    <input type="text" id="mission-name" placeholder="e.g., Patrol Route Alpha, Search Area B" style="font-weight: bold;">
+                                </div>
+                            </div>
+                            
+                            <!-- Waypoints Section -->
+                            <div class="command-section">
+                                <div class="command-title">Waypoints (<span id="wp-count">0</span>)</div>
+                                <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                        <label>Latitude</label>
+                                        <input type="number" id="wp-lat" value="0.0" step="0.0001">
+                                    </div>
+                                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                        <label>Longitude</label>
+                                        <input type="number" id="wp-lon" value="0.0" step="0.0001">
+                                    </div>
+                                </div>
+                                <button class="btn-primary" onclick="addWaypoint()" style="width: 100%;">
+                                    ➕ Add Waypoint
+                                </button>
+                                <button class="btn-secondary" onclick="addWaypointFromRobotPosition()" style="width: 100%; margin-top: 8px;">
+                                    📍 Add From Robot Position
+                                </button>
+                                <div id="waypoint-list" style="margin-top: 10px; max-height: 150px; overflow-y: auto;">
+                                </div>
+                            </div>
+                            
+                            <!-- Tasks Section -->
+                            <div class="command-section">
+                                <div class="command-title">Tasks (<span id="task-count">0</span>)</div>
+                                <div class="form-group">
+                                    <label>Task Type</label>
+                                    <select id="task-type" onchange="updateTaskOptions()">
+                                        <option value="goto_waypoint">Go to Waypoint</option>
+                                        <option value="spiral">Spiral Search</option>
+                                        <option value="coverage_path">Coverage Path</option>
+                                        <option value="wait">Wait</option>
+                                        <option value="loop_start">Loop Start</option>
+                                        <option value="loop_end">Loop End</option>
+                                    </select>
+                                </div>
+                                <div id="task-options"></div>
+                                <div id="task-edit-indicator" style="display: none; padding: 8px; background: #FF9800; color: #000; border-radius: 3px; margin-bottom: 8px; font-weight: bold; text-align: center;">
+                                    ✏️ Editing Task
+                                </div>
+                                <div style="display: flex; gap: 8px;">
+                                    <button id="task-action-btn" class="btn-primary" onclick="addTask()" style="flex: 1;">
+                                        ➕ Add Task
+                                    </button>
+                                    <button id="task-cancel-btn" class="btn-secondary" onclick="cancelEditTask()" style="flex: 1; display: none;">
+                                        ✖ Cancel
+                                    </button>
+                                </div>
+                                <div id="task-list" style="margin-top: 10px; max-height: 200px; overflow-y: auto;">
+                                </div>
+                            </div>
+                            
+                            <!-- Execute Mission -->
+                            <div class="command-section">
+                                <button class="btn-primary" onclick="executeMission()" style="width: 100%; background: #4CAF50;">
+                                    ✓ Execute Mission
+                                </button>
+                                <button class="btn-secondary" onclick="clearMission()" style="width: 100%; margin-top: 8px;">
+                                    🗑️ Clear All
+                                </button>
+                                <div style="display: flex; gap: 8px; margin-top: 8px;">
+                                    <button class="btn-secondary" onclick="exportMission()" style="flex: 1; background: #2196F3;">
+                                        📥 Export
+                                    </button>
+                                    <button class="btn-secondary" onclick="triggerImport()" style="flex: 1; background: #FF9800;">
+                                        📤 Import
+                                    </button>
+                                </div>
+                                <input type="file" id="mission-file-input" accept=".json" style="display: none;" onchange="importMission(event)">
+                                <div style="display: flex; gap: 8px; margin-top: 8px;">
+                                    <button class="btn-secondary" onclick="pauseMission()" style="flex: 1; background: #FF9800;" id="pause-mission-btn">
+                                        ⏸️ Pause/Resume
+                                    </button>
+                                    <button class="btn-secondary" onclick="cancelMission()" style="flex: 1; background: #F44336;" id="cancel-mission-btn">
+                                        ⚠️ Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Coverage Planning Tab -->
+                <div class="tab-panel" id="coverage-tab">
+                    <div class="panel" id="coverage-panel">
+                        <div class="panel-header">
+                            🧭 Coverage Planning
+                        </div>
+                        <div class="panel-content scroll-area">
+                            <div class="command-section" style="background: #2d2d2d;">
+                                <div class="command-title">Geometry From Existing Waypoints</div>
+                                <div style="font-size: 12px; color: #b0b0b0; margin-bottom: 8px;">
+                                    Build boundary and obstacles by reusing waypoints from Mission Plan.
+                                </div>
+                                <div class="form-group">
+                                    <label>Waypoint Source</label>
+                                    <select id="coverage-waypoint-selector"></select>
+                                </div>
+                                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                                    <button class="btn-primary" onclick="coverageAddBoundaryPoint()" style="flex: 1;">Add to Boundary</button>
+                                    <button class="btn-secondary" onclick="coverageAddBoundaryFromSelected()" style="flex: 1;">Use Selected WP</button>
+                                </div>
+                                <button class="btn-secondary" onclick="coverageClearBoundary()" style="width: 100%;">Clear Boundary</button>
+                                <div id="coverage-boundary-list" style="margin-top: 8px; font-size: 12px; color: #ccc;"></div>
+                            </div>
+
+                            <div class="command-section" style="background: #2d2d2d;">
+                                <div class="command-title">Obstacles</div>
+                                <div style="font-size: 12px; color: #b0b0b0; margin-bottom: 8px;">
+                                    Create each obstacle with 3+ waypoint vertices.
+                                </div>
+                                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                                    <button class="btn-primary" onclick="coverageAddObstaclePoint()" style="flex: 1;">Add Vertex</button>
+                                    <button class="btn-secondary" onclick="coverageAddObstaclePointFromSelected()" style="flex: 1;">Use Selected WP</button>
+                                </div>
+                                <div style="display: flex; gap: 8px;">
+                                    <button class="btn-primary" onclick="coverageCommitObstacle()" style="flex: 1; background: #4CAF50;">Save Obstacle</button>
+                                    <button class="btn-secondary" onclick="coverageClearDraftObstacle()" style="flex: 1;">Clear Draft</button>
+                                </div>
+                                <div id="coverage-obstacle-draft" style="margin-top: 8px; font-size: 12px; color: #ccc;"></div>
+                                <div id="coverage-obstacle-list" style="margin-top: 8px; max-height: 120px; overflow-y: auto;"></div>
+                            </div>
+
+                            <div class="command-section" style="background: #2d2d2d;">
+                                <div class="command-title">Coverage Parameters</div>
+                                <div class="form-group">
+                                    <label>Row Spacing (m)</label>
+                                    <input type="number" id="coverage-row-spacing" value="0.5" min="0.1" max="5" step="0.1">
+                                </div>
+                                <div class="form-group">
+                                    <label>Safety Margin (m)</label>
+                                    <input type="number" id="coverage-safety-margin" value="0.3" min="0" max="3" step="0.1">
+                                </div>
+                                <div class="form-group">
+                                    <label>Sweep Angle (deg)</label>
+                                    <input type="number" id="coverage-sweep-angle" value="0" min="0" max="180" step="1">
+                                </div>
+                                <div class="form-group">
+                                    <label>Robot Speed (m/s)</label>
+                                    <input type="number" id="coverage-robot-speed" value="1.0" min="0.1" max="5" step="0.1">
+                                </div>
+                                <div class="form-group">
+                                    <label>Requested Waypoints: <span id="coverage-max-waypoints-value">200</span></label>
+                                    <input type="range" id="coverage-max-waypoints" value="200" min="3" max="200" step="1" oninput="updateCoverageWaypointLimitLabel()" onchange="handleCoverageWaypointLimitChanged()">
+                                    <div style="font-size: 11px; color: #b0b0b0; margin-top: 4px;">
+                                        Minimum required: <span id="coverage-min-waypoints">--</span>
+                                        | Available before limit: <span id="coverage-available-waypoints">--</span>
+                                    </div>
+                                </div>
+                                <button class="btn-primary" onclick="generateCoveragePlan()" style="width: 100%;">Generate Coverage Plan</button>
+                            </div>
+
+                            <div class="command-section" style="background: #2d2d2d;">
+                                <div class="command-title">Coverage Result</div>
+                                <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: #ccc; cursor: pointer;">
+                                    <input type="checkbox" id="coverage-show-generated" checked onchange="toggleCoverageGeneratedOnMap()">
+                                    Show generated waypoints on map
+                                </label>
+                                <div id="coverage-result-summary" style="font-size: 12px; color: #ccc; margin-bottom: 8px;">No plan yet.</div>
+                                <div class="form-group" style="margin-bottom: 8px;">
+                                    <label>Coverage Path Name</label>
+                                    <input type="text" id="coverage-task-name" value="Coverage A" placeholder="e.g. Plot-A Coverage Loop">
+                                </div>
+                                <button class="btn-secondary" onclick="saveCoveragePathToList()" style="width: 100%; margin-bottom: 8px; background: #4CAF50;">Save to Coverage Paths</button>
+                                <button class="btn-primary" onclick="applyCoverageToMission()" style="width: 100%; background: #2196F3;">Quick Add to Mission</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.googleapis.com/maps/api/js?`+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})({
+            key: "AIzaSyA21u1FcRnpyDpn8lECbJi2vnpWpseYDac",
+            v: "weekly"
+        });
+    </script>
+    
+    <script>
+        // ====================================================================
+        // Global Variables
+        // ====================================================================
+        
+        const PAGE_HOST = window.location.hostname || 'localhost';
+        const PAGE_PROTOCOL = window.location.protocol === 'https:' ? 'https:' : 'http:';
+        const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const SERVER_URL = `${WS_PROTOCOL}//${PAGE_HOST}:8765`;
+        const CLIENT_ID = 'web_' + Math.random().toString(36).substr(2, 9);
+        const FIRMWARE_MISSION_MAX_WAYPOINTS = 200;
+        const FIRMWARE_MIN_MISSION_SPEED_MPS = 0.05;
+        const FIRMWARE_MAX_MISSION_SPEED_MPS = 1.50;
+        const PLANNER_WHEELBASE_M = 0.36;
+        const PLANNER_TRACK_WIDTH_M = 0.36;
+        const PLANNER_MAX_STEER_DEG = 30.0;
+
+        function normalizeMissionSpeed(rawValue, fallback = 0.2) {
+            const value = Number(rawValue);
+            const safeValue = Number.isFinite(value) ? value : Number(fallback);
+            const fallbackValue = Number.isFinite(safeValue) ? safeValue : 0.2;
+            return Math.min(FIRMWARE_MAX_MISSION_SPEED_MPS, Math.max(FIRMWARE_MIN_MISSION_SPEED_MPS, fallbackValue));
+        }
+        
+        let ws = null;
+        let selectedRobotId = null;
+        let robots = new Map();
+        let latestTelemetry = new Map();
+        let nextZIndex = 100;  // For managing marker layering
+        
+        // ====================================================================
+        // WebSocket Connection
+        // ====================================================================
+        
+        function connectToServer() {
+            try {
+                ws = new WebSocket(SERVER_URL);
+                
+                ws.onopen = () => {
+                    console.log('Connected to server');
+                    updateServerStatus(true);
+                    registerWebClient();
+                    requestRobotList();
+                };
+                
+                ws.onmessage = (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        handleServerMessage(message);
+                    } catch (e) {
+                        console.error('Failed to parse message:', e);
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    updateServerStatus(false);
+                };
+                
+                ws.onclose = () => {
+                    console.log('Disconnected from server');
+                    updateServerStatus(false);
+                    // Attempt to reconnect
+                    setTimeout(connectToServer, 3000);
+                };
+            } catch (e) {
+                console.error('Failed to connect:', e);
+                updateServerStatus(false);
+            }
+        }
+        
+        function registerWebClient() {
+            const message = {
+                type: 30,  // WEB_REGISTER
+                client_id: CLIENT_ID,
+                payload: {
+                    client_name: 'Mission Planner v2.0'
+                }
+            };
+            sendMessage(message);
+        }
+        
+        function requestRobotList() {
+            const message = {
+                type: 31,  // WEB_REQUEST_LIST
+                client_id: CLIENT_ID
+            };
+            sendMessage(message);
+        }
+        
+        function sendMessage(message) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                message.timestamp = Date.now();
+                ws.send(JSON.stringify(message));
+            } else {
+                console.warn('WebSocket not connected');
+            }
+        }
+        
+        // ====================================================================
+        // Message Handlers
+        // ====================================================================
+        
+        function handleServerMessage(message) {
+            const msgType = message.type;
+            
+            if (msgType === 21) {  // ROBOT_LIST
+                handleRobotList(message);
+            } else if (msgType === 1) {  // SENSOR_TELEMETRY
+                handleTelemetryUpdate(message);
+            } else if (msgType === 22) {  // SERVER_STATUS
+                handleServerStatus(message);
+            }
+        }
+        
+        function handleRobotList(message) {
+            const robotList = message.payload.robots || [];
+            
+            robotList.forEach(robot => {
+                robots.set(robot.robot_id, robot);
+            });
+            
+            updateRobotList();
+        }
+        
+        function handleTelemetryUpdate(message) {
+            const robotId = message.robot_id;
+            const payload = message.payload;
+            
+            if (robots.has(robotId)) {
+                const robot = robots.get(robotId);
+                robot.last_update = message.timestamp;
+                robot.online = true;
+                
+                // Store telemetry including mission status
+                latestTelemetry.set(robotId, {
+                    imu: payload.imu,
+                    gps: payload.gps,
+                    status: payload.status,
+                    odometry: payload.odometry,
+                    mission: payload.mission || null
+                });
+                
+                // Update displays
+                updateRobotList();
+                if (selectedRobotId === robotId) {
+                    updateTelemetryDisplay(robotId);
+                    updateTelemetryOverlay(robotId);
+                    displayMissionStatus(robotId);
+                } else if (!selectedRobotId) {
+                    // Auto-select first robot and show overlay
+                    selectedRobotId = robotId;
+                    updateRobotList();
+                    updateTelemetryOverlay(robotId);
+                    displayMissionStatus(robotId);
+                }
+                
+                // Update robot position on map
+                updateRobotOnMap(robotId, message);
+            }
+        }
+        
+        function handleServerStatus(message) {
+            console.log('Server status:', message.payload);
+        }
+        
+        // ====================================================================
+        // UI Updates
+        // ====================================================================
+        
+        function updateServerStatus(connected) {
+            const elem = document.getElementById('server-status');
+            if (connected) {
+                elem.innerHTML = '<span class="status-indicator status-online"></span>Connected';
+            } else {
+                elem.innerHTML = '<span class="status-indicator status-offline"></span>Disconnected';
+            }
+        }
+        
+        function updateRobotList() {
+            const container = document.getElementById('robot-list');
+            
+            if (robots.size === 0) {
+                container.innerHTML = '<div style="color: #666; font-size: 12px;">No robots available</div>';
+                return;
+            }
+            
+            let html = '';
+            robots.forEach((robot, robotId) => {
+                const isOnline = robot.online;
+                const isSelected = robotId === selectedRobotId;
+                const robotColor = getColorForRobot(robotId);
+                
+                html += `
+                    <div class="robot-item ${isSelected ? 'selected' : ''} ${!isOnline ? 'offline' : ''}" 
+                         onclick="selectRobot('${robotId}')">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="width: 16px; height: 16px; background: ${robotColor}; border-radius: 3px; border: 2px solid #fff; flex-shrink: 0;"></div>
+                            <strong>${robot.robot_name || robotId}</strong>
+                        </div>
+                        <div class="robot-status">
+                            <span class="status-indicator ${isOnline ? 'status-online' : 'status-offline'}"></span>
+                            <span class="${isOnline ? 'robot-online' : 'robot-offline'}">
+                                ${isOnline ? 'Online' : 'Offline'}
+                            </span>
+                            <span style="color: #666;"> • ${robot.robot_type || 'unknown'}</span>
+                        </div>
+                        ${robot.battery_level !== undefined ? 
+                            `<div class="robot-status">Battery: ${robot.battery_level.toFixed(0)}%</div>` : ''}
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        function selectRobot(robotId) {
+            console.log('[ROBOT SELECT] Selected robot:', robotId);
+            selectedRobotId = robotId;
+            updateRobotList();
+            updateTelemetryDisplay(robotId);
+            updateTelemetryOverlay(robotId);
+            displayMissionStatus(robotId);
+            updateCommandSection(robotId);
+            updateMissionSection(robotId);
+            updateMissionDisplay();
+            bringRobotToTop(robotId);
+            
+            // Switch to Commands tab for easy control access
+            const commandsTab = document.getElementById('commands-tab-btn');
+            if (commandsTab && !commandsTab.classList.contains('tab-active')) {
+                commandsTab.click();
+            }
+        }
+        
+        function bringRobotToTop(robotId) {
+            // Bring the selected robot marker to the top by updating its z-index
+            // Also update visual styling to highlight the selected robot
+            if (robotMarkers.has(robotId)) {
+                const { marker } = robotMarkers.get(robotId);
+                marker.zIndex = nextZIndex;
+                nextZIndex++;
+                
+                // Update all robot markers to show selection state
+                updateRobotMarkerStyles();
+                
+                console.log('[Z-INDEX] Robot', robotId, 'brought to top with zIndex:', marker.zIndex);
+            }
+        }
+        
+        function updateRobotMarkerStyles() {
+            // Update visual styling for all robot markers based on selection state
+            robotMarkers.forEach((data, robotId) => {
+                const { marker } = data;
+                const isSelected = robotId === selectedRobotId;
+                
+                if (marker.arrowSvg) {
+                    const arrow = marker.arrowSvg.querySelector('path');
+                    if (arrow) {
+                        // Highlight selected robot with thicker white border and shadow
+                        if (isSelected) {
+                            arrow.setAttribute('stroke-width', '3');
+                            arrow.setAttribute('filter', 'drop-shadow(0 0 8px rgba(255,255,255,0.8))');
+                        } else {
+                            arrow.setAttribute('stroke-width', '2');
+                            arrow.setAttribute('filter', 'none');
+                        }
+                    }
+                }
+            });
+        }
+        
+        function updateTelemetryDisplay(robotId) {
+            const container = document.getElementById('telemetry-content');
+            
+            // Skip if telemetry-content element doesn't exist (since we're using overlay now)
+            if (!container) {
+                return;
+            }
+            
+            const robot = robots.get(robotId);
+            const telemetry = latestTelemetry.get(robotId);
+            
+            if (!robot) {
+                container.innerHTML = '<div style="color: #666;">Robot not found</div>';
+                return;
+            }
+            
+            let html = '';
+            
+            // Robot Info
+            html += `
+                <div class="telemetry-group">
+                    <div class="telemetry-label">Robot Info</div>
+                    <div class="value-row">
+                        <span class="value-key">ID:</span>
+                        <span class="value-data">${robot.robot_id}</span>
+                    </div>
+                    <div class="value-row">
+                        <span class="value-key">Type:</span>
+                        <span class="value-data">${robot.robot_type || 'unknown'}</span>
+                    </div>
+                    <div class="value-row">
+                        <span class="value-key">Status:</span>
+                        <span class="value-data">${robot.online ? '🟢 Online' : '🔴 Offline'}</span>
+                    </div>
+                </div>
+            `;
+            
+            if (telemetry) {
+                // GPS Data
+                if (hasUsableGpsFix(telemetry.gps)) {
+                    const gps = telemetry.gps;
+                    html += `
+                        <div class="telemetry-group">
+                            <div class="telemetry-label">GPS Position</div>
+                            <div class="value-row">
+                                <span class="value-key">Latitude:</span>
+                                <span class="value-data">${gps.latitude.toFixed(7)}</span>
+                            </div>
+                            <div class="value-row">
+                                <span class="value-key">Longitude:</span>
+                                <span class="value-data">${gps.longitude.toFixed(7)}</span>
+                            </div>
+                            <div class="value-row">
+                                <span class="value-key">Altitude:</span>
+                                <span class="value-data">${gps.altitude.toFixed(2)} m</span>
+                            </div>
+                        </div>
+                    `;
+                } else if (telemetry.gps) {
+                    html += `
+                        <div class="telemetry-group">
+                            <div class="telemetry-label">GPS Position</div>
+                            <div class="value-row">
+                                <span class="value-key">Status:</span>
+                                <span class="value-data">Invalid fix (q=${telemetry.gps.fix_quality || 0}, hdop=${Number.isFinite(Number(telemetry.gps.hdop)) ? Number(telemetry.gps.hdop).toFixed(2) : '--'})</span>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // IMU Data
+                if (telemetry.imu) {
+                    const imu = telemetry.imu;
+                    html += `
+                        <div class="telemetry-group">
+                            <div class="telemetry-label">IMU Sensors</div>
+                            <div style="font-size: 11px; color: #999;">Accel (m/s²)</div>
+                            <div class="value-row">
+                                <span class="value-key">X:</span>
+                                <span class="value-data">${imu.ax.toFixed(2)}</span>
+                            </div>
+                            <div class="value-row">
+                                <span class="value-key">Y:</span>
+                                <span class="value-data">${imu.ay.toFixed(2)}</span>
+                            </div>
+                            <div class="value-row">
+                                <span class="value-key">Z:</span>
+                                <span class="value-data">${imu.az.toFixed(2)}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // Status Data
+                if (telemetry.status) {
+                    const status = telemetry.status;
+                    html += `
+                        <div class="telemetry-group">
+                            <div class="telemetry-label">Status</div>
+                            <div class="value-row">
+                                <span class="value-key">State:</span>
+                                <span class="value-data">${status.status}</span>
+                            </div>
+                            <div class="value-row">
+                                <span class="value-key">Speed:</span>
+                                <span class="value-data">${status.speed.toFixed(2)} m/s</span>
+                            </div>
+                            <div class="value-row">
+                                <span class="value-key">Heading:</span>
+                                <span class="value-data">${status.heading.toFixed(1)}°</span>
+                            </div>
+                            ${status.battery_level !== undefined ? 
+                                `<div class="value-row">
+                                    <span class="value-key">Battery:</span>
+                                    <span class="value-data">${status.battery_level.toFixed(0)}%</span>
+                                </div>` : ''}
+                        </div>
+                    `;
+                }
+            } else {
+                html += '<div style="color: #666; font-size: 12px;">Waiting for telemetry data...</div>';
+            }
+            
+            container.innerHTML = html;
+        }
+        
+        function updateTelemetryOverlay(robotId) {
+            const robot = robots.get(robotId);
+            const telemetry = latestTelemetry.get(robotId);
+            const overlay = document.getElementById('telemetry-overlay');
+            
+            console.log('[TELEMETRY OVERLAY] Updating for robot:', robotId, 'robot:', robot, 'telemetry:', telemetry, 'overlay element:', overlay);
+            
+            if (!robot) {
+                console.log('[TELEMETRY OVERLAY] No robot found, hiding overlay');
+                overlay.style.display = 'none';
+                return;
+            }
+            
+            // Always show overlay when robot is selected
+            overlay.style.display = 'block';
+            console.log('[TELEMETRY OVERLAY] Overlay display set to block');
+            
+            // Update header
+            const headerElement = document.getElementById('telemetry-robot-name');
+            const colorIndicator = document.getElementById('telemetry-color-indicator');
+            headerElement.textContent = robot.robot_name || robot.robot_id;
+            colorIndicator.style.background = getColorForRobot(robotId);
+            console.log('[TELEMETRY OVERLAY] Updated header to:', headerElement.textContent);
+            
+            // Update IMU data (or show placeholder)
+            if (telemetry && telemetry.imu) {
+                const imu = telemetry.imu;
+                document.getElementById('imu-ax').textContent = imu.ax.toFixed(2);
+                document.getElementById('imu-ay').textContent = imu.ay.toFixed(2);
+                document.getElementById('imu-az').textContent = imu.az.toFixed(2);
+                document.getElementById('imu-gx').textContent = imu.gx.toFixed(2);
+                document.getElementById('imu-gy').textContent = imu.gy.toFixed(2);
+                document.getElementById('imu-gz').textContent = imu.gz.toFixed(2);
+            } else {
+                document.getElementById('imu-ax').textContent = '--';
+                document.getElementById('imu-ay').textContent = '--';
+                document.getElementById('imu-az').textContent = '--';
+                document.getElementById('imu-gx').textContent = '--';
+                document.getElementById('imu-gy').textContent = '--';
+                document.getElementById('imu-gz').textContent = '--';
+            }
+            
+            // Update GPS data (or show placeholder)
+            if (telemetry && hasUsableGpsFix(telemetry.gps)) {
+                const gps = telemetry.gps;
+                document.getElementById('gps-lat').textContent = gps.latitude.toFixed(7);
+                document.getElementById('gps-lon').textContent = gps.longitude.toFixed(7);
+                document.getElementById('gps-alt').textContent = gps.altitude.toFixed(2) + 'm';
+                document.getElementById('gps-hdop').textContent = (gps.hdop || 0).toFixed(2);
+                document.getElementById('gps-fix').textContent = gps.fix_quality || '--';
+            } else {
+                document.getElementById('gps-lat').textContent = '--';
+                document.getElementById('gps-lon').textContent = '--';
+                document.getElementById('gps-alt').textContent = '--';
+                document.getElementById('gps-hdop').textContent = telemetry && telemetry.gps && Number.isFinite(Number(telemetry.gps.hdop)) ? Number(telemetry.gps.hdop).toFixed(2) : '--';
+                document.getElementById('gps-fix').textContent = telemetry && telemetry.gps ? (telemetry.gps.fix_quality || 'invalid') : '--';
+            }
+            
+            // Update Status data (or show placeholder)
+            if (telemetry && telemetry.status) {
+                const status = telemetry.status;
+                document.getElementById('status-speed').textContent = (status.speed || 0).toFixed(2) + ' m/s';
+                document.getElementById('status-heading').textContent = (status.heading || 0).toFixed(1) + '°';
+                document.getElementById('status-battery').textContent = (status.battery_level || 0).toFixed(0) + '%';
+            } else {
+                document.getElementById('status-speed').textContent = '--';
+                document.getElementById('status-heading').textContent = '--';
+                document.getElementById('status-battery').textContent = '--';
+            }
+            
+            console.log('[TELEMETRY OVERLAY] Update complete');
+        }
+        
+        function displayMissionStatus(robotId) {
+            const telemetry = latestTelemetry.get(robotId);
+            const statusDiv = document.getElementById('mission-status-display');
+            
+            if (!statusDiv) {
+                return;
+            }
+            
+            if (telemetry && telemetry.mission) {
+                const mission = telemetry.mission;
+                const missionState = String(mission.state || 'Idle');
+                const missionActive = Boolean(mission.active) || ['Queued', 'Running', 'Paused'].includes(missionState);
+                const waypointIndex = Number.isFinite(Number(mission.waypoint_index)) ? Number(mission.waypoint_index) : -1;
+                const telemetryWaypointTotal = Number.isFinite(Number(mission.waypoint_total)) ? Number(mission.waypoint_total) : 0;
+                const coverageActive = Boolean(mission.coverage_active);
+                const coverageProgressIndex = Number.isFinite(Number(mission.coverage_progress_index)) ? Number(mission.coverage_progress_index) : -1;
+                const coverageTotal = Number.isFinite(Number(mission.coverage_total)) ? Number(mission.coverage_total) : 0;
+                const nextLiveWaypointIndex = missionActive ? waypointIndex : -1;
+                const missionVisualChanged = (liveMissionWaypointIndex !== nextLiveWaypointIndex) || (liveMissionState !== missionState);
+                const totalWaypoints = telemetryWaypointTotal > 0 ? telemetryWaypointTotal : missionWaypoints.length;
+                const currentWaypoint = waypointIndex >= 0 && waypointIndex < totalWaypoints ? missionWaypoints[waypointIndex] : null;
+                const completedCount = missionState === 'Completed' ? totalWaypoints : (waypointIndex >= 0 ? waypointIndex : 0);
+                const coverageCurrentDisplay = coverageProgressIndex >= 0 ? (coverageProgressIndex + 1) : 0;
+                const progressNumerator = coverageActive && coverageTotal > 0
+                    ? Math.min(coverageCurrentDisplay, coverageTotal)
+                    : completedCount;
+                const progressDenominator = coverageActive && coverageTotal > 0 ? coverageTotal : totalWaypoints;
+                const progressPercent = progressDenominator > 0 ? Math.min(100, Math.max(0, (progressNumerator / progressDenominator) * 100)) : 0;
+
+                liveMissionWaypointIndex = nextLiveWaypointIndex;
+                liveMissionState = missionState;
+
+                const accentColor = missionState === 'Paused'
+                    ? '#FFB300'
+                    : missionState === 'Completed'
+                        ? '#00C853'
+                        : missionState === 'Failed' || missionState === 'Cancelled' || missionState === 'EStop'
+                            ? '#F44336'
+                            : '#4CAF50';
+                const bannerText = missionActive ? 'MISSION RUNNING' : `MISSION ${missionState.toUpperCase()}`;
+
+                let html = `<div style="background: #1f2b1d; padding: 12px; border-radius: 8px; border-left: 4px solid ${accentColor};">`;
+                html += `<div style="color: ${accentColor}; font-weight: bold; margin-bottom: 8px;">${bannerText}</div>`;
+                html += '<div style="color: #fff; font-size: 13px; margin-bottom: 4px; line-height: 1.5;">';
+                html += `<strong>Mission:</strong> ${mission.name || 'Unknown'}<br>`;
+                html += `<strong>Status:</strong> ${missionState}<br>`;
+                html += `<strong>Current Waypoint:</strong> ${waypointIndex >= 0 ? waypointIndex : '--'}${currentWaypoint ? ` (${currentWaypoint.name})` : ''}<br>`;
+                if (coverageActive && coverageTotal > 0) {
+                    html += `<strong>Coverage Progress:</strong> ${coverageCurrentDisplay || '--'} / ${coverageTotal}<br>`;
+                }
+                if (currentWaypoint) {
+                    html += `<strong>Target:</strong> ${currentWaypoint.lat.toFixed(6)}, ${currentWaypoint.lon.toFixed(6)}<br>`;
+                }
+                html += `<strong>Progress:</strong> ${progressNumerator} / ${progressDenominator || '--'} waypoints`;
+                html += '</div>';
+                html += '<div style="background: #1a1a1a; height: 8px; border-radius: 4px; margin-top: 8px; overflow: hidden;">';
+                html += `<div style="background: linear-gradient(90deg, ${accentColor}, #8BC34A); height: 100%; width: ${progressPercent.toFixed(1)}%; border-radius: 4px;"></div>`;
+                html += '</div>';
+                html += '</div>';
+                statusDiv.innerHTML = html;
+                statusDiv.style.display = 'block';
+                if (missionVisualChanged) {
+                    updateMissionDisplay();
+                    updateCoverageGeometryDisplay();
+                }
+            } else {
+                const missionVisualChanged = (liveMissionWaypointIndex !== -1) || (liveMissionState !== '');
+                liveMissionWaypointIndex = -1;
+                liveMissionState = '';
+                statusDiv.innerHTML = '';
+                statusDiv.style.display = 'none';
+                if (missionVisualChanged) {
+                    updateMissionDisplay();
+                    updateCoverageGeometryDisplay();
+                }
+            }
+        }
+        
+        function updateCommandSection(robotId) {
+            const robot = robots.get(robotId);
+            const isOnline = robot && robot.online;
+            
+            // Update robot info display
+            if (robot) {
+                document.getElementById('command-robot-name').textContent = robot.robot_name || robot.robot_id;
+                document.getElementById('command-color-indicator').style.background = getColorForRobot(robotId);
+            } else {
+                document.getElementById('command-robot-name').textContent = 'Select a robot';
+                document.getElementById('command-color-indicator').style.background = '#666';
+            }
+            
+            // Disable buttons if robot is offline
+            document.querySelectorAll('#movement-section button, #waypoint-section button').forEach(btn => {
+                btn.disabled = !isOnline;
+            });
+        }
+        
+        function updateMissionSection(robotId) {
+            const robot = robots.get(robotId);
+            
+            // Update robot info display
+            if (robot) {
+                document.getElementById('mission-robot-name').textContent = robot.robot_name || robot.robot_id;
+                document.getElementById('mission-color-indicator').style.background = getColorForRobot(robotId);
+            } else {
+                document.getElementById('mission-robot-name').textContent = 'Select a robot';
+                document.getElementById('mission-color-indicator').style.background = '#666';
+            }
+        }
+        
+        function updateStatusMessage(message, type = 'info') {
+            const elem = document.getElementById('status-message');
+            const color = type === 'error' ? '#f44336' : (type === 'warning' ? '#FF9800' : '#4CAF50');
+            elem.style.borderLeftColor = color;
+            elem.textContent = message;
+            
+            // Clear message after 5 seconds
+            setTimeout(() => {
+                elem.textContent = '';
+            }, 5000);
+        }
+
+        function hasFiniteGpsCoordinates(gps) {
+            if (!gps) return false;
+            const lat = Number(gps.latitude);
+            const lon = Number(gps.longitude);
+            return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+        }
+
+        function hasUsableGpsFix(gps) {
+            if (!hasFiniteGpsCoordinates(gps)) {
+                return false;
+            }
+            const valid = gps.valid === true || gps.valid === 1;
+            const fixQuality = Number(gps.fix_quality || 0);
+            const hdop = Number(gps.hdop);
+            return valid && fixQuality > 0 && (!Number.isFinite(hdop) || hdop <= 5.0);
+        }
+
+        function getSpiralGeometryLimits() {
+            const maxSteerRad = PLANNER_MAX_STEER_DEG * Math.PI / 180;
+            const equivalentMinRadius = PLANNER_WHEELBASE_M / Math.tan(maxSteerRad);
+            const innerWheelMinRadius = equivalentMinRadius + (PLANNER_TRACK_WIDTH_M * 0.5);
+            return {
+                equivalentMinRadius,
+                innerWheelMinRadius,
+                recommendedMinRadius: innerWheelMinRadius
+            };
+        }
+
+        function getSpiralRadiusWarning(radius) {
+            if (!Number.isFinite(radius)) {
+                return '';
+            }
+            const limits = getSpiralGeometryLimits();
+            if (radius >= limits.recommendedMinRadius) {
+                return '';
+            }
+            return `Spiral start radius ${radius.toFixed(2)} m is below the recommended minimum ${limits.recommendedMinRadius.toFixed(2)} m for the current steering geometry.`;
+        }
+
+        function updateSpiralRadiusGuidance() {
+            const guidanceEl = document.getElementById('spiral-radius-guidance');
+            const radiusEl = document.getElementById('task-spiral-radius');
+            if (!guidanceEl || !radiusEl) {
+                return;
+            }
+
+            const radius = parseFloat(radiusEl.value);
+            const limits = getSpiralGeometryLimits();
+            const warning = getSpiralRadiusWarning(radius);
+            const isWarning = warning.length > 0;
+
+            guidanceEl.style.marginTop = '8px';
+            guidanceEl.style.padding = '8px';
+            guidanceEl.style.borderRadius = '3px';
+            guidanceEl.style.fontSize = '10px';
+            guidanceEl.style.lineHeight = '1.5';
+            guidanceEl.style.background = isWarning ? '#3d2318' : '#1f3320';
+            guidanceEl.style.color = isWarning ? '#FFB74D' : '#A5D6A7';
+            guidanceEl.innerHTML = `
+                <div><strong>Double Ackermann limit:</strong> recommended minimum spiral start radius <strong>${limits.recommendedMinRadius.toFixed(2)} m</strong>.</div>
+                <div>Equivalent bicycle minimum: ${limits.equivalentMinRadius.toFixed(2)} m. Inner-wheel limited minimum: ${limits.innerWheelMinRadius.toFixed(2)} m.</div>
+                ${isWarning ? `<div style="margin-top: 4px;"><strong>Warning:</strong> ${warning}</div>` : ''}
+            `;
+        }
+        
+        // ====================================================================
+        // Command Functions
+        // ====================================================================
+        
+        function sendMoveCommand() {
+            if (!selectedRobotId) {
+                updateStatusMessage('Please select a robot first', 'error');
+                return;
+            }
+            
+            const linearVel = parseFloat(document.getElementById('linear-velocity').value);
+            const angularVel = parseFloat(document.getElementById('angular-velocity').value);
+            const duration = parseFloat(document.getElementById('movement-duration').value);
+            
+            const message = {
+                type: 32,  // WEB_SEND_COMMAND
+                robot_id: selectedRobotId,
+                client_id: CLIENT_ID,
+                payload: {
+                    command: 'move',
+                    linear_velocity: linearVel,
+                    angular_velocity: angularVel,
+                    duration: duration
+                }
+            };
+            
+            sendMessage(message);
+            updateStatusMessage(`Move command sent to ${robots.get(selectedRobotId).robot_name}`);
+        }
+        
+        function sendWaypointCommand() {
+            if (!selectedRobotId) {
+                updateStatusMessage('Please select a robot first', 'error');
+                return;
+            }
+            
+            const lat = parseFloat(document.getElementById('waypoint-lat').value);
+            const lon = parseFloat(document.getElementById('waypoint-lon').value);
+            const alt = parseFloat(document.getElementById('waypoint-alt').value);
+            
+            const message = {
+                type: 32,  // WEB_SEND_COMMAND
+                robot_id: selectedRobotId,
+                client_id: CLIENT_ID,
+                payload: {
+                    command: 'waypoint',
+                    latitude: lat,
+                    longitude: lon,
+                    altitude: alt
+                }
+            };
+            
+            sendMessage(message);
+            updateStatusMessage(`Waypoint command sent to ${robots.get(selectedRobotId).robot_name}`);
+        }
+        
+        function sendEmergencyStop() {
+            if (!selectedRobotId) {
+                updateStatusMessage('Please select a robot first', 'error');
+                return;
+            }
+            
+            const message = {
+                type: 32,  // WEB_SEND_COMMAND
+                robot_id: selectedRobotId,
+                client_id: CLIENT_ID,
+                payload: {
+                    command: 'emergency_stop'
+                }
+            };
+            
+            sendMessage(message);
+            updateStatusMessage('EMERGENCY STOP sent!', 'error');
+        }
+        
+        // ====================================================================
+        // Mission Planning Functions
+        // ====================================================================
+        
+        let missionWaypoints = [];
+        let missionTasks = [];
+        let missionCoveragePaths = [];  // Named coverage path objects with embedded waypoints and planning metadata
+        let missionWaypointMarkers = [];
+        let missionTaskPolylines = [];  // For task path lines
+        let missionSpiralPolylines = [];  // For spiral visualizations
+        let missionStartMarker = null;  // Start point marker
+        let selectedWaypointIndex = -1;  // Currently selected waypoint
+        let selectedCoveragePathIndex = -1;  // Currently selected coverage path
+        let liveMissionWaypointIndex = -1;  // Waypoint currently reported by robot telemetry
+        let liveMissionState = '';
+        let editingTaskIndex = -1;  // Currently editing task index (-1 means not editing)
+        let missionName = '';  // Mission name
+        
+        // Remember last used task parameters
+        let lastTaskParams = {
+            gotoSpeed: 1.0,
+            spiralRadius: 2.0,
+            spiralSpacing: 0.3,
+            spiralLoops: 3,
+            spiralDirection: 'ccw',
+            spiralSpeed: 0.5,
+            coverageSpeed: 0.6,
+            coverageStart: 0,
+            coverageEnd: 0,
+            coverageName: 'Coverage A',
+            waitDuration: 5,
+            loopCount: 2
+        };
+
+        // Coverage planning state (reuses mission waypoints by index)
+        const COVERAGE_API_URL = `${PAGE_PROTOCOL}//${PAGE_HOST}:5000/api/coverage_plan`;
+        let coverageBoundaryIndices = [];
+        let coverageDraftObstacleIndices = [];
+        let coverageObstaclesIndices = [];
+        let coverageGeneratedWaypoints = [];
+        let coverageGeneratedWaypointMarkers = [];
+        let coveragePreviewPolyline = null;
+        let coverageBoundaryPolygon = null;
+        let coverageObstaclePolygons = [];
+        let coverageStartMarker = null;
+        let coverageEndMarker = null;
+        let coverageLastResult = null;
+        let coverageMinimumRequiredWaypoints = 3;
+        let coverageAvailableWaypoints = 200;
+
+        function coveragePreviewMatchesMissionPlan() {
+            if (!coverageGeneratedWaypoints.length || missionWaypoints.length !== coverageGeneratedWaypoints.length) {
+                return false;
+            }
+
+            const epsilon = 1e-7;
+            return coverageGeneratedWaypoints.every((wp, index) => {
+                const missionWp = missionWaypoints[index];
+                if (!missionWp) {
+                    return false;
+                }
+                return Math.abs(Number(missionWp.lat) - Number(wp.lat)) <= epsilon &&
+                    Math.abs(Number(missionWp.lon) - Number(wp.lon)) <= epsilon;
+            });
+        }
+
+        function getLiveCoverageWaypointIndex() {
+            if (!coveragePreviewMatchesMissionPlan()) {
+                return -1;
+            }
+            return liveMissionWaypointIndex >= 0 && liveMissionWaypointIndex < coverageGeneratedWaypoints.length
+                ? liveMissionWaypointIndex
+                : -1;
+        }
+
+        function buildCoverageWaypointMarkerIcon(index, liveCoverageWaypointIndex) {
+            const isLiveWaypoint = index === liveCoverageWaypointIndex;
+            const isCompletedWaypoint = liveMissionState === 'Completed' || (liveCoverageWaypointIndex > 0 && index < liveCoverageWaypointIndex);
+            const fillColor = isLiveWaypoint ? '#00E5FF' : isCompletedWaypoint ? '#4CAF50' : '#2196F3';
+            const scale = isLiveWaypoint ? 5 : isCompletedWaypoint ? 4 : 3;
+            const strokeColor = isLiveWaypoint ? '#FFFFFF' : '#0A0A0A';
+            const strokeWeight = isLiveWaypoint ? 2 : 1;
+
+            return {
+                path: google.maps.SymbolPath.CIRCLE,
+                scale: scale,
+                fillColor: fillColor,
+                fillOpacity: 0.95,
+                strokeColor: strokeColor,
+                strokeWeight: strokeWeight
+            };
+        }
+        
+        function addWaypoint() {
+            const lat = parseFloat(document.getElementById('wp-lat').value);
+            const lon = parseFloat(document.getElementById('wp-lon').value);
+            const name = `WP-${missionWaypoints.length}`;
+            
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                updateStatusMessage('Invalid waypoint coordinates', 'error');
+                return;
+            }
+            
+            missionWaypoints.push({ lat, lon, name });
+            updateMissionDisplay();
+            
+            document.getElementById('wp-lat').value = '';
+            document.getElementById('wp-lon').value = '';
+            updateStatusMessage('Waypoint added');
+        }
+
+        function addWaypointFromMap(lat, lon) {
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                updateStatusMessage('Invalid map click coordinates', 'error');
+                return;
+            }
+
+            document.getElementById('wp-lat').value = lat.toFixed(6);
+            document.getElementById('wp-lon').value = lon.toFixed(6);
+            addWaypoint();
+        }
+
+        function addWaypointFromRobotPosition() {
+            if (!selectedRobotId) {
+                updateStatusMessage('Select a robot first', 'error');
+                return;
+            }
+
+            const telemetry = latestTelemetry.get(selectedRobotId);
+            const gps = telemetry && telemetry.gps ? telemetry.gps : null;
+
+            let lat = hasUsableGpsFix(gps) ? Number(gps.latitude) : NaN;
+            let lon = hasUsableGpsFix(gps) ? Number(gps.longitude) : NaN;
+
+            // Fallback to robot list snapshot if live telemetry is not yet available.
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                const robot = robots.get(selectedRobotId);
+                if (robot) {
+                    lat = Number(robot.latitude);
+                    lon = Number(robot.longitude);
+                }
+            }
+
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                updateStatusMessage('No valid GPS position for selected robot yet', 'error');
+                return;
+            }
+
+            document.getElementById('wp-lat').value = lat.toFixed(6);
+            document.getElementById('wp-lon').value = lon.toFixed(6);
+            addWaypoint();
+            updateStatusMessage(`Waypoint added from ${selectedRobotId} position`);
+        }
+
+        function createWaypointMarker(index, waypoint) {
+            if (!mapInitialized || !map) {
+                return null;
+            }
+
+            const isSelected = index === selectedWaypointIndex;
+            const isLiveWaypoint = index === liveMissionWaypointIndex;
+            const markerDiv = document.createElement('div');
+            const bgColor = isSelected ? '#FF6B6B' : isLiveWaypoint ? '#00E5FF' : '#FFC107';
+            const size = (isSelected || isLiveWaypoint) ? '34px' : '26px';
+            const fontSize = (isSelected || isLiveWaypoint) ? '14px' : '12px';
+            const shadow = isSelected
+                ? '0 0 16px rgba(255, 107, 107, 0.8)'
+                : isLiveWaypoint
+                    ? '0 0 16px rgba(0, 229, 255, 0.9)'
+                    : '0 0 6px rgba(0,0,0,0.5)';
+            markerDiv.style.cssText = `width: ${size}; height: ${size}; border-radius: 50%; background: ${bgColor}; color: #000; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: ${fontSize}; border: 2px solid #1e1e1e; box-shadow: ${shadow}; transition: all 0.2s ease;`;
+            markerDiv.textContent = String(index);
+
+            if (google && google.maps && google.maps.marker && google.maps.marker.AdvancedMarkerElement) {
+                const marker = new google.maps.marker.AdvancedMarkerElement({
+                    map: map,
+                    position: { lat: waypoint.lat, lng: waypoint.lon },
+                    content: markerDiv,
+                    title: waypoint.name || `Waypoint ${index}`,
+                    gmpDraggable: true
+                });
+                if (typeof marker.addListener === 'function') {
+                    marker.addListener('click', () => {
+                        selectWaypoint(index);
+                    });
+                    marker.addListener('dragend', (event) => {
+                        const coords = getLatLngFromEventOrMarker(event, marker);
+                        if (coords) {
+                            updateWaypointPosition(index, coords.lat, coords.lng);
+                        }
+                    });
+                }
+                return marker;
+            }
+
+            if (google && google.maps && google.maps.Marker) {
+                const marker = new google.maps.Marker({
+                    map: map,
+                    position: { lat: waypoint.lat, lng: waypoint.lon },
+                    title: waypoint.name || `Waypoint ${index}`,
+                    draggable: true
+                });
+                if (typeof marker.addListener === 'function') {
+                    marker.addListener('click', () => {
+                        selectWaypoint(index);
+                    });
+                    marker.addListener('dragend', (event) => {
+                        const coords = getLatLngFromEventOrMarker(event, marker);
+                        if (coords) {
+                            updateWaypointPosition(index, coords.lat, coords.lng);
+                        }
+                    });
+                }
+                return marker;
+            }
+
+            return null;
+        }
+
+        function getLatLngFromEventOrMarker(event, marker) {
+            if (event && event.latLng) {
+                return { lat: event.latLng.lat(), lng: event.latLng.lng() };
+            }
+            if (marker && marker.position) {
+                const pos = marker.position;
+                if (typeof pos.lat === 'function' && typeof pos.lng === 'function') {
+                    return { lat: pos.lat(), lng: pos.lng() };
+                }
+                if (typeof pos.lat === 'number' && typeof pos.lng === 'number') {
+                    return { lat: pos.lat, lng: pos.lng };
+                }
+            }
+            return null;
+        }
+
+        function updateWaypointPosition(index, lat, lon) {
+            if (!missionWaypoints[index]) {
+                return;
+            }
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                return;
+            }
+            missionWaypoints[index].lat = lat;
+            missionWaypoints[index].lon = lon;
+            updateMissionDisplay();
+        }
+
+        function generateSpiralPoints(centerLat, centerLon, radius, spacing, loops, direction) {
+            const points = [];
+            const pointsPerTurn = 50;
+            const totalPoints = loops * pointsPerTurn;
+            const dirMult = direction === 'cw' ? -1 : 1;
+            const METERS_PER_DEGREE_LAT = 111320.0;
+            const METERS_PER_DEGREE_LON = 111320.0 * Math.cos(centerLat * Math.PI / 180);
+            
+            // Option B: radius = starting radius, spacing = expansion per loop
+            const radiusStart = radius;
+            const radiusEnd = radius + spacing * (loops - 1);
+            
+            for (let i = 0; i <= totalPoints; i++) {
+                const t = i / totalPoints;
+                const r = radiusStart + (radiusEnd - radiusStart) * t;
+                const angle = dirMult * (t * loops * 2 * Math.PI);
+                const dx = r * Math.cos(angle);
+                const dy = r * Math.sin(angle);
+                const lat = centerLat + (dy / METERS_PER_DEGREE_LAT);
+                const lon = centerLon + (dx / METERS_PER_DEGREE_LON);
+                points.push({ lat, lng: lon });
+            }
+            return points;
+        }
+
+        function clearMissionVisualization() {
+            if (!mapInitialized || !map) {
+                return;
+            }
+            
+            // Clear task polylines
+            missionTaskPolylines.forEach((line) => {
+                line.setMap(null);
+            });
+            missionTaskPolylines = [];
+            
+            // Clear spiral polylines
+            missionSpiralPolylines.forEach((line) => {
+                line.setMap(null);
+            });
+            missionSpiralPolylines = [];
+            
+            // Clear start marker
+            if (missionStartMarker) {
+                if (missionStartMarker.map) {
+                    missionStartMarker.map = null;
+                } else if (typeof missionStartMarker.setMap === 'function') {
+                    missionStartMarker.setMap(null);
+                }
+                missionStartMarker = null;
+            }
+        }
+
+        function updateMissionVisualization() {
+            const hasEmbeddedCoverage = missionTasks.some((task) => task.type === 'coverage_path' && Array.isArray(task.coverage_waypoints) && task.coverage_waypoints.length > 0);
+            if (!mapInitialized || !map || (missionWaypoints.length === 0 && !hasEmbeddedCoverage)) {
+                return;
+            }
+            
+            clearMissionVisualization();
+            
+            // Draw spirals for spiral tasks
+            missionTasks.forEach((task) => {
+                if (task.type === 'spiral' && task.waypoint !== undefined) {
+                    const wp = missionWaypoints[task.waypoint];
+                    if (!wp) return;
+                    
+                    const spiralPoints = generateSpiralPoints(wp.lat, wp.lon, 
+                        task.radius, task.spacing, task.loops, task.direction);
+                    
+                    const spiralLine = new google.maps.Polyline({
+                        path: spiralPoints,
+                        geodesic: true,
+                        strokeColor: '#2196F3',
+                        strokeOpacity: 0.7,
+                        strokeWeight: 2,
+                        map: map
+                    });
+                    
+                    missionSpiralPolylines.push(spiralLine);
+                }
+            });
+            
+            // Draw task path connecting waypoints in order
+            const taskPath = [];
+            missionTasks.forEach((task) => {
+                if (task.waypoint !== undefined && missionWaypoints[task.waypoint]) {
+                    const wp = missionWaypoints[task.waypoint];
+                    taskPath.push({ lat: wp.lat, lng: wp.lon });
+                } else if (task.type === 'coverage_path') {
+                    const coverageWaypoints = getCoverageTaskWaypoints(task);
+                    if (!coverageWaypoints.length) {
+                        return;
+                    }
+                    coverageWaypoints.forEach((wp) => taskPath.push({ lat: wp.lat, lng: wp.lon }));
+                }
+            });
+            
+            if (taskPath.length > 1) {
+                const taskLine = new google.maps.Polyline({
+                    path: taskPath,
+                    geodesic: true,
+                    strokeColor: '#FF9800',
+                    strokeOpacity: 0.8,
+                    strokeWeight: 3,
+                    map: map,
+                    icons: [{
+                        icon: {
+                            path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                            scale: 3,
+                            strokeColor: '#FF9800'
+                        },
+                        offset: '50%',
+                        repeat: '100px'
+                    }]
+                });
+                
+                missionTaskPolylines.push(taskLine);
+            }
+            
+            // Draw start marker at first task waypoint
+            if (taskPath.length > 0) {
+                const startPos = taskPath[0];
+                const startDiv = document.createElement('div');
+                startDiv.style.cssText = 'width: 20px; height: 20px; border-radius: 50%; background: #4CAF50; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 11px; border: 2px solid white; box-shadow: 0 0 6px rgba(0,0,0,0.5);';
+                startDiv.textContent = 'S';
+                
+                missionStartMarker = new google.maps.marker.AdvancedMarkerElement({
+                    map: map,
+                    position: startPos,
+                    content: startDiv,
+                    title: 'Mission Start'
+                });
+            }
+        }
+
+        function selectWaypoint(index) {
+            selectedWaypointIndex = index;
+            refreshWaypointMarkers();
+            updateMissionDisplay();
+            updateTaskOptions();  // Update task options to show selected waypoint
+        }
+        
+        function refreshWaypointMarkers() {
+            if (!mapInitialized || !map) {
+                return;
+            }
+
+            missionWaypointMarkers.forEach((marker) => {
+                if (!marker) {
+                    return;
+                }
+                if ('map' in marker) {
+                    marker.map = null;
+                } else if (typeof marker.setMap === 'function') {
+                    marker.setMap(null);
+                }
+            });
+            missionWaypointMarkers = [];
+
+            missionWaypoints.forEach((wp, i) => {
+                const marker = createWaypointMarker(i, wp);
+                if (marker) {
+                    missionWaypointMarkers.push(marker);
+                }
+            });
+        }
+
+        function formatCoverageTaskDescription(task) {
+            const name = String(task.coverage_name || 'Coverage').trim() || 'Coverage';
+            if (Array.isArray(task.coverage_waypoints) && task.coverage_waypoints.length) {
+                return `${name}: ${task.coverage_waypoints.length} pts @ ${task.speed} m/s`;
+            }
+            return `${name}: WP-${task.start_waypoint} -> WP-${task.end_waypoint} @ ${task.speed} m/s`;
+        }
+
+        function sanitizeCoverageWaypoints(waypoints) {
+            if (!Array.isArray(waypoints)) {
+                return [];
+            }
+            return waypoints
+                .map((wp) => ({
+                    lat: Number(wp.lat),
+                    lon: Number(wp.lon),
+                    heading: Number(wp.heading || 0)
+                }))
+                .filter((wp) => Number.isFinite(wp.lat) && Number.isFinite(wp.lon));
+        }
+
+        function sanitizeCoverageParams(params) {
+            return {
+                row_spacing: Number.isFinite(Number(params?.row_spacing)) ? Number(params.row_spacing) : 0.5,
+                safety_margin: Number.isFinite(Number(params?.safety_margin)) ? Number(params.safety_margin) : 0.3,
+                sweep_angle: Number.isFinite(Number(params?.sweep_angle)) ? Number(params.sweep_angle) : 0,
+                robot_speed: Number.isFinite(Number(params?.robot_speed)) ? Number(params.robot_speed) : 1.0,
+                max_waypoints: Number.isFinite(Number(params?.max_waypoints)) ? Number(params.max_waypoints) : 200,
+                show_generated_on_map: typeof params?.show_generated_on_map === 'boolean' ? params.show_generated_on_map : true
+            };
+        }
+
+        function sanitizeCoverageResultSummary(resultLike, fallbackWaypointCount = 0) {
+            if (!resultLike || typeof resultLike !== 'object') {
+                return null;
+            }
+
+            return {
+                cells_count: Number(resultLike.cells_count || 0),
+                total_distance: Number(resultLike.total_distance || 0),
+                estimated_time: Number(resultLike.estimated_time || 0),
+                minimum_waypoints_required: Number(resultLike.minimum_waypoints_required || 3),
+                pre_limit_waypoints: Number(resultLike.pre_limit_waypoints || fallbackWaypointCount || 0)
+            };
+        }
+
+        function sanitizeCoverageSource(source) {
+            const boundaryIndices = Array.isArray(source?.boundary_indices)
+                ? source.boundary_indices.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < missionWaypoints.length)
+                : [];
+            const obstaclesIndices = Array.isArray(source?.obstacles_indices)
+                ? source.obstacles_indices
+                    .map((obs) => Array.isArray(obs) ? obs.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < missionWaypoints.length) : [])
+                    .filter((obs) => obs.length >= 3)
+                : [];
+
+            const boundary = Array.isArray(source?.boundary)
+                ? source.boundary
+                    .map((pair) => Array.isArray(pair) && pair.length >= 2 ? [Number(pair[0]), Number(pair[1])] : null)
+                    .filter((pair) => pair && Number.isFinite(pair[0]) && Number.isFinite(pair[1]))
+                : resolveCoverageIndices(boundaryIndices);
+
+            const obstacles = Array.isArray(source?.obstacles)
+                ? source.obstacles
+                    .map((obs) => Array.isArray(obs)
+                        ? obs
+                            .map((pair) => Array.isArray(pair) && pair.length >= 2 ? [Number(pair[0]), Number(pair[1])] : null)
+                            .filter((pair) => pair && Number.isFinite(pair[0]) && Number.isFinite(pair[1]))
+                        : [])
+                    .filter((obs) => obs.length >= 3)
+                : obstaclesIndices.map((obs) => resolveCoverageIndices(obs));
+
+            return {
+                boundary_indices: boundaryIndices,
+                obstacles_indices: obstaclesIndices,
+                boundary: boundary,
+                obstacles: obstacles
+            };
+        }
+
+        function createCoveragePathRecord(name, coverageWaypoints, options = {}) {
+            const sanitizedWaypoints = sanitizeCoverageWaypoints(coverageWaypoints);
+            return {
+                name: String(name || '').trim() || `Coverage ${missionCoveragePaths.length + 1}`,
+                coverage_waypoints: sanitizedWaypoints,
+                source: sanitizeCoverageSource(options.source || {
+                    boundary_indices: coverageBoundaryIndices,
+                    obstacles_indices: coverageObstaclesIndices,
+                    boundary: resolveCoverageIndices(coverageBoundaryIndices),
+                    obstacles: coverageObstaclesIndices.map((obs) => resolveCoverageIndices(obs))
+                }),
+                params: sanitizeCoverageParams(options.params || getCoverageParams()),
+                result_summary: sanitizeCoverageResultSummary(options.result_summary || coverageLastResult, sanitizedWaypoints.length)
+            };
+        }
+
+        function sanitizeCoveragePath(path, index) {
+            return createCoveragePathRecord(
+                path?.name || `Coverage ${index + 1}`,
+                path?.coverage_waypoints,
+                {
+                    source: path?.source || {
+                        boundary_indices: path?.boundary_indices,
+                        obstacles_indices: path?.obstacles_indices,
+                        boundary: path?.boundary,
+                        obstacles: path?.obstacles
+                    },
+                    params: path?.params,
+                    result_summary: path?.result_summary
+                }
+            );
+        }
+
+        function findMatchingCoveragePathIndex(targetName, targetWaypoints) {
+            const epsilon = 1e-9;
+            return missionCoveragePaths.findIndex((path) => {
+                if (String(path.name || '') !== String(targetName || '')) {
+                    return false;
+                }
+                if (!Array.isArray(path.coverage_waypoints) || path.coverage_waypoints.length !== targetWaypoints.length) {
+                    return false;
+                }
+                return path.coverage_waypoints.every((wp, i) => {
+                    const other = targetWaypoints[i];
+                    return Math.abs(Number(wp.lat) - Number(other.lat)) <= epsilon &&
+                        Math.abs(Number(wp.lon) - Number(other.lon)) <= epsilon &&
+                        Math.abs(Number(wp.heading || 0) - Number(other.heading || 0)) <= epsilon;
+                });
+            });
+        }
+
+        function rebuildCoveragePathsFromTasks() {
+            missionTasks.forEach((task) => {
+                if (task.type !== 'coverage_path') {
+                    return;
+                }
+
+                task.speed = normalizeMissionSpeed(task.speed, lastTaskParams.coverageSpeed);
+
+                const taskCoveragePoints = sanitizeCoverageWaypoints(task.coverage_waypoints);
+                let pathIndex = Number.isInteger(task.coverage_path_index) ? task.coverage_path_index : -1;
+                const hasValidLinkedPath = pathIndex >= 0 && pathIndex < missionCoveragePaths.length;
+
+                if (hasValidLinkedPath && !taskCoveragePoints.length) {
+                    task.coverage_waypoints = missionCoveragePaths[pathIndex].coverage_waypoints.map((wp) => ({ ...wp }));
+                } else if (taskCoveragePoints.length) {
+                    const preferredName = String(task.coverage_name || '').trim() || `Coverage ${missionCoveragePaths.length + 1}`;
+                    if (!hasValidLinkedPath) {
+                        const matchIdx = findMatchingCoveragePathIndex(preferredName, taskCoveragePoints);
+                        if (matchIdx >= 0) {
+                            pathIndex = matchIdx;
+                        } else {
+                            missionCoveragePaths.push(createCoveragePathRecord(preferredName, taskCoveragePoints, {
+                                source: {
+                                    boundary_indices: [],
+                                    obstacles_indices: [],
+                                    boundary: [],
+                                    obstacles: []
+                                },
+                                params: sanitizeCoverageParams(null),
+                                result_summary: sanitizeCoverageResultSummary(null, taskCoveragePoints.length)
+                            }));
+                            pathIndex = missionCoveragePaths.length - 1;
+                        }
+                    }
+                    task.coverage_path_index = pathIndex;
+                    task.coverage_waypoints = taskCoveragePoints;
+                } else if (!hasValidLinkedPath) {
+                    delete task.coverage_path_index;
+                }
+
+                if (pathIndex >= 0 && pathIndex < missionCoveragePaths.length) {
+                    task.coverage_name = missionCoveragePaths[pathIndex].name;
+                } else {
+                    task.coverage_name = String(task.coverage_name || 'Coverage').trim() || 'Coverage';
+                }
+                task.description = formatCoverageTaskDescription(task);
+            });
+        }
+
+        function getCoverageTaskWaypoints(task) {
+            if (Array.isArray(task.coverage_waypoints) && task.coverage_waypoints.length) {
+                return task.coverage_waypoints
+                    .map((wp) => ({ lat: Number(wp.lat), lon: Number(wp.lon) }))
+                    .filter((wp) => Number.isFinite(wp.lat) && Number.isFinite(wp.lon));
+            }
+
+            const start = Number(task.start_waypoint);
+            const end = Number(task.end_waypoint);
+            if (!Number.isInteger(start) || !Number.isInteger(end)) {
+                return [];
+            }
+
+            const waypoints = [];
+            const step = end >= start ? 1 : -1;
+            for (let i = start; ; i += step) {
+                const wp = missionWaypoints[i];
+                if (wp) {
+                    waypoints.push({ lat: Number(wp.lat), lon: Number(wp.lon) });
+                }
+                if (i === end) break;
+            }
+            return waypoints.filter((wp) => Number.isFinite(wp.lat) && Number.isFinite(wp.lon));
+        }
+
+        function buildMissionRuntimePlan() {
+            const runtimeWaypoints = missionWaypoints.map((wp, i) => ({
+                lat: Number(wp.lat),
+                lon: Number(wp.lon),
+                name: String(wp.name || `WP-${i}`)
+            }));
+            const runtimeTasks = missionTasks.map((task) => ({ ...task }));
+
+            for (const task of runtimeTasks) {
+                if (task.type !== 'coverage_path') continue;
+
+                const coveragePoints = getCoverageTaskWaypoints(task);
+                if (!coveragePoints.length) {
+                    return { error: `Coverage task "${task.coverage_name || 'Coverage'}" has no valid coverage waypoints` };
+                }
+
+                const startIndex = runtimeWaypoints.length;
+                coveragePoints.forEach((wp, idx) => {
+                    runtimeWaypoints.push({
+                        lat: wp.lat,
+                        lon: wp.lon,
+                        name: `COV-${startIndex + idx}`
+                    });
+                });
+
+                task.start_waypoint = startIndex;
+                task.end_waypoint = runtimeWaypoints.length - 1;
+                task.description = formatCoverageTaskDescription(task);
+                delete task.coverage_waypoints;
+            }
+
+            return { waypoints: runtimeWaypoints, tasks: runtimeTasks };
+        }
+        
+        function deleteWaypoint(index) {
+            // Remove tasks that reference this waypoint
+            missionTasks = missionTasks.filter((task) => {
+                if (task.waypoint === index) return false;
+                if (task.type === 'coverage_path' && Array.isArray(task.coverage_waypoints) && task.coverage_waypoints.length) return true;
+                if (task.type === 'coverage_path' && (task.start_waypoint === index || task.end_waypoint === index)) return false;
+                return true;
+            });
+            
+            // Update task references for waypoints after the deleted one
+            missionTasks.forEach((task) => {
+                if (task.waypoint > index) {
+                    task.waypoint--;
+                }
+                if (task.type === 'coverage_path') {
+                    if (task.start_waypoint > index) task.start_waypoint--;
+                    if (task.end_waypoint > index) task.end_waypoint--;
+                    task.description = formatCoverageTaskDescription(task);
+                }
+                // Update description to reflect new waypoint names
+                if (task.type === 'goto_waypoint' && missionWaypoints[task.waypoint]) {
+                    task.description = `Go to ${missionWaypoints[task.waypoint].name} @ ${task.speed} m/s`;
+                } else if (task.type === 'spiral' && missionWaypoints[task.waypoint]) {
+                    task.description = `Spiral at ${missionWaypoints[task.waypoint].name} @ ${task.speed} m/s`;
+                }
+            });
+
+            // Update selected waypoint
+            if (selectedWaypointIndex === index) {
+                selectedWaypointIndex = -1;
+            } else if (selectedWaypointIndex > index) {
+                selectedWaypointIndex--;
+            }
+            
+            missionWaypoints.splice(index, 1);
+            updateMissionDisplay();
+        }
+        
+        function moveWaypointUp(index) {
+            if (index <= 0) return;
+            // Swap waypoints
+            const temp = missionWaypoints[index];
+            missionWaypoints[index] = missionWaypoints[index - 1];
+            missionWaypoints[index - 1] = temp;
+            
+            // Update task references to maintain correct waypoint assignments
+            missionTasks.forEach((task) => {
+                if (task.waypoint === index) {
+                    task.waypoint = index - 1;
+                } else if (task.waypoint === index - 1) {
+                    task.waypoint = index;
+                }
+
+                if (task.type === 'coverage_path') {
+                    if (task.start_waypoint === index) task.start_waypoint = index - 1;
+                    else if (task.start_waypoint === index - 1) task.start_waypoint = index;
+
+                    if (task.end_waypoint === index) task.end_waypoint = index - 1;
+                    else if (task.end_waypoint === index - 1) task.end_waypoint = index;
+
+                    task.description = formatCoverageTaskDescription(task);
+                }
+            });
+
+            // Update description to reflect new waypoint names
+            missionTasks.forEach((task) => {
+                if (task.type === 'goto_waypoint' && missionWaypoints[task.waypoint]) {
+                    task.description = `Go to ${missionWaypoints[task.waypoint].name} @ ${task.speed} m/s`;
+                } else if (task.type === 'spiral' && missionWaypoints[task.waypoint]) {
+                    task.description = `Spiral at ${missionWaypoints[task.waypoint].name} @ ${task.speed} m/s`;
+                }
+            });
+            
+            if (selectedWaypointIndex === index) {
+                selectedWaypointIndex = index - 1;
+            } else if (selectedWaypointIndex === index - 1) {
+                selectedWaypointIndex = index;
+            }
+            
+            updateMissionDisplay();
+        }
+        
+        function moveWaypointDown(index) {
+            if (index >= missionWaypoints.length - 1) return;
+            // Swap waypoints
+            const temp = missionWaypoints[index];
+            missionWaypoints[index] = missionWaypoints[index + 1];
+            missionWaypoints[index + 1] = temp;
+            
+            // Update task references to maintain correct waypoint assignments
+            missionTasks.forEach((task) => {
+                if (task.waypoint === index) {
+                    task.waypoint = index + 1;
+                } else if (task.waypoint === index + 1) {
+                    task.waypoint = index;
+                }
+
+                if (task.type === 'coverage_path') {
+                    if (task.start_waypoint === index) task.start_waypoint = index + 1;
+                    else if (task.start_waypoint === index + 1) task.start_waypoint = index;
+
+                    if (task.end_waypoint === index) task.end_waypoint = index + 1;
+                    else if (task.end_waypoint === index + 1) task.end_waypoint = index;
+
+                    task.description = formatCoverageTaskDescription(task);
+                }
+            });
+
+            // Update description to reflect new waypoint names
+            missionTasks.forEach((task) => {
+                if (task.type === 'goto_waypoint' && missionWaypoints[task.waypoint]) {
+                    task.description = `Go to ${missionWaypoints[task.waypoint].name} @ ${task.speed} m/s`;
+                } else if (task.type === 'spiral' && missionWaypoints[task.waypoint]) {
+                    task.description = `Spiral at ${missionWaypoints[task.waypoint].name} @ ${task.speed} m/s`;
+                }
+            });
+            
+            if (selectedWaypointIndex === index) {
+                selectedWaypointIndex = index + 1;
+            } else if (selectedWaypointIndex === index + 1) {
+                selectedWaypointIndex = index;
+            }
+            
+            updateMissionDisplay();
+        }
+        
+        function updateTaskOptions() {
+            const taskType = document.getElementById('task-type').value;
+            const options = document.getElementById('task-options');
+            options.innerHTML = '';
+            
+            if (taskType === 'goto_waypoint') {
+                // Safely get waypoint name with fallback
+                let waypointName = 'Select a waypoint';
+                let waypointColor = '#FF9800';
+                if (selectedWaypointIndex >= 0 && missionWaypoints[selectedWaypointIndex]) {
+                    waypointName = `${selectedWaypointIndex}: ${missionWaypoints[selectedWaypointIndex].name}`;
+                    waypointColor = '#4CAF50';
+                }
+                const displayName = waypointName;
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Target Waypoint</label>
+                        <div style="padding: 8px; background: #2d2d2d; border-radius: 3px; color: ${waypointColor}; font-weight: bold;">${displayName}</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Speed (m/s)</label>
+                        <input type="number" id="task-goto-speed" value="${lastTaskParams.gotoSpeed}" min="0.05" max="1.5" step="0.05">
+                    </div>
+                `;
+            } else if (taskType === 'spiral') {
+                let waypointName = 'Select a waypoint';
+                let waypointColor = '#FF9800';
+                if (selectedWaypointIndex >= 0 && missionWaypoints[selectedWaypointIndex]) {
+                    waypointName = `${selectedWaypointIndex}: ${missionWaypoints[selectedWaypointIndex].name}`;
+                    waypointColor = '#4CAF50';
+                }
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Center Waypoint</label>
+                        <div style="padding: 8px; background: #2d2d2d; border-radius: 3px; color: ${waypointColor}; font-weight: bold;">${waypointName}</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Start Radius (m)</label>
+                        <input type="number" id="task-spiral-radius" value="${lastTaskParams.spiralRadius}" min="0.5" step="0.5" oninput="updateSpiralRadiusGuidance()" onchange="updateSpiralRadiusGuidance()">
+                    </div>
+                    <div class="form-group">
+                        <label>Spacing/Turn (m)</label>
+                        <input type="number" id="task-spiral-spacing" value="${lastTaskParams.spiralSpacing}" min="0.1" step="0.1">
+                    </div>
+                    <div class="form-group">
+                        <label>Loops</label>
+                        <input type="number" id="task-spiral-loops" value="${lastTaskParams.spiralLoops}" min="1" step="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Direction</label>
+                        <select id="task-spiral-direction">
+                            <option value="cw" ${lastTaskParams.spiralDirection === 'cw' ? 'selected' : ''}>Clockwise</option>
+                            <option value="ccw" ${lastTaskParams.spiralDirection === 'ccw' ? 'selected' : ''}>Counter-clockwise</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Speed (m/s)</label>
+                        <input type="number" id="task-spiral-speed" value="${lastTaskParams.spiralSpeed}" min="0.05" max="1.5" step="0.05">
+                    </div>
+                    <div id="spiral-radius-guidance"></div>
+                `;
+            } else if (taskType === 'wait') {
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Duration (seconds)</label>
+                        <input type="number" id="task-wait-duration" value="${lastTaskParams.waitDuration}" min="1" step="1">
+                    </div>
+                `;
+            } else if (taskType === 'coverage_path') {
+                let coveragePathOptions = '<option value="-1">-- Select a coverage path --</option>';
+                missionCoveragePaths.forEach((path, idx) => {
+                    const selected = idx === selectedCoveragePathIndex ? 'selected' : '';
+                    coveragePathOptions += `<option value="${idx}" ${selected}>${path.name} (${path.coverage_waypoints.length} pts)</option>`;
+                });
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Coverage Path</label>
+                        <select id="task-coverage-path-select" onchange="updateCoveragePathSpeedDisplay()">
+                            ${coveragePathOptions}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Speed (m/s)</label>
+                        <input type="number" id="task-coverage-speed" value="${lastTaskParams.coverageSpeed}" min="0.05" max="1.5" step="0.05">
+                    </div>
+                    <div id="coverage-path-info" style="font-size: 10px; color: #888; margin-top: 8px; padding: 8px; background: #2d2d2d; border-radius: 3px;">
+                        Select a coverage path above
+                    </div>
+                `;
+            } else if (taskType === 'loop_start') {
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Loop Start</label>
+                        <div style="font-size: 12px; color: #b0b0b0;">Marks the beginning of a loop sequence.</div>
+                    </div>
+                `;
+            } else if (taskType === 'loop_end') {
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Loop Count</label>
+                        <input type="number" id="task-loop-count" value="${lastTaskParams.loopCount}" min="1" step="1">
+                    </div>
+                `;
+            }
+
+            if (taskType === 'spiral') {
+                updateSpiralRadiusGuidance();
+            }
+        }
+        
+        function addTask() {
+            const taskType = document.getElementById('task-type').value;
+            const task = { type: taskType };
+            let statusType = 'info';
+            let statusMessage = '';
+            
+            if (taskType === 'goto_waypoint') {
+                if (selectedWaypointIndex < 0) {
+                    updateStatusMessage('Please select a waypoint first', 'error');
+                    return;
+                }
+                task.waypoint = selectedWaypointIndex;
+                task.speed = normalizeMissionSpeed(document.getElementById('task-goto-speed').value, lastTaskParams.gotoSpeed);
+                task.description = `Go to ${missionWaypoints[task.waypoint].name} @ ${task.speed} m/s`;
+                // Remember parameters for next time
+                lastTaskParams.gotoSpeed = task.speed;
+            } else if (taskType === 'spiral') {
+                if (selectedWaypointIndex < 0) {
+                    updateStatusMessage('Please select a waypoint first', 'error');
+                    return;
+                }
+                task.waypoint = selectedWaypointIndex;
+                task.radius = parseFloat(document.getElementById('task-spiral-radius').value);
+                task.spacing = parseFloat(document.getElementById('task-spiral-spacing').value);
+                task.loops = parseInt(document.getElementById('task-spiral-loops').value);
+                task.direction = document.getElementById('task-spiral-direction').value;
+                task.speed = normalizeMissionSpeed(document.getElementById('task-spiral-speed').value, lastTaskParams.spiralSpeed);
+                task.description = `Spiral at ${missionWaypoints[task.waypoint].name} @ ${task.speed} m/s`;
+                // Remember parameters for next time
+                lastTaskParams.spiralRadius = task.radius;
+                lastTaskParams.spiralSpacing = task.spacing;
+                lastTaskParams.spiralLoops = task.loops;
+                lastTaskParams.spiralDirection = task.direction;
+                lastTaskParams.spiralSpeed = task.speed;
+                const spiralWarning = getSpiralRadiusWarning(task.radius);
+                if (spiralWarning) {
+                    statusType = 'warning';
+                    statusMessage = spiralWarning;
+                }
+            } else if (taskType === 'wait') {
+                task.duration = parseFloat(document.getElementById('task-wait-duration').value);
+                task.description = `Wait ${task.duration}s`;
+                // Remember parameters for next time
+                lastTaskParams.waitDuration = task.duration;
+            } else if (taskType === 'coverage_path') {
+                const selectEl = document.getElementById('task-coverage-path-select');
+                const speedEl = document.getElementById('task-coverage-speed');
+                const selectedIdx = parseInt(selectEl?.value || '-1', 10);
+                const speed = normalizeMissionSpeed(speedEl?.value, lastTaskParams.coverageSpeed);
+
+                if (selectedIdx >= 0 && selectedIdx < missionCoveragePaths.length) {
+                    const selectedPath = missionCoveragePaths[selectedIdx];
+                    task.coverage_path_index = selectedIdx;
+                    task.coverage_name = selectedPath.name;
+                    task.coverage_waypoints = selectedPath.coverage_waypoints.map((wp) => ({
+                        lat: Number(wp.lat),
+                        lon: Number(wp.lon),
+                        heading: Number(wp.heading || 0)
+                    }));
+                } else {
+                    const previousTask = editingTaskIndex >= 0 ? missionTasks[editingTaskIndex] : null;
+                    const previousCoverageWaypoints = previousTask && Array.isArray(previousTask.coverage_waypoints)
+                        ? previousTask.coverage_waypoints
+                            .map((wp) => ({ lat: Number(wp.lat), lon: Number(wp.lon), heading: Number(wp.heading || 0) }))
+                            .filter((wp) => Number.isFinite(wp.lat) && Number.isFinite(wp.lon))
+                        : [];
+
+                    if (!previousCoverageWaypoints.length) {
+                        updateStatusMessage('Please select a coverage path', 'error');
+                        return;
+                    }
+
+                    task.coverage_name = String(previousTask?.coverage_name || 'Coverage').trim() || 'Coverage';
+                    task.coverage_waypoints = previousCoverageWaypoints;
+                }
+
+                task.speed = speed;
+                task.description = formatCoverageTaskDescription(task);
+                lastTaskParams.coverageSpeed = task.speed;
+                lastTaskParams.coverageName = task.coverage_name;
+            } else if (taskType === 'loop_start') {
+                task.description = 'Loop Start';
+            } else if (taskType === 'loop_end') {
+                task.count = parseInt(document.getElementById('task-loop-count').value);
+                task.description = `Loop ${task.count}x`;
+                // Remember parameters for next time
+                lastTaskParams.loopCount = task.count;
+            }
+            
+            if (editingTaskIndex >= 0) {
+                // Update existing task
+                missionTasks[editingTaskIndex] = task;
+                updateStatusMessage(statusMessage ? `Task updated. ${statusMessage}` : 'Task updated', statusType);
+                cancelEditTask();
+            } else {
+                // Add new task
+                missionTasks.push(task);
+                updateStatusMessage(statusMessage ? `Task added. ${statusMessage}` : 'Task added', statusType);
+            }
+            
+            updateMissionDisplay();
+        }
+        
+        function editTask(index) {
+            const task = missionTasks[index];
+            if (!task) return;
+            
+            // Set editing mode
+            editingTaskIndex = index;
+
+            if ((task.type === 'goto_waypoint' || task.type === 'spiral') && Number.isInteger(task.waypoint)) {
+                selectedWaypointIndex = task.waypoint;
+            }
+            
+            // Update UI to show editing mode
+            document.getElementById('task-edit-indicator').style.display = 'block';
+            document.getElementById('task-action-btn').innerHTML = '✓ Update Task';
+            document.getElementById('task-cancel-btn').style.display = 'block';
+            
+            // Set task type
+            document.getElementById('task-type').value = task.type;
+            updateTaskOptions();
+            
+            // Populate form fields based on task type
+            if (task.type === 'goto_waypoint') {
+                selectedWaypointIndex = task.waypoint;
+                document.getElementById('task-goto-speed').value = task.speed;
+            } else if (task.type === 'spiral') {
+                selectedWaypointIndex = task.waypoint;
+                document.getElementById('task-spiral-radius').value = task.radius;
+                document.getElementById('task-spiral-spacing').value = task.spacing;
+                document.getElementById('task-spiral-loops').value = task.loops;
+                document.getElementById('task-spiral-direction').value = task.direction;
+                document.getElementById('task-spiral-speed').value = task.speed;
+                updateSpiralRadiusGuidance();
+            } else if (task.type === 'wait') {
+                document.getElementById('task-wait-duration').value = task.duration;
+            } else if (task.type === 'coverage_path') {
+                const selectEl = document.getElementById('task-coverage-path-select');
+                if (selectEl) {
+                    const idx = Number.isInteger(task.coverage_path_index) ? task.coverage_path_index : -1;
+                    selectEl.value = idx >= 0 && idx < missionCoveragePaths.length ? String(idx) : '-1';
+                }
+                const speedEl = document.getElementById('task-coverage-speed');
+                if (speedEl) {
+                    speedEl.value = task.speed;
+                }
+                updateCoveragePathSpeedDisplay();
+            } else if (task.type === 'loop_end') {
+                document.getElementById('task-loop-count').value = task.count;
+            }
+            
+            // Update waypoint marker selection
+            refreshWaypointMarkers();
+            
+            updateStatusMessage('Editing task');
+        }
+        
+        function cancelEditTask() {
+            editingTaskIndex = -1;
+            document.getElementById('task-edit-indicator').style.display = 'none';
+            document.getElementById('task-action-btn').innerHTML = '➕ Add Task';
+            document.getElementById('task-cancel-btn').style.display = 'none';
+            updateStatusMessage('Edit cancelled');
+        }
+        
+        function deleteTask(index) {
+            missionTasks.splice(index, 1);
+            if (editingTaskIndex === index) {
+                cancelEditTask();
+            } else if (editingTaskIndex > index) {
+                editingTaskIndex--;
+            }
+            updateMissionDisplay();
+        }
+
+        function moveTaskUp(index) {
+            if (index <= 0) return;
+            const temp = missionTasks[index];
+            missionTasks[index] = missionTasks[index - 1];
+            missionTasks[index - 1] = temp;
+            updateMissionDisplay();
+        }
+
+        function moveTaskDown(index) {
+            if (index >= missionTasks.length - 1) return;
+            const temp = missionTasks[index];
+            missionTasks[index] = missionTasks[index + 1];
+            missionTasks[index + 1] = temp;
+            updateMissionDisplay();
+        }
+        
+        function normalizeWaypointNames() {
+            missionWaypoints = missionWaypoints.map((wp, i) => ({
+                ...wp,
+                name: `WP-${i}`
+            }));
+        }
+
+        function loadWaypointCoordinates() {
+            const selector = document.getElementById('waypoint-selector');
+            const selectedIndex = parseInt(selector.value);
+            
+            if (selectedIndex >= 0 && selectedIndex < missionWaypoints.length) {
+                const wp = missionWaypoints[selectedIndex];
+                document.getElementById('waypoint-lat').value = wp.lat.toFixed(6);
+                document.getElementById('waypoint-lon').value = wp.lon.toFixed(6);
+            }
+        }
+
+        function updateWaypointSelector() {
+            const selector = document.getElementById('waypoint-selector');
+            const currentValue = selector.value;
+            
+            // Clear existing options except first one
+            selector.innerHTML = '<option value="">-- Manual Entry --</option>';
+            
+            // Add waypoint options
+            missionWaypoints.forEach((wp, i) => {
+                const option = document.createElement('option');
+                option.value = i;
+                option.textContent = `${i}: ${wp.name} (${wp.lat.toFixed(4)}, ${wp.lon.toFixed(4)})`;
+                selector.appendChild(option);
+            });
+            
+            // Try to restore previous selection if still valid
+            if (currentValue && parseInt(currentValue) < missionWaypoints.length) {
+                selector.value = currentValue;
+            }
+        }
+
+        function updateCoverageWaypointSelector() {
+            const selector = document.getElementById('coverage-waypoint-selector');
+            if (!selector) {
+                return;
+            }
+
+            const prev = selector.value;
+            selector.innerHTML = '';
+
+            if (missionWaypoints.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = '-- No mission waypoints --';
+                selector.appendChild(option);
+                return;
+            }
+
+            missionWaypoints.forEach((wp, i) => {
+                const option = document.createElement('option');
+                option.value = String(i);
+                option.textContent = `${i}: ${wp.name} (${wp.lat.toFixed(4)}, ${wp.lon.toFixed(4)})`;
+                selector.appendChild(option);
+            });
+
+            if (prev && parseInt(prev, 10) < missionWaypoints.length) {
+                selector.value = prev;
+            }
+        }
+
+        function getCoverageSelectedWaypointIndex() {
+            const selector = document.getElementById('coverage-waypoint-selector');
+            if (!selector) {
+                return -1;
+            }
+            const idx = parseInt(selector.value, 10);
+            return Number.isInteger(idx) && idx >= 0 && idx < missionWaypoints.length ? idx : -1;
+        }
+
+        function coverageAddBoundaryPoint() {
+            const idx = getCoverageSelectedWaypointIndex();
+            if (idx < 0) {
+                updateStatusMessage('Select a waypoint for boundary', 'error');
+                return;
+            }
+            coverageBoundaryIndices.push(idx);
+            updateCoverageGeometryDisplay();
+        }
+
+        function coverageAddBoundaryFromSelected() {
+            if (selectedWaypointIndex < 0 || selectedWaypointIndex >= missionWaypoints.length) {
+                updateStatusMessage('Select a waypoint on mission list/map first', 'error');
+                return;
+            }
+            coverageBoundaryIndices.push(selectedWaypointIndex);
+            updateCoverageGeometryDisplay();
+        }
+
+        function coverageClearBoundary() {
+            coverageBoundaryIndices = [];
+            updateCoverageGeometryDisplay();
+        }
+
+        function coverageAddObstaclePoint() {
+            const idx = getCoverageSelectedWaypointIndex();
+            if (idx < 0) {
+                updateStatusMessage('Select a waypoint for obstacle', 'error');
+                return;
+            }
+            coverageDraftObstacleIndices.push(idx);
+            updateCoverageGeometryDisplay();
+        }
+
+        function coverageAddObstaclePointFromSelected() {
+            if (selectedWaypointIndex < 0 || selectedWaypointIndex >= missionWaypoints.length) {
+                updateStatusMessage('Select a waypoint on mission list/map first', 'error');
+                return;
+            }
+            coverageDraftObstacleIndices.push(selectedWaypointIndex);
+            updateCoverageGeometryDisplay();
+        }
+
+        function coverageClearDraftObstacle() {
+            coverageDraftObstacleIndices = [];
+            updateCoverageGeometryDisplay();
+        }
+
+        function coverageCommitObstacle() {
+            if (coverageDraftObstacleIndices.length < 3) {
+                updateStatusMessage('Obstacle needs at least 3 vertices', 'error');
+                return;
+            }
+            coverageObstaclesIndices.push([...coverageDraftObstacleIndices]);
+            coverageDraftObstacleIndices = [];
+            updateCoverageGeometryDisplay();
+        }
+
+        function coverageDeleteObstacle(index) {
+            coverageObstaclesIndices.splice(index, 1);
+            updateCoverageGeometryDisplay();
+        }
+
+        function resolveCoverageIndices(indices) {
+            return indices
+                .map((idx) => missionWaypoints[idx])
+                .filter((wp) => wp && Number.isFinite(wp.lat) && Number.isFinite(wp.lon))
+                .map((wp) => [wp.lat, wp.lon]);
+        }
+
+        function shouldShowCoverageGeneratedOnMap() {
+            const toggle = document.getElementById('coverage-show-generated');
+            return !toggle || toggle.checked;
+        }
+
+        function updateCoverageWaypointLimitLabel() {
+            const slider = document.getElementById('coverage-max-waypoints');
+            const valueEl = document.getElementById('coverage-max-waypoints-value');
+            const minEl = document.getElementById('coverage-min-waypoints');
+            const availableEl = document.getElementById('coverage-available-waypoints');
+
+            if (slider && valueEl) {
+                valueEl.textContent = slider.value;
+            }
+            if (minEl) {
+                minEl.textContent = coverageMinimumRequiredWaypoints;
+            }
+            if (availableEl) {
+                availableEl.textContent = coverageAvailableWaypoints;
+            }
+        }
+
+        function setCoverageWaypointLimitRange(minimum, available, current) {
+            const slider = document.getElementById('coverage-max-waypoints');
+            if (!slider) {
+                return;
+            }
+
+            coverageMinimumRequiredWaypoints = Math.max(3, Number.isFinite(Number(minimum)) ? Math.round(Number(minimum)) : 3);
+            coverageAvailableWaypoints = Math.max(coverageMinimumRequiredWaypoints, Number.isFinite(Number(available)) ? Math.round(Number(available)) : Number(slider.max || 200));
+
+            slider.min = String(coverageMinimumRequiredWaypoints);
+            slider.max = String(coverageAvailableWaypoints);
+
+            const requested = Number.isFinite(Number(current)) ? Math.round(Number(current)) : Number(slider.value || coverageAvailableWaypoints);
+            slider.value = String(Math.min(coverageAvailableWaypoints, Math.max(coverageMinimumRequiredWaypoints, requested)));
+            updateCoverageWaypointLimitLabel();
+        }
+
+        function getCoverageRequestedWaypointLimit() {
+            const slider = document.getElementById('coverage-max-waypoints');
+            if (!slider) {
+                return 200;
+            }
+            return Math.max(3, parseInt(slider.value, 10) || 200);
+        }
+
+        function handleCoverageWaypointLimitChanged() {
+            updateCoverageWaypointLimitLabel();
+            if (coverageBoundaryIndices.length >= 3 && coverageLastResult) {
+                generateCoveragePlan();
+            }
+        }
+
+        function toggleCoverageGeneratedOnMap() {
+            updateCoverageGeometryDisplay();
+        }
+
+        function renderCoverageResultSummary(resultLike) {
+            const summary = document.getElementById('coverage-result-summary');
+            if (!summary) {
+                return;
+            }
+            if (!resultLike || !coverageGeneratedWaypoints.length) {
+                summary.textContent = 'No plan yet.';
+                return;
+            }
+
+            const estimatedTime = Number(resultLike.estimated_time || 0);
+            const totalDistance = Number(resultLike.total_distance || 0);
+            const cellsCount = Number(resultLike.cells_count || 0);
+            const minimumRequired = Number(resultLike.minimum_waypoints_required || coverageMinimumRequiredWaypoints || 0);
+            const availableWaypoints = Number(resultLike.pre_limit_waypoints || coverageAvailableWaypoints || 0);
+            const estMin = estimatedTime / 60.0;
+            const exceedsFirmwareLimit = coverageGeneratedWaypoints.length > FIRMWARE_MISSION_MAX_WAYPOINTS;
+            summary.innerHTML = `
+                <div><strong>Waypoints:</strong> ${coverageGeneratedWaypoints.length}</div>
+                <div><strong>Minimum Required:</strong> ${minimumRequired}</div>
+                <div><strong>Available Before Limit:</strong> ${availableWaypoints}</div>
+                <div><strong>Cells:</strong> ${cellsCount}</div>
+                <div><strong>Total Distance:</strong> ${totalDistance.toFixed(2)} m</div>
+                <div><strong>Estimated Time:</strong> ${estimatedTime.toFixed(1)} s (${estMin.toFixed(1)} min)</div>
+                ${exceedsFirmwareLimit ? `<div style="margin-top: 6px; color: #FF8A80;"><strong>Warning:</strong> exceeds firmware mission limit of ${FIRMWARE_MISSION_MAX_WAYPOINTS} waypoints.</div>` : ''}
+            `;
+        }
+
+        function clearCoveragePreviewOnMap() {
+            if (coveragePreviewPolyline) {
+                coveragePreviewPolyline.setMap(null);
+                coveragePreviewPolyline = null;
+            }
+            if (coverageBoundaryPolygon) {
+                coverageBoundaryPolygon.setMap(null);
+                coverageBoundaryPolygon = null;
+            }
+            coverageObstaclePolygons.forEach((poly) => poly.setMap(null));
+            coverageObstaclePolygons = [];
+            coverageGeneratedWaypointMarkers.forEach((marker) => marker.setMap(null));
+            coverageGeneratedWaypointMarkers = [];
+            if (coverageStartMarker) {
+                coverageStartMarker.setMap(null);
+                coverageStartMarker = null;
+            }
+            if (coverageEndMarker) {
+                coverageEndMarker.setMap(null);
+                coverageEndMarker = null;
+            }
+        }
+
+        function drawCoveragePreviewOnMap(boundary, obstacles, pathWaypoints) {
+            if (!mapInitialized || !map) {
+                return;
+            }
+
+            clearCoveragePreviewOnMap();
+            const liveCoverageWaypointIndex = getLiveCoverageWaypointIndex();
+
+            if (boundary.length >= 3) {
+                coverageBoundaryPolygon = new google.maps.Polygon({
+                    paths: boundary.map(([lat, lon]) => ({ lat, lng: lon })),
+                    strokeColor: '#00C853',
+                    strokeOpacity: 0.9,
+                    strokeWeight: 2,
+                    fillColor: '#00C853',
+                    fillOpacity: 0.08,
+                    map: map
+                });
+            }
+
+            obstacles.forEach((obs) => {
+                if (obs.length < 3) {
+                    return;
+                }
+                const poly = new google.maps.Polygon({
+                    paths: obs.map(([lat, lon]) => ({ lat, lng: lon })),
+                    strokeColor: '#F44336',
+                    strokeOpacity: 0.95,
+                    strokeWeight: 2,
+                    fillColor: '#F44336',
+                    fillOpacity: 0.15,
+                    map: map
+                });
+                coverageObstaclePolygons.push(poly);
+            });
+
+            if (shouldShowCoverageGeneratedOnMap() && pathWaypoints.length >= 2) {
+                coveragePreviewPolyline = new google.maps.Polyline({
+                    path: pathWaypoints.map((wp) => ({ lat: wp.lat, lng: wp.lon })),
+                    geodesic: true,
+                    strokeColor: '#2196F3',
+                    strokeOpacity: 0.85,
+                    strokeWeight: 3,
+                    map: map
+                });
+
+                coverageGeneratedWaypointMarkers = pathWaypoints.map((wp, index) => new google.maps.Marker({
+                    position: { lat: wp.lat, lng: wp.lon },
+                    map: map,
+                    title: liveCoverageWaypointIndex === index
+                        ? `Coverage WP ${index} (live)`
+                        : liveMissionState === 'Completed' || (liveCoverageWaypointIndex > 0 && index < liveCoverageWaypointIndex)
+                            ? `Coverage WP ${index} (done)`
+                            : `Coverage WP ${index}`,
+                    icon: buildCoverageWaypointMarkerIcon(index, liveCoverageWaypointIndex)
+                }));
+
+                coverageStartMarker = new google.maps.Marker({
+                    position: { lat: pathWaypoints[0].lat, lng: pathWaypoints[0].lon },
+                    map: map,
+                    label: 'S'
+                });
+                coverageEndMarker = new google.maps.Marker({
+                    position: {
+                        lat: pathWaypoints[pathWaypoints.length - 1].lat,
+                        lng: pathWaypoints[pathWaypoints.length - 1].lon
+                    },
+                    map: map,
+                    label: 'E'
+                });
+            }
+        }
+
+        function getCoverageParams() {
+            const rowSpacingEl = document.getElementById('coverage-row-spacing');
+            const safetyMarginEl = document.getElementById('coverage-safety-margin');
+            const sweepAngleEl = document.getElementById('coverage-sweep-angle');
+            const robotSpeedEl = document.getElementById('coverage-robot-speed');
+            const showGeneratedEl = document.getElementById('coverage-show-generated');
+
+            return {
+                row_spacing: parseFloat(rowSpacingEl ? rowSpacingEl.value : '0.5') || 0.5,
+                safety_margin: parseFloat(safetyMarginEl ? safetyMarginEl.value : '0.3') || 0.3,
+                sweep_angle: parseFloat(sweepAngleEl ? sweepAngleEl.value : '0') || 0,
+                robot_speed: parseFloat(robotSpeedEl ? robotSpeedEl.value : '1.0') || 1.0,
+                max_waypoints: getCoverageRequestedWaypointLimit(),
+                show_generated_on_map: !showGeneratedEl || showGeneratedEl.checked
+            };
+        }
+
+        function setCoverageParams(params) {
+            if (!params) {
+                updateCoverageWaypointLimitLabel();
+                return;
+            }
+            const rowSpacingEl = document.getElementById('coverage-row-spacing');
+            const safetyMarginEl = document.getElementById('coverage-safety-margin');
+            const sweepAngleEl = document.getElementById('coverage-sweep-angle');
+            const robotSpeedEl = document.getElementById('coverage-robot-speed');
+            const showGeneratedEl = document.getElementById('coverage-show-generated');
+
+            if (rowSpacingEl && Number.isFinite(Number(params.row_spacing))) {
+                rowSpacingEl.value = Number(params.row_spacing);
+            }
+            if (safetyMarginEl && Number.isFinite(Number(params.safety_margin))) {
+                safetyMarginEl.value = Number(params.safety_margin);
+            }
+            if (sweepAngleEl && Number.isFinite(Number(params.sweep_angle))) {
+                sweepAngleEl.value = Number(params.sweep_angle);
+            }
+            if (robotSpeedEl && Number.isFinite(Number(params.robot_speed))) {
+                robotSpeedEl.value = Number(params.robot_speed);
+            }
+            if (showGeneratedEl && typeof params.show_generated_on_map === 'boolean') {
+                showGeneratedEl.checked = params.show_generated_on_map;
+            }
+            setCoverageWaypointLimitRange(
+                coverageMinimumRequiredWaypoints,
+                coverageAvailableWaypoints,
+                Number.isFinite(Number(params.max_waypoints)) ? Number(params.max_waypoints) : getCoverageRequestedWaypointLimit()
+            );
+        }
+
+        function updateCoverageGeometryDisplay() {
+            const boundaryEl = document.getElementById('coverage-boundary-list');
+            const draftEl = document.getElementById('coverage-obstacle-draft');
+            const obstacleEl = document.getElementById('coverage-obstacle-list');
+            if (!boundaryEl || !draftEl || !obstacleEl) {
+                return;
+            }
+
+            boundaryEl.innerHTML = `<strong>Boundary Vertices:</strong> ${coverageBoundaryIndices.length} ${coverageBoundaryIndices.length ? ` [${coverageBoundaryIndices.join(', ')}]` : ''}`;
+            draftEl.innerHTML = `<strong>Draft Obstacle:</strong> ${coverageDraftObstacleIndices.length} ${coverageDraftObstacleIndices.length ? ` [${coverageDraftObstacleIndices.join(', ')}]` : ''}`;
+
+            obstacleEl.innerHTML = '';
+            coverageObstaclesIndices.forEach((obs, i) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;background:#2d2d2d;padding:6px;border-radius:3px;margin-bottom:4px;font-size:12px;';
+                row.innerHTML = `
+                    <span>Obstacle ${i + 1}: [${obs.join(', ')}]</span>
+                    <button style="padding:2px 6px;background:#f44336;color:#fff;border:none;border-radius:2px;cursor:pointer;" onclick="coverageDeleteObstacle(${i})">x</button>
+                `;
+                obstacleEl.appendChild(row);
+            });
+
+            const boundaryCoords = resolveCoverageIndices(coverageBoundaryIndices);
+            const obstacleCoords = coverageObstaclesIndices.map((obs) => resolveCoverageIndices(obs));
+            drawCoveragePreviewOnMap(boundaryCoords, obstacleCoords, coverageGeneratedWaypoints);
+        }
+
+        async function generateCoveragePlan() {
+            const boundary = resolveCoverageIndices(coverageBoundaryIndices);
+            const obstacles = coverageObstaclesIndices
+                .map((obs) => resolveCoverageIndices(obs))
+                .filter((obs) => obs.length >= 3);
+
+            if (boundary.length < 3) {
+                updateStatusMessage('Coverage boundary needs at least 3 waypoint vertices', 'error');
+                return;
+            }
+
+            const rowSpacing = parseFloat(document.getElementById('coverage-row-spacing').value);
+            const safetyMargin = parseFloat(document.getElementById('coverage-safety-margin').value);
+            const sweepAngle = parseFloat(document.getElementById('coverage-sweep-angle').value);
+            const robotSpeed = parseFloat(document.getElementById('coverage-robot-speed').value);
+            const maxWaypoints = getCoverageRequestedWaypointLimit();
+
+            const payload = {
+                boundary: boundary,
+                obstacles: obstacles,
+                row_spacing: rowSpacing,
+                safety_margin: safetyMargin,
+                sweep_angle: sweepAngle,
+                robot_speed: robotSpeed,
+                max_waypoints: maxWaypoints
+            };
+
+            try {
+                const response = await fetch(COVERAGE_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    updateStatusMessage(`Coverage planning failed: ${result.error || response.statusText}`, 'error');
+                    return;
+                }
+
+                coverageGeneratedWaypoints = (result.waypoints || []).map((wp) => ({
+                    lat: Number(wp.lat),
+                    lon: Number(wp.lon),
+                    heading: Number(wp.heading || 0)
+                }));
+                coverageLastResult = {
+                    cells_count: Number(result.cells_count || 0),
+                    total_distance: Number(result.total_distance || 0),
+                    estimated_time: Number(result.estimated_time || 0),
+                    minimum_waypoints_required: Number(result.statistics?.minimum_waypoints_required || 3),
+                    pre_limit_waypoints: Number(result.statistics?.pre_limit_waypoints || coverageGeneratedWaypoints.length)
+                };
+                setCoverageWaypointLimitRange(
+                    coverageLastResult.minimum_waypoints_required,
+                    coverageLastResult.pre_limit_waypoints,
+                    maxWaypoints
+                );
+                renderCoverageResultSummary(coverageLastResult);
+
+                drawCoveragePreviewOnMap(boundary, obstacles, coverageGeneratedWaypoints);
+                updateStatusMessage(`Coverage plan generated (${coverageGeneratedWaypoints.length} waypoints)`);
+            } catch (err) {
+                updateStatusMessage(`Coverage planning request failed: ${err.message}`, 'error');
+            }
+        }
+
+        function saveCoveragePathToList() {
+            if (!coverageGeneratedWaypoints.length) {
+                updateStatusMessage('Generate a coverage plan first', 'error');
+                return;
+            }
+
+            const coverageNameInput = document.getElementById('coverage-task-name');
+            const coverageName = String(coverageNameInput ? coverageNameInput.value : '').trim() || `Coverage ${missionCoveragePaths.length + 1}`;
+
+            const coveragePath = createCoveragePathRecord(coverageName, coverageGeneratedWaypoints);
+
+            missionCoveragePaths.push(coveragePath);
+            selectedCoveragePathIndex = missionCoveragePaths.length - 1;
+            lastTaskParams.coverageName = coverageName;
+
+            updateMissionDisplay();
+            updateStatusMessage(`Saved coverage path "${coverageName}" (${coverageGeneratedWaypoints.length} pts)`);
+        }
+
+        function applyCoverageToMission() {
+            if (!coverageGeneratedWaypoints.length) {
+                updateStatusMessage('Generate a coverage plan first', 'error');
+                return;
+            }
+
+            saveCoveragePathToList();
+            addCoverageTaskToMission();
+        }
+
+        function updateCoveragePathSpeedDisplay() {
+            const selectEl = document.getElementById('task-coverage-path-select');
+            const infoEl = document.getElementById('coverage-path-info');
+            const selectedIdx = parseInt(selectEl?.value || '-1', 10);
+
+            if (selectedIdx >= 0 && selectedIdx < missionCoveragePaths.length) {
+                const path = missionCoveragePaths[selectedIdx];
+                const summary = path.result_summary;
+                const rowSpacing = path.params?.row_spacing;
+                infoEl.innerHTML = `<strong>${path.name}</strong><br/>Waypoints: ${path.coverage_waypoints.length}${summary ? `<br/>Distance: ${Number(summary.total_distance || 0).toFixed(1)} m | Time: ${Number(summary.estimated_time || 0).toFixed(1)} s` : ''}${Number.isFinite(Number(rowSpacing)) ? `<br/>Row spacing: ${Number(rowSpacing).toFixed(2)} m` : ''}`;
+                lastTaskParams.coverageName = path.name;
+            } else {
+                infoEl.innerHTML = 'Select a coverage path above';
+            }
+        }
+
+        function addCoverageTaskToMission() {
+            if (missionCoveragePaths.length === 0) {
+                updateStatusMessage('No coverage paths saved. Save one from the Coverage tab first', 'error');
+                return;
+            }
+
+            const selectEl = document.getElementById('task-coverage-path-select');
+            const selectedIdx = parseInt(selectEl?.value || '-1', 10);
+            if (selectedIdx < 0 || selectedIdx >= missionCoveragePaths.length) {
+                updateStatusMessage('Please select a coverage path', 'error');
+                return;
+            }
+
+            const selectedPath = missionCoveragePaths[selectedIdx];
+            const speed = normalizeMissionSpeed(document.getElementById('task-coverage-speed').value, lastTaskParams.coverageSpeed);
+
+            const task = {
+                type: 'coverage_path',
+                coverage_path_index: selectedIdx,
+                coverage_name: selectedPath.name,
+                speed: speed,
+                coverage_waypoints: selectedPath.coverage_waypoints.map((wp) => ({ ...wp }))
+            };
+            task.description = formatCoverageTaskDescription(task);
+
+            missionTasks.push(task);
+            lastTaskParams.coverageSpeed = speed;
+
+            updateMissionDisplay();
+            switchTab('mission-tab');
+            updateStatusMessage(`Added coverage task "${selectedPath.name}" to mission`);
+        }
+
+        function updateMissionDisplay() {
+            normalizeWaypointNames();
+            // Update waypoint list
+            const wpList = document.getElementById('waypoint-list');
+            wpList.innerHTML = '';
+            missionWaypoints.forEach((wp, i) => {
+                const div = document.createElement('div');
+                const isSelected = i === selectedWaypointIndex;
+                const isLiveWaypoint = i === liveMissionWaypointIndex;
+                const isCompletedWaypoint = liveMissionState === 'Completed' || (liveMissionWaypointIndex > 0 && i < liveMissionWaypointIndex);
+                const bgColor = isSelected ? '#3d3d3d' : isLiveWaypoint ? '#12343b' : isCompletedWaypoint ? '#1f3320' : '#2d2d2d';
+                const borderStyle = isSelected ? '2px solid #FF6B6B' : isLiveWaypoint ? '2px solid #00E5FF' : isCompletedWaypoint ? '1px solid #4CAF50' : 'none';
+                div.style.cssText = `display: flex; justify-content: space-between; align-items: center; padding: 6px; background: ${bgColor}; border-radius: 3px; margin-bottom: 4px; font-size: 12px; border: ${borderStyle}; cursor: pointer;`;
+                const isFirst = i === 0;
+                const isLast = i === missionWaypoints.length - 1;
+                const statusBadge = isLiveWaypoint
+                    ? '<span style="margin-left:6px;padding:2px 6px;border-radius:10px;background:#00E5FF;color:#002a33;font-size:10px;font-weight:bold;">LIVE</span>'
+                    : isCompletedWaypoint
+                        ? '<span style="margin-left:6px;padding:2px 6px;border-radius:10px;background:#4CAF50;color:#081b09;font-size:10px;font-weight:bold;">DONE</span>'
+                        : '';
+                div.innerHTML = `
+                    <span onclick="selectWaypoint(${i})" style="flex: 1;">${i}: <b>${wp.name}</b>${statusBadge} (${wp.lat.toFixed(4)}, ${wp.lon.toFixed(4)})</span>
+                    <div style="display: flex; gap: 3px;">
+                        <button style="padding: 2px 5px; background: #2196F3; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px; ${isFirst ? 'opacity: 0.5; cursor: not-allowed;' : ''}" onclick="moveWaypointUp(${i})" ${isFirst ? 'disabled' : ''}>↑</button>
+                        <button style="padding: 2px 5px; background: #2196F3; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px; ${isLast ? 'opacity: 0.5; cursor: not-allowed;' : ''}" onclick="moveWaypointDown(${i})" ${isLast ? 'disabled' : ''}>↓</button>
+                        <button style="padding: 2px 5px; background: #f44336; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px;" onclick="deleteWaypoint(${i}); selectedWaypointIndex = -1;">×</button>
+                    </div>
+                `;
+                wpList.appendChild(div);
+            });
+            document.getElementById('wp-count').textContent = missionWaypoints.length;
+            
+            // Update task list
+            const taskList = document.getElementById('task-list');
+            taskList.innerHTML = '';
+            missionTasks.forEach((task, i) => {
+                const div = document.createElement('div');
+                const isEditing = i === editingTaskIndex;
+                const bgColor = isEditing ? '#3d3d3d' : '#2d2d2d';
+                const borderColor = isEditing ? '2px solid #FF9800' : '1px solid #3d3d3d';
+                div.style.cssText = `display: flex; justify-content: space-between; align-items: center; padding: 8px; background: ${bgColor}; border-radius: 3px; margin-bottom: 4px; font-size: 12px; border: ${borderColor};`;
+                const isFirst = i === 0;
+                const isLast = i === missionTasks.length - 1;
+                
+                // Build detailed description for task
+                let detailInfo = '';
+                if (task.type === 'goto_waypoint') {
+                    const wp = missionWaypoints[task.waypoint];
+                    if (wp) {
+                        detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">${wp.lat.toFixed(4)}, ${wp.lon.toFixed(4)}</div>`;
+                    }
+                } else if (task.type === 'coverage_path') {
+                    const coverageCount = Array.isArray(task.coverage_waypoints) ? task.coverage_waypoints.length : 0;
+                    if (task.coverage_path_index !== undefined && task.coverage_path_index >= 0 && missionCoveragePaths[task.coverage_path_index]) {
+                        const pathName = missionCoveragePaths[task.coverage_path_index].name;
+                        detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">${pathName} (${coverageCount} pts) @ ${task.speed} m/s</div>`;
+                    } else if (coverageCount > 0) {
+                        detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">Coverage: ${coverageCount} points @ ${task.speed} m/s</div>`;
+                    } else {
+                        detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">Coverage: WP-${task.start_waypoint} -> WP-${task.end_waypoint} @ ${task.speed} m/s</div>`;
+                    }
+                } else if (task.type === 'spiral') {
+                    const finalRadius = task.radius + task.spacing * (task.loops - 1);
+                    detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">📍 start: ${task.radius}m → end: ${finalRadius.toFixed(1)}m | spacing: ${task.spacing}m/loop | ${task.loops} loops | 🔄 ${task.direction.toUpperCase()}</div>`;
+                } else if (task.type === 'wait') {
+                    detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">⏱️ ${task.duration} seconds</div>`;
+                }
+                
+                div.innerHTML = `
+                    <div style="flex: 1;">
+                        <span>${i+1}. ${task.description}</span>
+                        ${detailInfo}
+                    </div>
+                    <div style="display: flex; gap: 3px;">
+                        <button style="padding: 2px 5px; background: #FF9800; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px;" onclick="editTask(${i})" title="Edit">✏️</button>
+                        <button style="padding: 2px 5px; background: #2196F3; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px; ${isFirst ? 'opacity: 0.5; cursor: not-allowed;' : ''}" onclick="moveTaskUp(${i})" ${isFirst ? 'disabled' : ''}>↑</button>
+                        <button style="padding: 2px 5px; background: #2196F3; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px; ${isLast ? 'opacity: 0.5; cursor: not-allowed;' : ''}" onclick="moveTaskDown(${i})" ${isLast ? 'disabled' : ''}>↓</button>
+                        <button style="padding: 2px 5px; background: #f44336; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px;" onclick="deleteTask(${i})">×</button>
+                    </div>
+                `;
+                taskList.appendChild(div);
+            });
+            document.getElementById('task-count').textContent = missionTasks.length;
+            
+            // Reinitialize task options
+            updateTaskOptions();
+
+            // Update map markers and visualizations
+            refreshWaypointMarkers();
+            updateMissionVisualization();
+            
+            // Update waypoint selector in Commands panel
+            updateWaypointSelector();
+            updateCoverageWaypointSelector();
+        }
+        
+        function executeMission() {
+            if (!selectedRobotId) {
+                updateStatusMessage('Please select a robot first', 'error');
+                return;
+            }
+            
+            if (missionTasks.length === 0) {
+                updateStatusMessage('Please create mission tasks first', 'error');
+                return;
+            }
+
+            const runtimeMission = buildMissionRuntimePlan();
+            if (runtimeMission.error) {
+                updateStatusMessage(runtimeMission.error, 'error');
+                return;
+            }
+
+            if (!runtimeMission.waypoints.length) {
+                updateStatusMessage('Mission has no executable waypoints', 'error');
+                return;
+            }
+
+            if (runtimeMission.waypoints.length > FIRMWARE_MISSION_MAX_WAYPOINTS) {
+                updateStatusMessage(`Compiled mission has ${runtimeMission.waypoints.length} waypoints, exceeding firmware limit of ${FIRMWARE_MISSION_MAX_WAYPOINTS}`, 'error');
+                return;
+            }
+
+            const missionNameValue = String(document.getElementById('mission-name')?.value || '').trim();
+            
+            const message = {
+                type: 32,  // WEB_SEND_COMMAND
+                robot_id: selectedRobotId,
+                client_id: CLIENT_ID,
+                payload: {
+                    command: 'execute_mission',
+                    name: missionNameValue || 'Untitled Mission',
+                    waypoints: runtimeMission.waypoints,
+                    tasks: runtimeMission.tasks,
+                    // Include source mission so server can recompile/validate coverage references when needed.
+                    source_mission: {
+                        name: missionNameValue || 'Untitled Mission',
+                        waypoints: missionWaypoints,
+                        tasks: missionTasks,
+                        coverage: {
+                            saved_paths: missionCoveragePaths
+                        }
+                    }
+                }
+            };
+            
+            sendMessage(message);
+            updateStatusMessage(`Mission sent to ${robots.get(selectedRobotId).robot_name}`);
+        }
+        
+        function clearMission() {
+            if (!confirm('Clear all waypoints and tasks?')) return;
+            missionWaypoints = [];
+            missionTasks = [];
+            coverageBoundaryIndices = [];
+            coverageDraftObstacleIndices = [];
+            coverageObstaclesIndices = [];
+            coverageGeneratedWaypoints = [];
+            coverageLastResult = null;
+            coverageMinimumRequiredWaypoints = 3;
+            coverageAvailableWaypoints = 200;
+            missionCoveragePaths = [];
+            selectedCoveragePathIndex = -1;
+            setCoverageWaypointLimitRange(3, 200, 200);
+            clearCoveragePreviewOnMap();
+            renderCoverageResultSummary(null);
+            document.getElementById('mission-name').value = '';
+            updateMissionDisplay();
+            updateCoverageGeometryDisplay();
+            updateStatusMessage('Mission cleared');
+        }
+        
+        function exportMission() {
+            if (missionWaypoints.length === 0 && missionTasks.length === 0) {
+                updateStatusMessage('No mission to export', 'error');
+                return;
+            }
+            
+            // Get mission name from input
+            const currentMissionName = document.getElementById('mission-name').value.trim();
+            
+            // Prompt for filename with mission name as default
+            const defaultName = currentMissionName || `mission_${new Date().toISOString().split('T')[0]}`;
+            const filename = prompt('Enter filename (without .json extension):', defaultName);
+            
+            if (!filename) {
+                updateStatusMessage('Export cancelled');
+                return;
+            }
+            
+            // Sanitize filename
+            const sanitized = filename.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+            // Keep export compact: when a task references a saved coverage path,
+            // avoid duplicating the same waypoint array inside the task.
+            const exportTasks = missionTasks.map((task) => {
+                if (task.type !== 'coverage_path') {
+                    return { ...task };
+                }
+
+                const exportTask = { ...task };
+                const pathIndex = Number.isInteger(exportTask.coverage_path_index) ? exportTask.coverage_path_index : -1;
+                if (pathIndex >= 0 && pathIndex < missionCoveragePaths.length) {
+                    delete exportTask.coverage_waypoints;
+                }
+                return exportTask;
+            });
+            
+            const missionData = {
+                version: '2.0',
+                name: currentMissionName || 'Untitled Mission',
+                timestamp: new Date().toISOString(),
+                robot: selectedRobotId || 'unknown',
+                waypoints: missionWaypoints,
+                tasks: exportTasks,
+                coverage: {
+                    saved_paths: missionCoveragePaths,
+                    draft: {
+                        boundary_indices: coverageBoundaryIndices,
+                        draft_obstacle_indices: coverageDraftObstacleIndices,
+                        obstacles_indices: coverageObstaclesIndices,
+                        generated_waypoints: coverageGeneratedWaypoints,
+                        params: getCoverageParams(),
+                        result_summary: coverageLastResult
+                    }
+                }
+            };
+            
+            const json = JSON.stringify(missionData, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${sanitized}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            updateStatusMessage(`Mission exported as ${sanitized}.json`);
+        }
+        
+        function pauseMission() {
+            if (!selectedRobotId) {
+                updateStatusMessage('Please select a robot first', 'error');
+                return;
+            }
+            
+            const message = {
+                type: 32,  // WEB_SEND_COMMAND
+                robot_id: selectedRobotId,
+                client_id: CLIENT_ID,
+                payload: {
+                    command: 'pause_mission'
+                }
+            };
+            
+            sendMessage(message);
+            updateStatusMessage(`Mission pause requested for ${robots.get(selectedRobotId).robot_name}`);
+        }
+        
+        function cancelMission() {
+            if (!selectedRobotId) {
+                updateStatusMessage('Please select a robot first', 'error');
+                return;
+            }
+            
+            if (!confirm('Are you sure you want to cancel the mission?')) {
+                return;
+            }
+            
+            const message = {
+                type: 32,  // WEB_SEND_COMMAND
+                robot_id: selectedRobotId,
+                client_id: CLIENT_ID,
+                payload: {
+                    command: 'cancel_mission'
+                }
+            };
+            
+            sendMessage(message);
+            updateStatusMessage(`Mission cancelled for ${robots.get(selectedRobotId).robot_name}`);
+        }
+        
+        function triggerImport() {
+            document.getElementById('mission-file-input').click();
+        }
+        
+        function importMission(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const missionData = JSON.parse(e.target.result);
+                    
+                    // Validate mission data
+                    if (!missionData.waypoints || !missionData.tasks) {
+                        updateStatusMessage('Invalid mission file format', 'error');
+                        return;
+                    }
+                    
+                    // Confirm before overwriting
+                    if (missionWaypoints.length > 0 || missionTasks.length > 0) {
+                        if (!confirm('This will replace the current mission. Continue?')) {
+                            event.target.value = ''; // Reset file input
+                            return;
+                        }
+                    }
+                    
+                    // Load mission data
+                    missionWaypoints = missionData.waypoints;
+                    missionTasks = missionData.tasks;
+                    selectedWaypointIndex = -1;
+                    editingTaskIndex = -1;
+
+                    // Load coverage state if present (backward-compatible)
+                    const coverage = missionData.coverage || null;
+                    const coverageDraft = coverage?.draft || coverage || null;
+                    missionCoveragePaths = Array.isArray(coverage?.saved_paths)
+                        ? coverage.saved_paths
+                            .map((path, i) => sanitizeCoveragePath(path, i))
+                            .filter((path) => path.coverage_waypoints.length > 0)
+                        : [];
+                    selectedCoveragePathIndex = missionCoveragePaths.length > 0 ? 0 : -1;
+                    coverageBoundaryIndices = Array.isArray(coverageDraft?.boundary_indices)
+                        ? coverageDraft.boundary_indices.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < missionWaypoints.length)
+                        : [];
+                    coverageDraftObstacleIndices = Array.isArray(coverageDraft?.draft_obstacle_indices)
+                        ? coverageDraft.draft_obstacle_indices.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < missionWaypoints.length)
+                        : [];
+                    coverageObstaclesIndices = Array.isArray(coverageDraft?.obstacles_indices)
+                        ? coverageDraft.obstacles_indices
+                            .map((obs) => Array.isArray(obs) ? obs.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < missionWaypoints.length) : [])
+                            .filter((obs) => obs.length >= 3)
+                        : [];
+                    coverageGeneratedWaypoints = Array.isArray(coverageDraft?.generated_waypoints)
+                        ? coverageDraft.generated_waypoints
+                            .map((wp) => ({
+                                lat: Number(wp.lat),
+                                lon: Number(wp.lon),
+                                heading: Number(wp.heading || 0)
+                            }))
+                            .filter((wp) => Number.isFinite(wp.lat) && Number.isFinite(wp.lon))
+                        : [];
+                    coverageLastResult = sanitizeCoverageResultSummary(coverageDraft?.result_summary, coverageGeneratedWaypoints.length);
+                    if (coverageLastResult) {
+                        coverageMinimumRequiredWaypoints = coverageLastResult.minimum_waypoints_required;
+                        coverageAvailableWaypoints = Math.max(coverageLastResult.minimum_waypoints_required, coverageLastResult.pre_limit_waypoints);
+                    }
+                    setCoverageParams(coverageDraft?.params || null);
+                    rebuildCoveragePathsFromTasks();
+                    
+                    // Load mission name if available
+                    document.getElementById('mission-name').value = missionData.name || '';
+                    
+                    // Update display
+                    updateMissionDisplay();
+                    updateCoverageGeometryDisplay();
+
+                    // Restore coverage summary block if available
+                    renderCoverageResultSummary(coverageLastResult);
+
+                    const displayName = missionData.name ? ` "${missionData.name}"` : '';
+                    updateStatusMessage(`Mission imported:${displayName} ${missionWaypoints.length} waypoints, ${missionTasks.length} tasks`);
+                    
+                } catch (error) {
+                    console.error('Import error:', error);
+                    updateStatusMessage('Failed to import mission file', 'error');
+                }
+                
+                // Reset file input
+                event.target.value = '';
+            };
+            
+            reader.onerror = () => {
+                updateStatusMessage('Failed to read file', 'error');
+                event.target.value = '';
+            };
+            
+            reader.readAsText(file);
+        }
+        
+        // ====================================================================
+        // Visualization Map (Google Maps)
+        // ====================================================================
+        
+        let map = null;
+        let robotMarkers = new Map();
+        let robotPaths = new Map();
+        let mapInitialized = false;
+        
+        async function initializeVisualization() {
+            try {
+                // Load the maps and marker libraries
+                const { Map } = await google.maps.importLibrary("maps");
+                const { AdvancedMarkerElement, PinElement } = await google.maps.importLibrary("marker");
+                
+                // Initialize map with Bangkok coordinates
+                map = new Map(document.getElementById('map'), {
+                    zoom: 16,
+                    center: { lat: 13.7563, lng: 100.5018 },
+                    mapTypeId: 'hybrid',
+                    mapId: 'MULTI_ROBOT_MAP',
+                    mapTypeControl: true,
+                    mapTypeControlOptions: {
+                        style: google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
+                        position: google.maps.ControlPosition.TOP_RIGHT,
+                        mapTypeIds: ['roadmap', 'satellite', 'hybrid', 'terrain']
+                    },
+                    zoomControl: true,
+                    streetViewControl: false,
+                    fullscreenControl: true
+                });
+                
+                map.addListener('click', (event) => {
+                    if (!event || !event.latLng) {
+                        return;
+                    }
+                    addWaypointFromMap(event.latLng.lat(), event.latLng.lng());
+                });
+                
+                mapInitialized = true;
+                console.log('Google Maps initialized successfully');
+            } catch (error) {
+                console.error('Failed to initialize map:', error);
+            }
+        }
+        
+        async function updateRobotOnMap(robotId, telemetry) {
+            if (!mapInitialized) return;
+            
+            const payload = telemetry.payload || {};
+            const gps = payload.gps || {};
+            const status = payload.status || {};
+            const imu = payload.imu || {};
+            
+            if (!hasUsableGpsFix(gps)) {
+                return; // No usable GPS data
+            }
+            
+            const lat = Number(gps.latitude);
+            const lon = Number(gps.longitude);
+            const heading = status.heading || 0;
+            const speed = status.speed || 0;
+            
+            // Use heading from robot status (computed by BNO085 on firmware)
+            const yaw = heading;
+            
+            // Get robot info
+            const robot = robots.get(robotId);
+            const robotName = robot ? robot.robot_name : robotId;
+            const robotType = robot ? robot.robot_type : 'unknown';
+            
+            const position = { lat: lat, lng: lon };
+            
+            // Create or update marker
+            if (!robotMarkers.has(robotId)) {
+                // Load marker library if not already loaded
+                const { AdvancedMarkerElement } = await google.maps.importLibrary("marker");
+                
+                // Create custom arrow marker showing heading
+                const markerColor = getColorForRobot(robotId);
+                const markerDiv = document.createElement('div');
+                markerDiv.style.width = '0';
+                markerDiv.style.height = '0';
+                markerDiv.style.position = 'relative';
+                
+                const arrowSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                arrowSvg.setAttribute('width', '40');
+                arrowSvg.setAttribute('height', '40');
+                arrowSvg.setAttribute('viewBox', '0 0 40 40');
+                arrowSvg.style.position = 'absolute';
+                arrowSvg.style.left = '-20px';
+                arrowSvg.style.top = '-20px';
+                arrowSvg.style.transform = `rotate(${Number.isFinite(yaw) ? yaw : 0}deg)`;
+                arrowSvg.style.transformOrigin = 'center';
+                arrowSvg.style.transition = 'transform 0.2s ease-out';
+                
+                // Arrow path (triangle pointing up)
+                const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                arrow.setAttribute('d', 'M20,5 L30,30 L20,25 L10,30 Z');
+                arrow.setAttribute('fill', markerColor);
+                arrow.setAttribute('stroke', '#ffffff');
+                arrow.setAttribute('stroke-width', '2');
+                
+                arrowSvg.appendChild(arrow);
+                markerDiv.appendChild(arrowSvg);
+                
+                const marker = new AdvancedMarkerElement({
+                    map: map,
+                    position: position,
+                    content: markerDiv,
+                    title: robotName,
+                    zIndex: nextZIndex
+                });
+                nextZIndex++;
+                
+                // Store arrow SVG reference for rotation updates
+                marker.arrowSvg = arrowSvg;
+                
+                // Create info window
+                const infoWindow = new google.maps.InfoWindow({
+                    content: `
+                        <div style="color: #000; padding: 5px;">
+                            <b>${robotName}</b><br>
+                            Type: ${robotType}<br>
+                            Speed: ${speed.toFixed(2)} m/s<br>
+                            Heading: ${yaw.toFixed(1)}°
+                        </div>
+                    `
+                });
+                
+                marker.addListener('click', () => {
+                    // Select the robot when clicking on marker
+                    selectRobot(robotId);
+                    infoWindow.open(map, marker);
+                });
+                
+                robotMarkers.set(robotId, { marker, infoWindow });
+                
+                // Initialize path
+                const path = new google.maps.Polyline({
+                    path: [position],
+                    geodesic: true,
+                    strokeColor: markerColor,
+                    strokeOpacity: 0.8,
+                    strokeWeight: 3,
+                    map: map
+                });
+                
+                robotPaths.set(robotId, path);
+                
+                // Center map on first robot
+                if (robotMarkers.size === 1) {
+                    map.setCenter(position);
+                    map.setZoom(18);
+                }
+            } else {
+                // Update existing marker
+                const { marker, infoWindow } = robotMarkers.get(robotId);
+                marker.position = position;
+                
+                // Update arrow rotation
+                if (marker.arrowSvg) {
+                    marker.arrowSvg.style.transform = `rotate(${Number.isFinite(yaw) ? yaw : 0}deg)`;
+                    
+                    // Update selection styling if this is the selected robot
+                    const isSelected = robotId === selectedRobotId;
+                    const arrow = marker.arrowSvg.querySelector('path');
+                    if (arrow && isSelected) {
+                        arrow.setAttribute('stroke-width', '3');
+                        arrow.setAttribute('filter', 'drop-shadow(0 0 8px rgba(255,255,255,0.8))');
+                    }
+                }
+                
+                infoWindow.setContent(`
+                    <div style="color: #000; padding: 5px;">
+                        <b>${robotName}</b><br>
+                        Type: ${robotType}<br>
+                        Speed: ${speed.toFixed(2)} m/s<br>
+                        Heading: ${yaw.toFixed(1)}°
+                    </div>
+                `);
+                
+                // Update path (keep last 100 points)
+                const path = robotPaths.get(robotId);
+                const pathArray = path.getPath().getArray();
+                pathArray.push(new google.maps.LatLng(lat, lon));
+                if (pathArray.length > 100) {
+                    pathArray.shift();
+                }
+                path.setPath(pathArray);
+            }
+        }
+        
+        function clearRobotPath() {
+            // Clear the selected robot's path trail
+            if (!selectedRobotId) {
+                updateStatusMessage('No robot selected', 'error');
+                return;
+            }
+            
+            if (robotPaths.has(selectedRobotId)) {
+                const path = robotPaths.get(selectedRobotId);
+                const pathArray = path.getPath().getArray();
+                if (pathArray.length > 0) {
+                    const currentPos = pathArray[pathArray.length - 1];
+                    path.setPath([currentPos]);
+                }
+                updateStatusMessage('Path cleared for ' + (robots.get(selectedRobotId)?.robot_name || selectedRobotId), 'success');
+            }
+        }
+        
+        function computeYawFromMag(mx, my) {
+            // Compute yaw from magnetometer readings
+            // Standard compass heading from magnetometer
+            let yaw = Math.atan2(my, mx) * (180 / Math.PI);
+            
+            // Normalize to 0-360 range
+            if (yaw < 0) {
+                yaw += 360;
+            }
+            
+            return yaw;
+        }
+        
+        function getColorForRobot(robotId) {
+            // Generate consistent color for each robot
+            const colors = [
+                '#4CAF50', '#2196F3', '#FFC107', '#E91E63', 
+                '#9C27B0', '#00BCD4', '#FF5722', '#795548'
+            ];
+            const hash = robotId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+            return colors[hash % colors.length];
+        }
+        
+        function removeRobotFromMap(robotId) {
+            if (robotMarkers.has(robotId)) {
+                const { marker } = robotMarkers.get(robotId);
+                marker.map = null;
+                robotMarkers.delete(robotId);
+            }
+            if (robotPaths.has(robotId)) {
+                robotPaths.get(robotId).setMap(null);
+                robotPaths.delete(robotId);
+            }
+        }
+        
+        // ====================================================================
+        // Tab Management
+        // ====================================================================
+        
+        function switchTab(tabName) {
+            // Hide all panels
+            const panels = document.querySelectorAll('.tab-panel');
+            panels.forEach(panel => {
+                panel.classList.remove('active');
+            });
+            
+            // Deactivate all buttons
+            const buttons = document.querySelectorAll('.tab-btn');
+            buttons.forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected panel
+            const selectedPanel = document.getElementById(tabName);
+            if (selectedPanel) {
+                selectedPanel.classList.add('active');
+            }
+            
+            // Activate selected button
+            const selectedBtn = document.querySelector(`[data-tab="${tabName}"]`);
+            if (selectedBtn) {
+                selectedBtn.classList.add('active');
+            }
+
+            if (tabName === 'coverage-tab') {
+                updateCoverageWaypointSelector();
+                updateCoverageGeometryDisplay();
+            }
+        }
+        
+        // ====================================================================
+        // Initialization
+        // ====================================================================
+        
+        window.addEventListener('load', () => {
+            initializeVisualization();
+            connectToServer();
+            updateCoverageWaypointSelector();
+            setCoverageWaypointLimitRange(3, 200, 200);
+            updateCoverageGeometryDisplay();
+        });
+    </script>
+</body>
+</html>

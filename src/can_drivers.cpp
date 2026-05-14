@@ -1,0 +1,125 @@
+#include "CanDrivers.hpp"
+
+#include <string.h>
+
+#include "driver/twai.h"
+
+ODriveCAN::ODriveCAN(uint32_t id, LoopStats* stats) : node_id(id), loop_stats_(stats) {}
+
+void ODriveCAN::set_axis_state(uint32_t state_id) {
+  twai_message_t msg;
+  msg.identifier = (node_id << 5) | 0x07;
+  msg.extd = 0;
+  msg.data_length_code = 8;
+  memcpy(&msg.data[0], &state_id, 4);
+  memset(&msg.data[4], 0, 4);
+  twai_transmit(&msg, pdMS_TO_TICKS(10));
+}
+
+void ODriveCAN::set_controller_mode(int32_t control_mode, int32_t input_mode) {
+  twai_message_t msg;
+  msg.identifier = (node_id << 5) | 0x0B;
+  msg.extd = 0;
+  msg.data_length_code = 8;
+  memcpy(&msg.data[0], &control_mode, 4);
+  memcpy(&msg.data[4], &input_mode, 4);
+  twai_transmit(&msg, pdMS_TO_TICKS(10));
+}
+
+void ODriveCAN::set_position(float pos_turns, float vel_ff, float torque_ff) {
+  current_target_pos = pos_turns;
+  unsigned long now = millis();
+  if (fabsf(pos_turns - last_sent_pos) < 0.01f && (now - last_sent_pos_ms) < 100) {
+    return;
+  }
+
+  twai_message_t msg;
+  msg.identifier = (node_id << 5) | 0x0C;
+  msg.extd = 0;
+  msg.data_length_code = 8;
+
+  int16_t v_ff_int = static_cast<int16_t>(vel_ff * 1000);
+  int16_t t_ff_int = static_cast<int16_t>(torque_ff * 1000);
+
+  memcpy(&msg.data[0], &pos_turns, 4);
+  memcpy(&msg.data[4], &v_ff_int, 2);
+  memcpy(&msg.data[6], &t_ff_int, 2);
+  if (twai_transmit(&msg, 0) == ESP_OK) {
+    last_sent_pos = pos_turns;
+    last_sent_pos_ms = now;
+    if (loop_stats_) ++loop_stats_->can_runtime_tx_ok_count;
+  } else {
+    if (loop_stats_) ++loop_stats_->can_runtime_tx_drop_count;
+  }
+}
+
+ZLAC8015D::ZLAC8015D(uint32_t id, LoopStats* stats) : node_id(id), tx_id(0x600 + id), loop_stats_(stats) {}
+
+void ZLAC8015D::send_sdo(uint8_t cmd,
+                         uint8_t idx_l,
+                         uint8_t idx_h,
+                         uint8_t sub,
+                         uint8_t d0,
+                         uint8_t d1,
+                         uint8_t d2,
+                         uint8_t d3) {
+  twai_message_t msg;
+  msg.identifier = tx_id;
+  msg.extd = 0;
+  msg.data_length_code = 8;
+  msg.data[0] = cmd;
+  msg.data[1] = idx_l;
+  msg.data[2] = idx_h;
+  msg.data[3] = sub;
+  msg.data[4] = d0;
+  msg.data[5] = d1;
+  msg.data[6] = d2;
+  msg.data[7] = d3;
+  twai_transmit(&msg, pdMS_TO_TICKS(10));
+  delay(30);
+}
+
+void ZLAC8015D::init_sync_velocity_mode() {
+  send_sdo(0x2B, 0x0F, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00);
+  send_sdo(0x2F, 0x60, 0x60, 0x00, 0x03, 0x00, 0x00, 0x00);
+  send_sdo(0x23, 0x83, 0x60, 0x01, 0xC8, 0x00, 0x00, 0x00);
+  send_sdo(0x23, 0x83, 0x60, 0x02, 0xC8, 0x00, 0x00, 0x00);
+  send_sdo(0x23, 0x84, 0x60, 0x01, 0xC8, 0x00, 0x00, 0x00);
+  send_sdo(0x23, 0x84, 0x60, 0x02, 0xC8, 0x00, 0x00, 0x00);
+}
+
+void ZLAC8015D::enable_motor() {
+  send_sdo(0x2B, 0x40, 0x60, 0x00, 0x06, 0x00, 0x00, 0x00);
+  send_sdo(0x2B, 0x40, 0x60, 0x00, 0x07, 0x00, 0x00, 0x00);
+  send_sdo(0x2B, 0x40, 0x60, 0x00, 0x0F, 0x00, 0x00, 0x00);
+}
+
+void ZLAC8015D::set_sync_speed(int16_t left_rpm, int16_t right_rpm) {
+  unsigned long now = millis();
+  if (left_rpm == last_left_rpm && right_rpm == last_right_rpm && (now - last_speed_sent_ms) < 100) {
+    return;
+  }
+
+  twai_message_t msg;
+  msg.identifier = tx_id;
+  msg.extd = 0;
+  msg.data_length_code = 8;
+  msg.data[0] = 0x23;
+  msg.data[1] = 0xFF;
+  msg.data[2] = 0x60;
+  msg.data[3] = 0x03;
+  memcpy(&msg.data[4], &left_rpm, 2);
+  memcpy(&msg.data[6], &right_rpm, 2);
+  if (twai_transmit(&msg, 0) == ESP_OK) {
+    last_left_rpm = left_rpm;
+    last_right_rpm = right_rpm;
+    last_speed_sent_ms = now;
+    if (loop_stats_) ++loop_stats_->can_runtime_tx_ok_count;
+  } else {
+    if (loop_stats_) ++loop_stats_->can_runtime_tx_drop_count;
+  }
+}
+
+void ZLAC8015D::trigger_e_stop() {
+  send_sdo(0x2B, 0x40, 0x60, 0x00, 0x02, 0x00, 0x00, 0x00);
+}
