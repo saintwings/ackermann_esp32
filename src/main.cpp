@@ -7,10 +7,10 @@
 #include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
 #include "DoubleAckermann.hpp"
-#include "CanDrivers.hpp"
 #include "ControlActuationService.hpp"
 #include "Config.h"
 #include "ControlInputService.hpp"
+#include "MotorInterfaces.hpp"
 #include "RobotClient.hpp"
 #include "SensorCommsService.hpp"
 #include "SystemState.hpp"
@@ -212,10 +212,27 @@ static void logSensorsAt1Hz() {
 // ==========================================
 // 3. GLOBAL INSTANCES
 // ==========================================
-ZLAC8015D zlac_front(1, &loop_stats);
-ZLAC8015D zlac_rear(2, &loop_stats);
-ODriveCAN odrive_1(1, &loop_stats);
-ODriveCAN odrive_2(2, &loop_stats);
+#if DRIVE_MOTOR_TYPE == DRIVE_MOTOR_TYPE_ZLAC
+ZlacDriveMotorPair drive_motors_impl(DRIVE_FRONT_MOTOR_ID, DRIVE_REAR_MOTOR_ID, &loop_stats);
+#else
+#error "Unsupported DRIVE_MOTOR_TYPE"
+#endif
+
+#if STEER_MOTOR_TYPE == STEER_MOTOR_TYPE_ODRIVE
+OdriveSteeringMotorPair steering_motors_impl(STEER_LEFT_MOTOR_ID, STEER_RIGHT_MOTOR_ID, &loop_stats);
+#elif STEER_MOTOR_TYPE == STEER_MOTOR_TYPE_GIM8108
+Gim8108SteeringMotorPair steering_motors_impl(
+  STEER_LEFT_MOTOR_ID,
+  STEER_RIGHT_MOTOR_ID,
+  &loop_stats,
+  STEER_GIM_LEFT_SIGN,
+  STEER_GIM_RIGHT_SIGN);
+#else
+#error "Unsupported STEER_MOTOR_TYPE"
+#endif
+
+IDriveMotorPair& drive_motors = drive_motors_impl;
+ISteeringMotorPair& steering_motors = steering_motors_impl;
 
 PS2X ps2x;
 int ps2_error = 0;
@@ -1135,10 +1152,8 @@ static void handleRobotClientCommand() {
       break;
     case RobotCommandType::EmergencyStop:
       e_stop_active = true;
-      zlac_front.trigger_e_stop();
-      zlac_rear.trigger_e_stop();
-      odrive_1.set_axis_state(1);
-      odrive_2.set_axis_state(1);
+      drive_motors.emergencyStop();
+      steering_motors.emergencyStop();
       mission_ctx.active = false;
       setMissionState(MissionState::EStop);
       robot_client.sendCommandAck(command, "accepted");
@@ -1289,12 +1304,10 @@ static void publishRobotTelemetry() {
 static void applyModeInit(RobotMode mode) {
   if (mode == RobotMode::Normal) {
     Serial.println("Enter Mode 0 : normal mode");
-    odrive_1.set_position(0.0f);
-    odrive_2.set_position(0.0f);
+    steering_motors.setSteeringTurns(0.0f, 0.0f);
   } else {
     Serial.println("Enter Mode 1 : zero turn mode");
-    odrive_1.set_position(0.5f);
-    odrive_2.set_position(-0.5f);
+    steering_motors.setSteeringTurns(0.5f, -0.5f);
   }
   delay(200);
 }
@@ -1349,20 +1362,12 @@ void setup() {
   twai_start();
 
   // --- Initialize Motors ---
-  Serial.println("Configuring ZLACs...");
-  zlac_front.init_sync_velocity_mode();
-  zlac_rear.init_sync_velocity_mode();
-  zlac_front.enable_motor();
-  zlac_rear.enable_motor();
+  Serial.println("Configuring drive motor backend...");
+  drive_motors.begin();
+  drive_motors.enable();
 
-  Serial.println("Configuring ODrives...");
-  odrive_1.set_controller_mode(3, 1); 
-  odrive_2.set_controller_mode(3, 1);
-  odrive_1.set_axis_state(8);         
-  odrive_2.set_axis_state(8);
-
-  odrive_1.set_position(0.0);
-  odrive_2.set_position(0.0);
+  Serial.println("Configuring steering motor backend...");
+  steering_motors.begin();
 
   applyModeInit(robot_mode);
 
@@ -1416,16 +1421,12 @@ static void controlTask(void* /*pvParameters*/) {
 
         if (e_stop_active) {
           Serial.println("!!! E-STOP ACTIVATED !!!");
-          zlac_front.trigger_e_stop();
-          zlac_rear.trigger_e_stop();
-          odrive_1.set_axis_state(1);
-          odrive_2.set_axis_state(1);
+          drive_motors.emergencyStop();
+          steering_motors.emergencyStop();
         } else {
           Serial.println(">>> E-STOP RELEASED <<<");
-          zlac_front.enable_motor();
-          zlac_rear.enable_motor();
-          odrive_1.set_axis_state(8);
-          odrive_2.set_axis_state(8);
+          drive_motors.enable();
+          steering_motors.enable();
         }
       }
 
@@ -1464,10 +1465,8 @@ static void controlTask(void* /*pvParameters*/) {
           MOTOR_DI_LEFT,
           MOTOR_DI_RIGHT,
           robot,
-          zlac_front,
-          zlac_rear,
-          odrive_1,
-          odrive_2);
+          drive_motors,
+          steering_motors);
       }
     }
     vTaskDelay(pdMS_TO_TICKS(1));

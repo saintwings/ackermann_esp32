@@ -21,6 +21,24 @@ class ODriveCAN {
   LoopStats* loop_stats_;
 };
 
+class GIM8108CAN {
+ public:
+  explicit GIM8108CAN(uint32_t id, LoopStats* stats = nullptr);
+
+  void clear_fault();
+  void disable_motor();
+  void set_position_max_speed_rpm(float rpm);
+  void set_max_current_amp(float current_amp);
+  void set_acceleration_rpm_per_sec(float accel_rpm_per_sec);
+  void set_absolute_position_turns(float turns);
+
+ private:
+  void send_cmd(uint8_t cmd, const uint8_t* payload = nullptr, uint8_t payload_len = 0);
+
+  uint32_t can_id_;
+  LoopStats* loop_stats_;
+};
+
 class ZLAC8015D {
  public:
   uint32_t node_id, tx_id;

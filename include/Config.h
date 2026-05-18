@@ -76,6 +76,24 @@
 // 0..255 (lower is dimmer)
 #define NEOPIXEL_BRIGHTNESS 32
 
+// Motor backend selection (switch implementations without changing control code)
+#define DRIVE_MOTOR_TYPE_ZLAC 1
+#define DRIVE_MOTOR_TYPE DRIVE_MOTOR_TYPE_ZLAC
+
+#define STEER_MOTOR_TYPE_ODRIVE 1
+#define STEER_MOTOR_TYPE_GIM8108 2
+#define STEER_MOTOR_TYPE STEER_MOTOR_TYPE_GIM8108
+
+// Motor CAN IDs used by backend adapters
+#define DRIVE_FRONT_MOTOR_ID 1
+#define DRIVE_REAR_MOTOR_ID 2
+#define STEER_LEFT_MOTOR_ID 1
+#define STEER_RIGHT_MOTOR_ID 2
+
+// GIM8108 steering direction signs (set to -1 to invert a side)
+#define STEER_GIM_LEFT_SIGN 1
+#define STEER_GIM_RIGHT_SIGN 1
+
 // Debug log groups (1 = enabled, 0 = disabled)
 #define DEBUG_LOG_SENSOR_1HZ 1
 #define DEBUG_LOG_SENSOR_COMMS 0

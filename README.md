@@ -113,6 +113,33 @@ STATUS?
 - Adjust `motor_di` signs if wheel directions are inverted.
 - Change `WHEELBASE_M`, `TRACK_WIDTH_M` to match your platform.
 
+## Motor Backend Selection
+Motor drivers are now selected through config macros in `include/Config.h`.
+
+Current options:
+- `DRIVE_MOTOR_TYPE_ZLAC`
+- `STEER_MOTOR_TYPE_ODRIVE`
+- `STEER_MOTOR_TYPE_GIM8108`
+
+Selection macros:
+- `DRIVE_MOTOR_TYPE`
+- `STEER_MOTOR_TYPE`
+
+Useful IDs and polarity macros:
+- `DRIVE_FRONT_MOTOR_ID`, `DRIVE_REAR_MOTOR_ID`
+- `STEER_LEFT_MOTOR_ID`, `STEER_RIGHT_MOTOR_ID`
+- `STEER_GIM_LEFT_SIGN`, `STEER_GIM_RIGHT_SIGN`
+
+To use GIM8108 steering, set in `include/Config.h`:
+
+```c
+#define STEER_MOTOR_TYPE STEER_MOTOR_TYPE_GIM8108
+```
+
+To add a new motor family, implement the interfaces in `include/MotorInterfaces.hpp`:
+- `IDriveMotorPair`
+- `ISteeringMotorPair`
+
 ## Double Ackermann Geometry
 For a double Ackermann vehicle, the left and right steering wheels use different angles,
 but the chassis still turns about one instantaneous center of rotation.

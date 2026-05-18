@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <math.h>
 
+#include "MotorInterfaces.hpp"
+
 namespace ControlActuation {
 
 inline float clampf(float v, float lo, float hi) {
@@ -22,7 +24,7 @@ inline int16_t mpsToRpmClamped(float mps, float wheel_diameter_m, int max_rpm, i
   return static_cast<int16_t>(rpm);
 }
 
-template <typename RobotT, typename ZlacT, typename OdriveT>
+template <typename RobotT>
 void applyDriveOutputs(bool zero_turn_mode,
                        float linear_mps,
                        float angle_deg,
@@ -32,10 +34,8 @@ void applyDriveOutputs(bool zero_turn_mode,
                        int8_t motor_di_left,
                        int8_t motor_di_right,
                        RobotT& robot,
-                       ZlacT& zlac_front,
-                       ZlacT& zlac_rear,
-                       OdriveT& odrive_1,
-                       OdriveT& odrive_2) {
+                       IDriveMotorPair& drive_motors,
+                       ISteeringMotorPair& steering_motors) {
   if (!zero_turn_mode) {
     // ========== NORMAL ACKERMANN MODE ==========
     float R = 1e6f;
@@ -51,18 +51,15 @@ void applyDriveOutputs(bool zero_turn_mode,
     int16_t left_rpm = mpsToRpmClamped(state.speed_fl, wheel_diameter_m, max_rpm, motor_di_left);
     int16_t right_rpm = mpsToRpmClamped(state.speed_fr, wheel_diameter_m, max_rpm, motor_di_right);
 
-    zlac_front.set_sync_speed(left_rpm, right_rpm);
-    zlac_rear.set_sync_speed(left_rpm, right_rpm);
+    drive_motors.setWheelRpm(left_rpm, right_rpm);
 
-    odrive_1.set_position(-state.angle_fl / 45.0f);
-    odrive_2.set_position(-state.angle_fr / 45.0f);
+    steering_motors.setSteeringTurns(-state.angle_fl / 45.0f, -state.angle_fr / 45.0f);
     return;
   }
 
   // ========== ZERO-TURN (TANK DRIVE) MODE ==========
   // Steering wheels fixed at maximum turn: odrive_1 = 1.0, odrive_2 = -1.0
-  odrive_1.set_position(1.0f);
-  odrive_2.set_position(-1.0f);
+  steering_motors.setSteeringTurns(1.0f, -1.0f);
 
   // For differential drive:
   // - linear_mps controls forward/backward speed (both motors same direction)
@@ -96,8 +93,7 @@ void applyDriveOutputs(bool zero_turn_mode,
   int16_t left_rpm = mpsToRpmClamped(left_mps, wheel_diameter_m, max_rpm, motor_di_left);
   int16_t right_rpm = mpsToRpmClamped(right_mps, wheel_diameter_m, max_rpm, motor_di_right);
 
-  zlac_front.set_sync_speed(left_rpm, right_rpm);
-  zlac_rear.set_sync_speed(left_rpm, right_rpm);
+  drive_motors.setWheelRpm(left_rpm, right_rpm);
 }
 
 }  // namespace ControlActuation

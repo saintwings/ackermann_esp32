@@ -53,6 +53,63 @@ void ODriveCAN::set_position(float pos_turns, float vel_ff, float torque_ff) {
   }
 }
 
+GIM8108CAN::GIM8108CAN(uint32_t id, LoopStats* stats) : can_id_(id), loop_stats_(stats) {}
+
+void GIM8108CAN::send_cmd(uint8_t cmd, const uint8_t* payload, uint8_t payload_len) {
+  if (payload_len > 7) payload_len = 7;
+
+  twai_message_t msg;
+  msg.identifier = can_id_;
+  msg.extd = 0;
+  msg.data_length_code = static_cast<uint8_t>(1 + payload_len);
+  msg.data[0] = cmd;
+  for (uint8_t i = 0; i < payload_len; ++i) {
+    msg.data[1 + i] = payload[i];
+  }
+
+  if (twai_transmit(&msg, 0) == ESP_OK) {
+    if (loop_stats_) ++loop_stats_->can_runtime_tx_ok_count;
+  } else {
+    if (loop_stats_) ++loop_stats_->can_runtime_tx_drop_count;
+  }
+}
+
+void GIM8108CAN::clear_fault() {
+  send_cmd(0xAF);
+}
+
+void GIM8108CAN::disable_motor() {
+  send_cmd(0xCF);
+}
+
+void GIM8108CAN::set_position_max_speed_rpm(float rpm) {
+  uint32_t value = static_cast<uint32_t>(rpm * 100.0f);
+  uint8_t payload[4];
+  memcpy(payload, &value, sizeof(value));
+  send_cmd(0xB2, payload, sizeof(payload));
+}
+
+void GIM8108CAN::set_max_current_amp(float current_amp) {
+  uint32_t value = static_cast<uint32_t>(current_amp * 1000.0f);
+  uint8_t payload[4];
+  memcpy(payload, &value, sizeof(value));
+  send_cmd(0xB3, payload, sizeof(payload));
+}
+
+void GIM8108CAN::set_acceleration_rpm_per_sec(float accel_rpm_per_sec) {
+  uint32_t value = static_cast<uint32_t>(accel_rpm_per_sec * 100.0f);
+  uint8_t payload[4];
+  memcpy(payload, &value, sizeof(value));
+  send_cmd(0xB5, payload, sizeof(payload));
+}
+
+void GIM8108CAN::set_absolute_position_turns(float turns) {
+  int32_t counts = static_cast<int32_t>(turns * 16384.0f);
+  uint8_t payload[4];
+  memcpy(payload, &counts, sizeof(counts));
+  send_cmd(0xC2, payload, sizeof(payload));
+}
+
 ZLAC8015D::ZLAC8015D(uint32_t id, LoopStats* stats) : node_id(id), tx_id(0x600 + id), loop_stats_(stats) {}
 
 void ZLAC8015D::send_sdo(uint8_t cmd,
