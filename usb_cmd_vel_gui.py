@@ -14,8 +14,8 @@ class UsbCmdVelGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("USB CMD_VEL Sender")
-        self.root.geometry("560x380")
-        self.root.minsize(520, 340)
+        self.root.geometry("560x420")
+        self.root.minsize(520, 380)
 
         self.ser = None
         self.reader_thread = None
@@ -23,6 +23,7 @@ class UsbCmdVelGui:
 
         self.port_var = tk.StringVar()
         self.baud_var = tk.StringVar(value="115200")
+        self.mode_var = tk.StringVar(value="NORMAL")
         self.timeout_var = tk.StringVar(value="250")
         self.linear_var = tk.StringVar(value="0.00")
         self.angular_var = tk.StringVar(value="0.00")
@@ -48,6 +49,15 @@ class UsbCmdVelGui:
 
         self.connect_btn = ttk.Button(top, text="Connect", command=self._toggle_connection)
         self.connect_btn.grid(row=0, column=5, **pad)
+
+        mode = ttk.LabelFrame(self.root, text="Robot Mode")
+        mode.pack(fill="x", padx=10, pady=(0, 6))
+
+        ttk.Label(mode, text="Mode").grid(row=0, column=0, sticky="w", **pad)
+        mode_combo = ttk.Combobox(mode, textvariable=self.mode_var, values=["NORMAL", "ZERO_TURN"], state="readonly", width=15)
+        mode_combo.grid(row=0, column=1, sticky="w", **pad)
+
+        ttk.Button(mode, text="Set Mode", command=self.send_mode).grid(row=0, column=2, **pad)
 
         cmd = ttk.LabelFrame(self.root, text="CMD_VEL")
         cmd.pack(fill="x", padx=10, pady=(0, 10))
@@ -192,6 +202,12 @@ class UsbCmdVelGui:
 
         cmd = f"CMD_VEL {linear:.4f} {angular:.4f} {timeout_ms}"
         self._send_line(cmd)
+
+    def send_mode(self) -> None:
+        mode = self.mode_var.get().strip()
+        if mode:
+            cmd = f"MODE {mode}"
+            self._send_line(cmd)
 
     def send_stop(self) -> None:
         self._send_line("STOP")

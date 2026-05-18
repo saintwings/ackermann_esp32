@@ -52,7 +52,8 @@ inline const char* missionStateToString(MissionState state) {
 struct ControlTargets {
   float linear_mps{0.0f};
   float angle_deg{0.0f};
-  unsigned long remote_move_expire_ms{0};
+  // remote_move_expire_ms: 0 = infinite timeout (command persists), 1+ = specific expire time, initial value 1 = no command active
+  unsigned long remote_move_expire_ms{1};
 };
 
 struct MissionContext {

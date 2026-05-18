@@ -178,14 +178,18 @@ Line-based text protocol at 115200 baud. End lines with `\n`.
 
 Commands:
 - `CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms]` – set velocity command in SI units. Steering is computed from angular velocity and wheelbase. Timeout defaults to `250 ms`. Use `timeout_ms=0` for infinite timeout (command persists until new command received).
+- `MODE <NORMAL|ZERO_TURN>` – switch robot driving mode (NORMAL for Ackermann steering, ZERO_TURN for tank-style pivot).
 - `STOP` – command zero linear speed and zero steering.
-- `STATUS?` – prints a single-line status summary
+- `STATUS?` – prints a single-line status summary including current mode
 - `HELP` or `?` – prints command usage.
 
 Examples:
 ```text
+MODE NORMAL
 CMD_VEL 0.60 0.25 300
 STATUS?
+MODE ZERO_TURN
+CMD_VEL 0.50 0.15 0
 ```
 
 ### Python USB GUI (CMD_VEL)
@@ -204,7 +208,8 @@ python3 usb_cmd_vel_gui.py
 In the GUI:
 - Select your ESP32 serial port (for example `/dev/ttyUSB0` or `/dev/ttyACM0`)
 - Keep baud at `115200`
+- Select robot mode (NORMAL for Ackermann, ZERO_TURN for pivot)
 - Enter `linear` (m/s), `angular` (rad/s), and timeout (ms)
   - Use `0` for infinite timeout (command persists until new command)
   - Default is `250` ms for safety
-- Click `Send CMD_VEL` or `STOP`
+- Click `Set Mode`, `Send CMD_VEL`, or `STOP`

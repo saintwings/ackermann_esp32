@@ -228,6 +228,8 @@ enum class RobotMode : uint8_t {
   ZeroTurn = 1,
 };
 
+static void applyModeInit(RobotMode mode);
+
 static constexpr float WHEELBASE_M = 0.36f;
 static constexpr float TRACK_WIDTH_M = 0.36f;
 static constexpr float MAX_LINEAR_MPS = 1.50f;
@@ -930,7 +932,19 @@ static bool missionBlocksManualVelocityControl() {
 
 static void applyUsbVelocityCommand(float linear_mps, float angular_rads, unsigned long timeout_ms) {
   const float linear_limited = clampf(linear_mps, -MAX_LINEAR_MPS, MAX_LINEAR_MPS);
-  const float steering_deg = convertAngularToSteeringDeg(linear_limited, angular_rads, WHEELBASE_M, MAX_STEER_DEG);
+  
+  // In zero-turn mode, angular_rads controls rotation intensity (scaled to steering angle range)
+  // In normal mode, convert angular_rads to steering angle using Ackermann geometry
+  float angle_deg;
+  if (robot_mode == RobotMode::ZeroTurn) {
+    // Scale angular velocity to [-MAX_STEER_DEG, MAX_STEER_DEG] range
+    // Assuming typical angular_rads in [-π, π], scale to steering deg range
+    float angular_deg = (angular_rads * 180.0f / M_PI);
+    angle_deg = clampf(angular_deg * 0.5f, -MAX_STEER_DEG, MAX_STEER_DEG);
+  } else {
+    // Normal Ackermann mode
+    angle_deg = convertAngularToSteeringDeg(linear_limited, angular_rads, WHEELBASE_M, MAX_STEER_DEG);
+  }
   
   // timeout_ms == 0 means infinite timeout (command persists until new command)
   unsigned long remote_expire = 0;
@@ -940,20 +954,23 @@ static void applyUsbVelocityCommand(float linear_mps, float angular_rads, unsign
   }
 
   control_targets.linear_mps = linear_limited;
-  control_targets.angle_deg = steering_deg;
+  control_targets.angle_deg = angle_deg;
   control_targets.remote_move_expire_ms = remote_expire;
 
+  const char* mode_str = (robot_mode == RobotMode::ZeroTurn) ? "ZERO_TURN" : "NORMAL";
   if (timeout_ms == 0) {
-    Serial.printf("[USB_SERIAL] CMD_VEL accepted linear=%.3f m/s angular=%.3f rad/s steer=%.2f deg timeout=INFINITE\n",
+    Serial.printf("[USB_SERIAL] CMD_VEL accepted (mode=%s) linear=%.3f m/s angular=%.3f rad/s angle=%.2f deg timeout=INFINITE\n",
+                  mode_str,
                   linear_limited,
                   angular_rads,
-                  steering_deg);
+                  angle_deg);
   } else {
     const unsigned long timeout_limited = max(USB_CMD_VEL_MIN_TIMEOUT_MS, min(timeout_ms, USB_CMD_VEL_MAX_TIMEOUT_MS));
-    Serial.printf("[USB_SERIAL] CMD_VEL accepted linear=%.3f m/s angular=%.3f rad/s steer=%.2f deg timeout=%lu ms\n",
+    Serial.printf("[USB_SERIAL] CMD_VEL accepted (mode=%s) linear=%.3f m/s angular=%.3f rad/s angle=%.2f deg timeout=%lu ms\n",
+                  mode_str,
                   linear_limited,
                   angular_rads,
-                  steering_deg,
+                  angle_deg,
                   timeout_limited);
   }
 }
@@ -967,7 +984,7 @@ static void handleUsbSerialLine(const String& raw_line) {
   upper.toUpperCase();
 
   if (upper == "HELP" || upper == "?") {
-    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, STATUS?");
+    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?");
     return;
   }
 
@@ -979,11 +996,44 @@ static void handleUsbSerialLine(const String& raw_line) {
     return;
   }
 
+  if (upper.startsWith("MODE")) {
+    String args = line.substring(4);
+    args.trim();
+    args.toUpperCase();
+
+    if (args == "NORMAL" || args == "0") {
+      if (robot_mode != RobotMode::Normal) {
+        robot_mode = RobotMode::Normal;
+        applyModeInit(robot_mode);
+        Serial.println("[USB_SERIAL] MODE set to NORMAL");
+      } else {
+        Serial.println("[USB_SERIAL] MODE already NORMAL");
+      }
+      return;
+    }
+
+    if (args == "ZERO_TURN" || args == "ZERO" || args == "1") {
+      if (robot_mode != RobotMode::ZeroTurn) {
+        robot_mode = RobotMode::ZeroTurn;
+        applyModeInit(robot_mode);
+        Serial.println("[USB_SERIAL] MODE set to ZERO_TURN");
+      } else {
+        Serial.println("[USB_SERIAL] MODE already ZERO_TURN");
+      }
+      return;
+    }
+
+    Serial.println("[USB_SERIAL] Invalid MODE. Usage: MODE <NORMAL|ZERO_TURN>");
+    return;
+  }
+
   if (upper == "STATUS?") {
     const unsigned long now = millis();
     const bool remote_active = (control_targets.remote_move_expire_ms == 0) || (control_targets.remote_move_expire_ms > now);
     const unsigned long remaining_ms = (control_targets.remote_move_expire_ms == 0) ? 0 : remote_active ? (control_targets.remote_move_expire_ms - now) : 0;
-    Serial.printf("[USB_SERIAL] status e_stop=%d mission=%s remote_active=%d linear=%.3f angle=%.2f timeout_left_ms=%lu\n",
+    const char* mode_str = (robot_mode == RobotMode::Normal) ? "NORMAL" : "ZERO_TURN";
+    Serial.printf("[USB_SERIAL] status mode=%s e_stop=%d mission=%s remote_active=%d linear=%.3f angle=%.2f timeout_left_ms=%lu\n",
+                  mode_str,
                   e_stop_active ? 1 : 0,
                   missionStateToString(mission_ctx.state),
                   remote_active ? 1 : 0,
@@ -1236,7 +1286,7 @@ static void publishRobotTelemetry() {
   robot_client.sendTelemetry(telemetry);
 }
 
-void applyModeInit(RobotMode mode) {
+static void applyModeInit(RobotMode mode) {
   if (mode == RobotMode::Normal) {
     Serial.println("Enter Mode 0 : normal mode");
     odrive_1.set_position(0.0f);
@@ -1259,7 +1309,7 @@ void setup() {
     delay(10);
   }
   delay(1000);
-  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, STATUS?");
+  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
 
   // connectWifiIfNeeded();
@@ -1391,7 +1441,8 @@ static void controlTask(void* /*pvParameters*/) {
           applyModeInit(robot_mode);
         }
 
-        bool remote_active = (control_targets.remote_move_expire_ms == 0) || (control_targets.remote_move_expire_ms > millis());
+        // Remote command active if timeout is 0 (infinite) or expire time hasn't passed
+        bool remote_active = (control_targets.remote_move_expire_ms == 0) ? true : (control_targets.remote_move_expire_ms > millis());
         int ly = ps2x.Analog(PSS_RY);
         int lx = ps2x.Analog(PSS_LX);
         DriveCommand cmd = ControlInput::resolveDriveCommand(
