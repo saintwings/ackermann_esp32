@@ -24,11 +24,21 @@ inline int16_t mpsToRpmClamped(float mps, float wheel_diameter_m, int max_rpm, i
   return static_cast<int16_t>(rpm);
 }
 
+inline float computeZeroTurnSteeringAngleDeg(float wheelbase_m, float track_width_m) {
+  if (track_width_m < 1e-6f) return 0.0f;
+  return atan2f(wheelbase_m, track_width_m) * 180.0f / static_cast<float>(M_PI);
+}
+
+inline float steeringAngleDegToTurns(float angle_deg) {
+  return angle_deg / 360.0f;
+}
+
 template <typename RobotT>
 void applyDriveOutputs(bool zero_turn_mode,
                        float linear_mps,
                        float angle_deg,
                        float wheelbase_m,
+                       float track_width_m,
                        float wheel_diameter_m,
                        int max_rpm,
                        int8_t motor_di_left,
@@ -53,13 +63,15 @@ void applyDriveOutputs(bool zero_turn_mode,
 
     drive_motors.setWheelRpm(left_rpm, right_rpm);
 
-    steering_motors.setSteeringTurns(-state.angle_fl / 45.0f, -state.angle_fr / 45.0f);
+    steering_motors.setSteeringTurns(-steeringAngleDegToTurns(state.angle_fl), -steeringAngleDegToTurns(state.angle_fr));
     return;
   }
 
   // ========== ZERO-TURN (TANK DRIVE) MODE ==========
-  // Steering wheels fixed at maximum turn: odrive_1 = 1.0, odrive_2 = -1.0
-  steering_motors.setSteeringTurns(1.0f, -1.0f);
+  // Fixed steering angle from geometry: alpha = atan(H / W)
+  const float zero_turn_angle_deg = computeZeroTurnSteeringAngleDeg(wheelbase_m, track_width_m);
+  const float zero_turn_turns = steeringAngleDegToTurns(zero_turn_angle_deg);
+  steering_motors.setSteeringTurns(zero_turn_turns, -zero_turn_turns);
 
   // For differential drive:
   // - linear_mps controls forward/backward speed (both motors same direction)

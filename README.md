@@ -130,6 +130,14 @@ Useful IDs and polarity macros:
 - `STEER_LEFT_MOTOR_ID`, `STEER_RIGHT_MOTOR_ID`
 - `STEER_GIM_LEFT_SIGN`, `STEER_GIM_RIGHT_SIGN`
 
+Zero-turn geometry macros:
+- `ROBOT_GEOMETRY_W_M` (W = track width)
+- `ROBOT_GEOMETRY_H_M` (H = wheelbase)
+
+Zero-turn steering now uses:
+- `alpha = atan(H / W)`
+- steering setpoint = `+/- alpha` (left/right)
+
 To use GIM8108 steering, set in `include/Config.h`:
 
 ```c

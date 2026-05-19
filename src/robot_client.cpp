@@ -83,7 +83,7 @@ void RobotClient::sendRegister() {
   JsonObject payload = doc["payload"].to<JsonObject>();
   payload["robot_name"] = ROBOT_NAME;
   payload["robot_type"] = ROBOT_TYPE;
-  payload["max_speed"] = 0.6f;
+  payload["max_speed"] = MAX_LINEAR_SPEED_MS;
 
   String json;
   serializeJson(doc, json);

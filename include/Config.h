@@ -94,6 +94,15 @@
 #define STEER_GIM_LEFT_SIGN 1
 #define STEER_GIM_RIGHT_SIGN 1
 
+// Robot geometry (meters)
+// W = track width, H = wheelbase/axle spacing used by zero-turn steering geometry.
+#define ROBOT_GEOMETRY_W_M 0.36f
+#define ROBOT_GEOMETRY_H_M 0.36f
+
+// Robot motion limits
+#define MAX_LINEAR_SPEED_MS 0.6f       // Maximum forward/reverse speed (m/s)
+#define MAX_STEERING_ANGLE_DEG 40.0f   // Maximum steering angle (degrees)
+
 // Debug log groups (1 = enabled, 0 = disabled)
 #define DEBUG_LOG_SENSOR_1HZ 1
 #define DEBUG_LOG_SENSOR_COMMS 0

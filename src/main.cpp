@@ -247,10 +247,10 @@ enum class RobotMode : uint8_t {
 
 static void applyModeInit(RobotMode mode);
 
-static constexpr float WHEELBASE_M = 0.36f;
-static constexpr float TRACK_WIDTH_M = 0.36f;
+static constexpr float WHEELBASE_M = ROBOT_GEOMETRY_H_M;
+static constexpr float TRACK_WIDTH_M = ROBOT_GEOMETRY_W_M;
 static constexpr float MAX_LINEAR_MPS = 1.50f;
-static constexpr float MAX_STEER_DEG = 30.0f;
+static constexpr float MAX_STEER_DEG = MAX_STEERING_ANGLE_DEG;
 static constexpr float WHEEL_DIAMETER_M = 0.20f;
 static constexpr unsigned long IMU_STALE_TIMEOUT_MS = 1500;
 static constexpr unsigned long GPS_STALE_TIMEOUT_MS = 3000;
@@ -1306,8 +1306,10 @@ static void applyModeInit(RobotMode mode) {
     Serial.println("Enter Mode 0 : normal mode");
     steering_motors.setSteeringTurns(0.0f, 0.0f);
   } else {
+    const float zero_turn_angle_deg = ControlActuation::computeZeroTurnSteeringAngleDeg(WHEELBASE_M, TRACK_WIDTH_M);
+    const float zero_turn_turns = ControlActuation::steeringAngleDegToTurns(zero_turn_angle_deg);
     Serial.println("Enter Mode 1 : zero turn mode");
-    steering_motors.setSteeringTurns(0.5f, -0.5f);
+    steering_motors.setSteeringTurns(zero_turn_turns, -zero_turn_turns);
   }
   delay(200);
 }
@@ -1460,6 +1462,7 @@ static void controlTask(void* /*pvParameters*/) {
           cmd.linear_mps,
           cmd.angle_deg,
           WHEELBASE_M,
+          TRACK_WIDTH_M,
           WHEEL_DIAMETER_M,
           MAX_RPM,
           MOTOR_DI_LEFT,

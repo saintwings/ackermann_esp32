@@ -27,7 +27,9 @@ void ODriveCAN::set_controller_mode(int32_t control_mode, int32_t input_mode) {
 }
 
 void ODriveCAN::set_position(float pos_turns, float vel_ff, float torque_ff) {
+  pos_turns = pos_turns * gear_ratio;
   current_target_pos = pos_turns;
+
   unsigned long now = millis();
   if (fabsf(pos_turns - last_sent_pos) < 0.01f && (now - last_sent_pos_ms) < 100) {
     return;

@@ -10,6 +10,7 @@ class ODriveCAN {
   float current_target_pos = 0.0f;
   float last_sent_pos = 9999.0f;
   unsigned long last_sent_pos_ms = 0;
+  float gear_ratio = 8.0;
 
   explicit ODriveCAN(uint32_t id, LoopStats* stats = nullptr);
 
