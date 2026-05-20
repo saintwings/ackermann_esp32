@@ -82,7 +82,7 @@
 
 #define STEER_MOTOR_TYPE_ODRIVE 1
 #define STEER_MOTOR_TYPE_GIM8108 2
-#define STEER_MOTOR_TYPE STEER_MOTOR_TYPE_GIM8108
+#define STEER_MOTOR_TYPE STEER_MOTOR_TYPE_ODRIVE
 
 // Motor CAN IDs used by backend adapters
 #define DRIVE_FRONT_MOTOR_ID 1
@@ -98,10 +98,12 @@
 // W = track width, H = wheelbase/axle spacing used by zero-turn steering geometry.
 #define ROBOT_GEOMETRY_W_M 0.36f
 #define ROBOT_GEOMETRY_H_M 0.36f
+// Drive wheel diameter used for m/s <-> RPM conversion.
+#define DRIVE_WHEEL_DIAMETER_M 0.20f
 
 // Robot motion limits
 #define MAX_LINEAR_SPEED_MS 0.6f       // Maximum forward/reverse speed (m/s)
-#define MAX_STEERING_ANGLE_DEG 40.0f   // Maximum steering angle (degrees)
+#define MAX_STEERING_ANGLE_DEG 30.0f   // Maximum steering angle (degrees)
 
 // Debug log groups (1 = enabled, 0 = disabled)
 #define DEBUG_LOG_SENSOR_1HZ 1

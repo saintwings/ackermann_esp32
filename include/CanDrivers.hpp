@@ -17,6 +17,7 @@ class ODriveCAN {
   void set_axis_state(uint32_t state_id);
   void set_controller_mode(int32_t control_mode, int32_t input_mode);
   void set_position(float pos_turns, float vel_ff = 0.0f, float torque_ff = 0.0f);
+  void go_home();
 
  private:
   LoopStats* loop_stats_;
@@ -32,6 +33,7 @@ class GIM8108CAN {
   void set_max_current_amp(float current_amp);
   void set_acceleration_rpm_per_sec(float accel_rpm_per_sec);
   void set_absolute_position_turns(float turns);
+  void go_home();
 
  private:
   void send_cmd(uint8_t cmd, const uint8_t* payload = nullptr, uint8_t payload_len = 0);

@@ -4,6 +4,10 @@
 
 #include "driver/twai.h"
 
+namespace {
+constexpr uint32_t kODriveAxisStateHoming = 11;
+}
+
 ODriveCAN::ODriveCAN(uint32_t id, LoopStats* stats) : node_id(id), loop_stats_(stats) {}
 
 void ODriveCAN::set_axis_state(uint32_t state_id) {
@@ -53,6 +57,13 @@ void ODriveCAN::set_position(float pos_turns, float vel_ff, float torque_ff) {
   } else {
     if (loop_stats_) ++loop_stats_->can_runtime_tx_drop_count;
   }
+}
+
+void ODriveCAN::go_home() {
+  current_target_pos = 0.0f;
+  last_sent_pos = 9999.0f;
+  last_sent_pos_ms = 0;
+  set_axis_state(kODriveAxisStateHoming);
 }
 
 GIM8108CAN::GIM8108CAN(uint32_t id, LoopStats* stats) : can_id_(id), loop_stats_(stats) {}
@@ -110,6 +121,10 @@ void GIM8108CAN::set_absolute_position_turns(float turns) {
   uint8_t payload[4];
   memcpy(payload, &counts, sizeof(counts));
   send_cmd(0xC2, payload, sizeof(payload));
+}
+
+void GIM8108CAN::go_home() {
+  send_cmd(0xC4);
 }
 
 ZLAC8015D::ZLAC8015D(uint32_t id, LoopStats* stats) : node_id(id), tx_id(0x600 + id), loop_stats_(stats) {}

@@ -19,6 +19,7 @@ class ISteeringMotorPair {
   virtual void begin() = 0;
   virtual void enable() = 0;
   virtual void emergencyStop() = 0;
+  virtual void goHome() = 0;
   virtual void setSteeringTurns(float left_turns, float right_turns) = 0;
 };
 
@@ -61,7 +62,11 @@ class OdriveSteeringMotorPair final : public ISteeringMotorPair {
     left_.set_controller_mode(3, 1);
     right_.set_controller_mode(3, 1);
     enable();
+#if ODRIVE_STARTUP_HOME_ENABLE
+    goHome();
+#else
     setSteeringTurns(0.0f, 0.0f);
+#endif
   }
 
   void enable() override {
@@ -72,6 +77,11 @@ class OdriveSteeringMotorPair final : public ISteeringMotorPair {
   void emergencyStop() override {
     left_.set_axis_state(1);
     right_.set_axis_state(1);
+  }
+
+  void goHome() override {
+    left_.go_home();
+    right_.go_home();
   }
 
   void setSteeringTurns(float left_turns, float right_turns) override {
@@ -104,7 +114,7 @@ class Gim8108SteeringMotorPair final : public ISteeringMotorPair {
     left_.set_acceleration_rpm_per_sec(200.0f);
     right_.set_acceleration_rpm_per_sec(200.0f);
     enable();
-    setSteeringTurns(0.0f, 0.0f);
+    goHome();
   }
 
   void enable() override {
@@ -115,6 +125,11 @@ class Gim8108SteeringMotorPair final : public ISteeringMotorPair {
   void emergencyStop() override {
     left_.disable_motor();
     right_.disable_motor();
+  }
+
+  void goHome() override {
+    left_.go_home();
+    right_.go_home();
   }
 
   void setSteeringTurns(float left_turns, float right_turns) override {
