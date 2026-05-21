@@ -88,7 +88,7 @@ static void logSensorsAt1Hz() {
   if (now - last_sensor_log_ms < 1000) return;
   last_sensor_log_ms = now;
 
-  Serial.printf("[WIFI] %s", wifi_connected ? WiFi.localIP().toString().c_str() : "disconnected");
+  //Serial.printf("[WIFI] %s", wifi_connected ? WiFi.localIP().toString().c_str() : "disconnected");
   Serial.print(" | [GPS] ");
   if (gps_fix.valid) {
     Serial.print("fix=");
@@ -121,84 +121,84 @@ static void logSensorsAt1Hz() {
   Serial.print("disabled");
 #endif
 
-  Serial.print(" | [IMU] ");
-  if (imu_state.valid) {
-    Serial.print("ax=");
-    Serial.print(imu_state.ax, 3);
-    Serial.print(" ay=");
-    Serial.print(imu_state.ay, 3);
-    Serial.print(" az=");
-    Serial.print(imu_state.az, 3);
-    Serial.print(" gx=");
-    Serial.print(imu_state.gx, 3);
-    Serial.print(" gy=");
-    Serial.print(imu_state.gy, 3);
-    Serial.print(" gz=");
-    Serial.print(imu_state.gz, 3);
-  } else {
-    Serial.print("no-data");
-  }
+  // Serial.print(" | [IMU] ");
+  // if (imu_state.valid) {
+  //   Serial.print("ax=");
+  //   Serial.print(imu_state.ax, 3);
+  //   Serial.print(" ay=");
+  //   Serial.print(imu_state.ay, 3);
+  //   Serial.print(" az=");
+  //   Serial.print(imu_state.az, 3);
+  //   Serial.print(" gx=");
+  //   Serial.print(imu_state.gx, 3);
+  //   Serial.print(" gy=");
+  //   Serial.print(imu_state.gy, 3);
+  //   Serial.print(" gz=");
+  //   Serial.print(imu_state.gz, 3);
+  // } else {
+  //   Serial.print("no-data");
+  // }
 
-  Serial.printf(" | [MISSION] %s", missionStateToString(mission_ctx.state));
-  if (mission_ctx.name.length() > 0) {
-    Serial.print("(");
-    Serial.print(mission_ctx.name);
-    Serial.print(")");
-  }
-  if (mission_debug_valid) {
-    Serial.print(" wp=");
-    Serial.print(mission_debug_target_waypoint);
-    Serial.print(" dist=");
-    Serial.print(mission_debug_dist_m, 2);
-    Serial.print(" herr=");
-    Serial.print(mission_debug_heading_error_deg, 1);
-    Serial.print(" spd=");
-    Serial.print(mission_debug_speed_cmd_mps, 2);
-    if (mission_debug_coverage) {
-      Serial.print(" cov=");
-      Serial.print(mission_debug_coverage_current);
-      Serial.print("->");
-      Serial.print(mission_debug_coverage_end);
-    }
-  }
+  // Serial.printf(" | [MISSION] %s", missionStateToString(mission_ctx.state));
+  // if (mission_ctx.name.length() > 0) {
+  //   Serial.print("(");
+  //   Serial.print(mission_ctx.name);
+  //   Serial.print(")");
+  // }
+  // if (mission_debug_valid) {
+  //   Serial.print(" wp=");
+  //   Serial.print(mission_debug_target_waypoint);
+  //   Serial.print(" dist=");
+  //   Serial.print(mission_debug_dist_m, 2);
+  //   Serial.print(" herr=");
+  //   Serial.print(mission_debug_heading_error_deg, 1);
+  //   Serial.print(" spd=");
+  //   Serial.print(mission_debug_speed_cmd_mps, 2);
+  //   if (mission_debug_coverage) {
+  //     Serial.print(" cov=");
+  //     Serial.print(mission_debug_coverage_current);
+  //     Serial.print("->");
+  //     Serial.print(mission_debug_coverage_end);
+  //   }
+  // }
 
-  Serial.print(" | [LOOP] max_dt_ms=");
-  Serial.print(loop_stats.max_control_dt_ms);
-  Serial.print(" overruns=");
-  Serial.print(loop_stats.overrun_count);
-  Serial.print(" cycles=");
-  Serial.print(loop_stats.control_cycle_count);
-  Serial.print(" | [COMMS] max_dt_ms=");
-  Serial.print(loop_stats.max_comms_dt_ms);
-  Serial.print(" overruns=");
-  Serial.print(loop_stats.comms_overrun_count);
-  Serial.print(" cycles=");
-  Serial.print(loop_stats.comms_cycle_count);
-  Serial.print(" | [CAN] ok=");
-  Serial.print(loop_stats.can_runtime_tx_ok_count);
-  Serial.print(" drop=");
-  Serial.print(loop_stats.can_runtime_tx_drop_count);
-  Serial.print(" | [SAFE] imu=");
-  Serial.print(loop_stats.safety_stale_imu_count);
-  Serial.print(" gps=");
-  Serial.print(loop_stats.safety_stale_gps_count);
-  Serial.print(" rc_to=");
-  Serial.print(loop_stats.safety_remote_timeout_count);
-  Serial.print(" mission_abort=");
-  Serial.print(loop_stats.safety_mission_abort_count);
+  // Serial.print(" | [LOOP] max_dt_ms=");
+  // Serial.print(loop_stats.max_control_dt_ms);
+  // Serial.print(" overruns=");
+  // Serial.print(loop_stats.overrun_count);
+  // Serial.print(" cycles=");
+  // Serial.print(loop_stats.control_cycle_count);
+  // Serial.print(" | [COMMS] max_dt_ms=");
+  // Serial.print(loop_stats.max_comms_dt_ms);
+  // Serial.print(" overruns=");
+  // Serial.print(loop_stats.comms_overrun_count);
+  // Serial.print(" cycles=");
+  // Serial.print(loop_stats.comms_cycle_count);
+  // Serial.print(" | [CAN] ok=");
+  // Serial.print(loop_stats.can_runtime_tx_ok_count);
+  // Serial.print(" drop=");
+  // Serial.print(loop_stats.can_runtime_tx_drop_count);
+  // Serial.print(" | [SAFE] imu=");
+  // Serial.print(loop_stats.safety_stale_imu_count);
+  // Serial.print(" gps=");
+  // Serial.print(loop_stats.safety_stale_gps_count);
+  // Serial.print(" rc_to=");
+  // Serial.print(loop_stats.safety_remote_timeout_count);
+  // Serial.print(" mission_abort=");
+  // Serial.print(loop_stats.safety_mission_abort_count);
 
-  loop_stats.max_control_dt_ms = 0;
-  loop_stats.overrun_count = 0;
-  loop_stats.control_cycle_count = 0;
-  loop_stats.max_comms_dt_ms = 0;
-  loop_stats.comms_overrun_count = 0;
-  loop_stats.comms_cycle_count = 0;
-  loop_stats.can_runtime_tx_ok_count = 0;
-  loop_stats.can_runtime_tx_drop_count = 0;
-  loop_stats.safety_stale_imu_count = 0;
-  loop_stats.safety_stale_gps_count = 0;
-  loop_stats.safety_remote_timeout_count = 0;
-  loop_stats.safety_mission_abort_count = 0;
+  // loop_stats.max_control_dt_ms = 0;
+  // loop_stats.overrun_count = 0;
+  // loop_stats.control_cycle_count = 0;
+  // loop_stats.max_comms_dt_ms = 0;
+  // loop_stats.comms_overrun_count = 0;
+  // loop_stats.comms_cycle_count = 0;
+  // loop_stats.can_runtime_tx_ok_count = 0;
+  // loop_stats.can_runtime_tx_drop_count = 0;
+  // loop_stats.safety_stale_imu_count = 0;
+  // loop_stats.safety_stale_gps_count = 0;
+  // loop_stats.safety_remote_timeout_count = 0;
+  // loop_stats.safety_mission_abort_count = 0;
   Serial.println();
 }
 

@@ -12,7 +12,7 @@
 
 // Static IP configuration
 //****** */
-#define WIFI_STATIC_IP      "192.168.1.40"
+#define WIFI_STATIC_IP      "192.168.1.41"
 //#define WIFI_STATIC_IP      "192.168.1.140"
 
 #define WIFI_STATIC_GATEWAY "192.168.1.1"
@@ -37,8 +37,8 @@
 #define ROBOT_TELEMETRY_INTERVAL_MS 500
 
 // Robot identity for control_server.py registration
-#define ROBOT_ID "ackermann-esp32-01"
-#define ROBOT_NAME "Double Ackermann ESP32"
+#define ROBOT_ID "esp32-02"
+#define ROBOT_NAME "Robot2"
 #define ROBOT_TYPE "ackermann"
 
 // ZED-F9P UART settings (UART1)
@@ -108,9 +108,9 @@
 // Debug log groups (1 = enabled, 0 = disabled)
 #define DEBUG_LOG_SENSOR_1HZ 1
 #define DEBUG_LOG_SENSOR_COMMS 0
-#define DEBUG_LOG_MISSION 1
-#define DEBUG_LOG_SAFETY 1
-#define DEBUG_LOG_ROBOT_CLIENT 1
+#define DEBUG_LOG_MISSION 0
+#define DEBUG_LOG_SAFETY 0
+#define DEBUG_LOG_ROBOT_CLIENT 0
 
 // -----------------------------------------------------------------------------
 // Status LED Legend (WS2812B, index 0..7)
