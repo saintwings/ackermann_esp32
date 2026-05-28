@@ -27,7 +27,9 @@ from typing import Dict, Set, Optional, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
 from flask import Flask, request, jsonify, send_from_directory
+from flask_login import login_required
 from coverage_path_service import CoveragePathService
+from auth import setup_auth, auth_bp, validate_ws_token, get_user_robots, is_admin
 
 ALLOWED_HTTP_METHODS = 'GET, POST, OPTIONS'
 ALLOWED_HTTP_HEADERS = 'Content-Type'
@@ -108,6 +110,7 @@ class WebSocketClient:
     robot_type: Optional[str] = None
     max_speed: Optional[float] = None
     last_message: int = 0
+    user_id: Optional[int] = None   # set for web clients after token validation
 
 # ============================================================================
 # Control Server
@@ -126,6 +129,8 @@ class ControlServer:
         
         # Setup Flask app for HTTP endpoints
         self.flask_app = Flask(__name__)
+        setup_auth(self.flask_app)               # login/signup sessions
+        self.flask_app.register_blueprint(auth_bp)
         self._setup_flask_routes()
         
     def _setup_flask_routes(self):
@@ -141,6 +146,7 @@ class ControlServer:
             return response
         
         @self.flask_app.route('/api/coverage_plan', methods=['POST', 'OPTIONS'])
+        @login_required
         def coverage_plan():
             """
             Generate coverage path
@@ -215,10 +221,12 @@ class ControlServer:
                 }), 500
 
         @self.flask_app.route('/', methods=['GET'])
+        @login_required
         def planner_index():
             return send_from_directory(WORKSPACE_DIR, 'mission_planner_v2.html')
 
         @self.flask_app.route('/mission_planner_v2.html', methods=['GET'])
+        @login_required
         def planner_html():
             return send_from_directory(WORKSPACE_DIR, 'mission_planner_v2.html')
         
@@ -367,28 +375,45 @@ class ControlServer:
         await self.broadcast_robot_list()
     
     async def handle_web_register(self, client_id: str, message: dict, websocket):
-        """Handle web client registration"""
+        """Handle web client registration — validates WS token to identify user."""
         payload = message.get('payload', {})
-        
+        token   = payload.get('token') or message.get('token')
+
+        user = validate_ws_token(token) if token else None
+        if user is None:
+            self.logger.warning(f"Web client {client_id} rejected: invalid or missing token")
+            await websocket.send(json.dumps({
+                'type': 'error',
+                'payload': {'message': 'Authentication required. Please log in.'}
+            }))
+            return
+
         self.clients[client_id] = WebSocketClient(
             client_id=client_id,
             websocket=websocket,
             client_type="web",
-            last_message=int(datetime.now().timestamp())
+            last_message=int(datetime.now().timestamp()),
+            user_id=int(user.id)
         )
-        
-        self.logger.info(f"Web client registered: {client_id}")
-        
-        # Send ACK with current robot list
+
+        self.logger.info(
+            f"Web client registered: {client_id} "
+            f"(user={user.username}, admin={user.is_admin})"
+        )
+
         ack = {
             'type': MessageType.COMMAND_ACK.value,
             'client_id': client_id,
-            'payload': {'status': 'registered'}
+            'payload': {
+                'status':   'registered',
+                'username': user.username,
+                'is_admin': user.is_admin
+            }
         }
         await websocket.send(json.dumps(ack))
-        
-        # Send current robot list
-        await self.broadcast_robot_list()
+
+        # Send robot list filtered to this user's assignments
+        await self.broadcast_robot_list(target_websocket=websocket)
     
     async def handle_telemetry(self, robot_id: str, message: dict, websocket):
         """Handle sensor telemetry from robot"""
@@ -442,15 +467,31 @@ class ControlServer:
         await self.broadcast_telemetry(message)
     
     async def handle_web_command(self, message: dict, websocket):
-        """Handle command from web client"""
+        """Handle command from web client — checks robot assignment before routing."""
         robot_id = message.get('robot_id')
-        payload = message.get('payload', {})
-        command = payload.get('command')
-        
+        payload  = message.get('payload', {})
+        command  = payload.get('command')
+
+        # Find which client sent this
+        sender = next(
+            (c for c in self.clients.values() if c.websocket is websocket),
+            None
+        )
+        if sender is None or not self._client_can_control(sender, robot_id):
+            self.logger.warning(
+                f"Blocked command '{command}' to {robot_id} — "
+                f"user {getattr(sender, 'user_id', None)} not authorized"
+            )
+            await websocket.send(json.dumps({
+                'type': 'error',
+                'payload': {'message': f'Not authorized to control robot {robot_id}'}
+            }))
+            return
+
         if robot_id not in self.robots:
             self.logger.error(f"Command to unknown robot: {robot_id}")
             return
-        
+
         robot = self.robots[robot_id]
         if not robot.online:
             self.logger.error(f"Command to offline robot: {robot_id}")
@@ -660,65 +701,91 @@ class ControlServer:
         """Handle request for robot list from web client"""
         await self.broadcast_robot_list(target_websocket=websocket)
     
-    async def broadcast_robot_list(self, target_websocket=None):
-        """Broadcast robot list to all (or specific) web clients"""
-        robots_data = []
-        for robot_id, robot in list(self.robots.items()):
-            robots_data.append({
-                'robot_id': robot.robot_id,
-                'robot_name': robot.robot_name,
-                'robot_type': robot.robot_type,
-                'max_speed': robot.max_speed,
-                'online': robot.online,
-                'last_update': robot.last_update,
-                'battery_level': robot.battery_level,
-                'speed': robot.speed,
-                'heading': robot.heading,
-                'latitude': robot.latitude,
-                'longitude': robot.longitude,
-                'altitude': robot.altitude
-            })
-        
-        message = {
-            'type': MessageType.ROBOT_LIST.value,
-            'timestamp': int(datetime.now().timestamp() * 1000),
-            'payload': {'robots': robots_data}
+    def _robot_to_dict(self, robot) -> dict:
+        return {
+            'robot_id':     robot.robot_id,
+            'robot_name':   robot.robot_name,
+            'robot_type':   robot.robot_type,
+            'max_speed':    robot.max_speed,
+            'online':       robot.online,
+            'last_update':  robot.last_update,
+            'battery_level':robot.battery_level,
+            'speed':        robot.speed,
+            'heading':      robot.heading,
+            'latitude':     robot.latitude,
+            'longitude':    robot.longitude,
+            'altitude':     robot.altitude,
         }
-        
-        message_json = json.dumps(message)
-        
+
+    def _robots_for_client(self, client) -> list:
+        """Return robot dicts this web client is allowed to see."""
+        if client.user_id is None:
+            return []
+        if is_admin(client.user_id):
+            return [self._robot_to_dict(r) for r in self.robots.values()]
+        assigned = set(get_user_robots(client.user_id))
+        return [self._robot_to_dict(r) for r in self.robots.values()
+                if r.robot_id in assigned]
+
+    def _client_can_control(self, client, robot_id: str) -> bool:
+        """Check if a web client is allowed to send commands to robot_id."""
+        if client.user_id is None:
+            return False
+        if is_admin(client.user_id):
+            return True
+        return robot_id in get_user_robots(client.user_id)
+
+    async def broadcast_robot_list(self, target_websocket=None):
+        """Broadcast robot list filtered per user to all (or specific) web clients."""
+        ts = int(datetime.now().timestamp() * 1000)
+
+        async def _send(client):
+            msg = json.dumps({
+                'type':      MessageType.ROBOT_LIST.value,
+                'timestamp': ts,
+                'payload':   {'robots': self._robots_for_client(client)}
+            })
+            await client.websocket.send(msg)
+
         if target_websocket:
-            try:
-                await target_websocket.send(message_json)
-            except Exception as e:
-                self.logger.error(f"Failed to send robot list: {e}")
+            client = next(
+                (c for c in self.clients.values() if c.websocket is target_websocket),
+                None
+            )
+            if client:
+                try:
+                    await _send(client)
+                except Exception as e:
+                    self.logger.error(f"Failed to send robot list: {e}")
         else:
-            # Send to all web clients
             disconnected = []
             for client_id, client in list(self.clients.items()):
                 if client.client_type == "web":
                     try:
-                        await client.websocket.send(message_json)
+                        await _send(client)
                     except Exception as e:
                         self.logger.error(f"Failed to send robot list to {client_id}: {e}")
                         disconnected.append(client_id)
-            
             for client_id in disconnected:
                 self.clients.pop(client_id, None)
-    
+
     async def broadcast_telemetry(self, telemetry_message: dict):
-        """Broadcast telemetry to all web clients"""
+        """Broadcast telemetry only to web clients assigned to that robot."""
+        robot_id     = telemetry_message.get('robot_id')
         message_json = json.dumps(telemetry_message)
-        
+
         disconnected = []
         for client_id, client in list(self.clients.items()):
-            if client.client_type == "web":
-                try:
-                    await client.websocket.send(message_json)
-                except Exception as e:
-                    self.logger.error(f"Failed to send telemetry to {client_id}: {e}")
-                    disconnected.append(client_id)
-        
+            if client.client_type != "web":
+                continue
+            if not self._client_can_control(client, robot_id):
+                continue
+            try:
+                await client.websocket.send(message_json)
+            except Exception as e:
+                self.logger.error(f"Failed to send telemetry to {client_id}: {e}")
+                disconnected.append(client_id)
+
         for client_id in disconnected:
             self.clients.pop(client_id, None)
     

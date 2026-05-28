@@ -11,12 +11,13 @@
 #include "Config_2.h"
 #include "ControlInputService.hpp"
 #include "MotorInterfaces.hpp"
+#include "NetManager.hpp"
 #include "RobotClient.hpp"
 #include "SensorCommsService.hpp"
 #include "SystemState.hpp"
 
 HardwareSerial gps_uart(1);
-WiFiClient ntrip_client;
+NetManager net_manager;
 // Use default SPI bus for BNO085 (compatible with S3)
 Adafruit_BNO08x bno08x(BNO085_SPI_RST_PIN);
 sh2_SensorValue_t bno_sensor_value;
@@ -53,7 +54,7 @@ float mission_debug_speed_cmd_mps = 0.0f;
 
 SensorCommsContext sensor_comms{
   gps_uart,
-  ntrip_client,
+  nullptr,       // Client* ntrip_client — set each tick by net_manager in commsTask
   bno08x,
   bno_sensor_value,
   gps_fix,
@@ -881,8 +882,27 @@ static void updateStatusLeds() {
   }
   status_leds.setPixelColor(0, overall_color);
 
-  // LED1: WiFi connectivity
-  status_leds.setPixelColor(1, wifi_connected ? LED_GREEN : LED_RED);
+  // LED1: Internet connection type
+  //   Green          = WiFi active
+  //   Blue           = SIM / cellular active
+  //   Blinking Yellow= No network, actively trying (WiFi lost or SIM connecting)
+  //   Red            = No network and not connecting
+  {
+    uint32_t net_color;
+    switch (net_manager.source()) {
+      case NetSource::WIFI:
+        net_color = LED_GREEN;
+        break;
+      case NetSource::SIM:
+        net_color = LED_BLUE;
+        break;
+      default:
+        // Blink yellow while at least one bearer is attempting to connect
+        net_color = ((now / 400) % 2 == 0) ? LED_YELLOW : LED_OFF;
+        break;
+    }
+    status_leds.setPixelColor(1, net_color);
+  }
 
   // LED2: GPS fix quality mapping
   if (gps_fix.fix_quality == 4) {
@@ -1327,7 +1347,7 @@ void setup() {
   Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
 
-  // connectWifiIfNeeded();
+  net_manager.begin();   // starts WiFi; activates SIM fallback automatically if WiFi absent
   gps_uart.begin(GPS_UART_BAUD, SERIAL_8N1, GPS_UART_RX_PIN, GPS_UART_TX_PIN);
   Serial.print("[GPS] UART started on RX=");
   Serial.print(GPS_UART_RX_PIN);
@@ -1385,7 +1405,7 @@ void setup() {
   xTaskCreatePinnedToCore(
     commsTask,
     "CommsTask",
-    8192,
+    16384,   // enlarged: TinyGSM AT buffers need extra stack
     nullptr,
     2,
     nullptr,
@@ -1478,6 +1498,8 @@ static void controlTask(void* /*pvParameters*/) {
 
 static void commsTask(void* /*pvParameters*/) {
   unsigned long last_comms_time = millis();
+  Client* prev_ntrip_client = nullptr;  // detect transport switches for NTRIP reconnect
+
   for (;;) {
     unsigned long now = millis();
     unsigned long dt_ms = now - last_comms_time;
@@ -1486,9 +1508,38 @@ static void commsTask(void* /*pvParameters*/) {
     if (dt_ms > loop_stats.max_comms_dt_ms) loop_stats.max_comms_dt_ms = dt_ms;
     if (dt_ms > COMMS_OVERRUN_MS) ++loop_stats.comms_overrun_count;
 
-    SensorComms::connectWifiIfNeeded(sensor_comms);
+    // ── Network management: WiFi primary, SIM fallback ────────────────────────
+    net_manager.update();
+    const NetSource net_src = net_manager.source();
+    Client* cur_client = net_manager.activeClient();
+    if (cur_client != prev_ntrip_client) {
+      // Bearer changed (WiFi↔SIM or gained/lost) — force NTRIP reconnect
+      if (prev_ntrip_client) prev_ntrip_client->stop();
+      ntrip_connected = false;
+      ntrip_reconnect_backoff_ms = 3000;
+      prev_ntrip_client = cur_client;
+      Serial.printf("[NET] Active bearer → %s\n", net_manager.sourceName());
+    }
+    sensor_comms.ntrip_client = cur_client;
+    wifi_connected = (net_src == NetSource::WIFI);
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Control server: WiFi always; SIM only when SIM_CONTROL_ENABLE = 1 ────
 #if CONTROL_SERVER_ENABLE
-    robot_client.update();
+    {
+      // On WiFi the WebSocket library handles reconnect to local server normally.
+      // On SIM:
+      //   SIM_CONTROL_ENABLE 0 → skip (NTRIP-only SIM, control resumes on WiFi)
+      //   SIM_CONTROL_ENABLE 1 → update (needs public server + ArduinoWebsockets)
+#if SIM_CONTROL_ENABLE
+      const bool control_allowed = (net_src == NetSource::WIFI || net_src == NetSource::SIM);
+#else
+      const bool control_allowed = (net_src == NetSource::WIFI);
+#endif
+      if (control_allowed) {
+        robot_client.update();
+      }
+    }
 #endif
     handleUsbSerialControl();
   #if NTRIP_ENABLE

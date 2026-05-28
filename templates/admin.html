@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin — Robot Control</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f1117;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: #e2e8f0;
+      padding: 32px 24px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+    }
+    header h1 { font-size: 20px; font-weight: 700; }
+    header a {
+      font-size: 13px;
+      color: #64748b;
+      text-decoration: none;
+    }
+    header a:hover { color: #94a3b8; }
+
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: #1a1d27;
+      border: 1px solid #2d3148;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 16px;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th {
+      text-align: left;
+      color: #475569;
+      padding: 6px 10px;
+      border-bottom: 1px solid #2d3148;
+      font-weight: 500;
+    }
+    td { padding: 10px; border-bottom: 1px solid #1e2236; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-weight: 600;
+    }
+    .badge-blue   { background: rgba(59,130,246,0.15); color: #60a5fa; }
+    .badge-green  { background: rgba(34,197,94,0.15);  color: #4ade80; }
+    .badge-red    { background: rgba(239,68,68,0.15);  color: #f87171; }
+    .badge-gray   { background: rgba(100,116,139,0.15);color: #94a3b8; }
+
+    .robot-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #1e2236;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 12px;
+      margin: 2px;
+    }
+    .robot-tag button {
+      background: none;
+      border: none;
+      color: #ef4444;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0;
+    }
+    .robot-tag button:hover { color: #f87171; }
+
+    .assign-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .assign-row select, .assign-row input {
+      flex: 1;
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      color: #e2e8f0;
+      padding: 6px 10px;
+      font-size: 13px;
+      outline: none;
+    }
+    .assign-row button {
+      background: #3b82f6;
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 16px;
+      white-space: nowrap;
+    }
+    .assign-row button:hover { background: #2563eb; }
+
+    .online-dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      margin-right: 5px;
+    }
+    .dot-green { background: #4ade80; }
+    .dot-gray  { background: #475569; }
+
+    #toast {
+      position: fixed;
+      bottom: 24px; right: 24px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 13px;
+      display: none;
+      z-index: 100;
+    }
+    #toast.show { display: block; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⚙️ Admin Panel</h1>
+  <div style="display:flex;gap:16px;align-items:center">
+    <a href="/">← Mission Planner</a>
+    <a href="/logout">Log out</a>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- ── Users ──────────────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Users &amp; Robot Assignments</h2>
+    <table id="users-table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Assigned Robots</th>
+        </tr>
+      </thead>
+      <tbody id="users-body">
+        <tr><td colspan="2" style="color:#475569">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── Online Robots ──────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Online Robots</h2>
+    <table>
+      <thead>
+        <tr><th>Robot ID</th><th>Name</th><th>Status</th></tr>
+      </thead>
+      <tbody id="robots-body">
+        <tr><td colspan="3" style="color:#475569">Waiting for data…</td></tr>
+      </tbody>
+    </table>
+
+    <div style="margin-top:20px">
+      <h2 style="margin-bottom:12px">Assign Robot to User</h2>
+      <div class="assign-row">
+        <select id="assign-user"><option value="">— select user —</option></select>
+        <input  id="assign-robot" placeholder="Robot ID (e.g. esp32-02)">
+        <button onclick="assignRobot()">Assign</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+  let usersData = [];
+  let assignmentsData = {};
+  let onlineRobots = [];
+
+  // ── Load admin data from REST API ────────────────────────────────────
+  async function loadData() {
+    const res = await fetch('/api/admin/data');
+    if (!res.ok) { alert('Not authorized'); return; }
+    const d = await res.json();
+    usersData       = d.users;
+    assignmentsData = d.assignments;
+    renderUsers();
+    populateUserSelect();
+  }
+
+  // ── Connect WebSocket to watch online robots ──────────────────────────
+  async function connectWS() {
+    const tokenRes = await fetch('/api/auth/ws-token');
+    const { token } = await tokenRes.json();
+
+    const ws = new WebSocket(
+      window.location.protocol === 'https:'
+        ? 'wss://robot.saintwings.xyz'
+        : `ws://${window.location.hostname}:8765`
+    );
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'web_register', token }));
+    };
+
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'robot_list') {
+        onlineRobots = msg.payload.robots || [];
+        renderRobots();
+      }
+    };
+
+    ws.onclose = () => setTimeout(connectWS, 3000);
+  }
+
+  // ── Render users table ────────────────────────────────────────────────
+  function renderUsers() {
+    const tbody = document.getElementById('users-body');
+    tbody.innerHTML = '';
+
+    usersData.forEach(user => {
+      const assigned = assignmentsData[user.id] || [];
+      const tr = document.createElement('tr');
+
+      const tagsHtml = assigned.map(rid => `
+        <span class="robot-tag">
+          ${rid}
+          <button title="Remove" onclick="unassign(${user.id},'${rid}')">×</button>
+        </span>
+      `).join('') || '<span style="color:#475569;font-size:12px">none</span>';
+
+      const badge = user.is_admin
+        ? '<span class="badge badge-blue">admin</span> '
+        : '';
+
+      tr.innerHTML = `
+        <td>
+          ${badge}<strong>${user.username}</strong><br>
+          <span style="color:#64748b;font-size:11px">${user.email}</span>
+        </td>
+        <td>${tagsHtml}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // ── Render robots table ───────────────────────────────────────────────
+  function renderRobots() {
+    const tbody = document.getElementById('robots-body');
+    tbody.innerHTML = '';
+
+    if (onlineRobots.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="color:#475569">No robots connected</td></tr>';
+      return;
+    }
+
+    onlineRobots.forEach(r => {
+      const dot = r.online
+        ? '<span class="online-dot dot-green"></span>'
+        : '<span class="online-dot dot-gray"></span>';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><code style="font-size:12px">${r.robot_id}</code></td>
+        <td>${r.robot_name}</td>
+        <td>${dot}${r.online ? 'Online' : 'Offline'}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // ── Populate user select dropdown ─────────────────────────────────────
+  function populateUserSelect() {
+    const sel = document.getElementById('assign-user');
+    sel.innerHTML = '<option value="">— select user —</option>';
+    usersData.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.id;
+      opt.textContent = `${u.username} (${u.email})`;
+      sel.appendChild(opt);
+    });
+  }
+
+  // ── Assign robot ──────────────────────────────────────────────────────
+  async function assignRobot() {
+    const userId  = document.getElementById('assign-user').value;
+    const robotId = document.getElementById('assign-robot').value.trim();
+    if (!userId || !robotId) { toast('Select a user and enter a robot ID'); return; }
+
+    await fetch('/api/admin/assign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: parseInt(userId), robot_id: robotId })
+    });
+
+    document.getElementById('assign-robot').value = '';
+    toast(`✅ Assigned ${robotId} to user`);
+    await loadData();
+  }
+
+  // ── Unassign robot ────────────────────────────────────────────────────
+  async function unassign(userId, robotId) {
+    await fetch('/api/admin/unassign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, robot_id: robotId })
+    });
+    toast(`Removed ${robotId}`);
+    await loadData();
+  }
+
+  // ── Toast notification ────────────────────────────────────────────────
+  function toast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 3000);
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────
+  loadData();
+  connectWS();
+</script>
+</body>
+</html>

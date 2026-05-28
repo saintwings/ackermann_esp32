@@ -17,11 +17,59 @@
             color: #e0e0e0;
             height: 100vh;
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
         }
-        
+
+        #topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #111;
+            border-bottom: 1px solid #3d3d3d;
+            padding: 0 16px;
+            height: 38px;
+            flex-shrink: 0;
+            z-index: 100;
+        }
+        #topbar .app-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: #4CAF50;
+            letter-spacing: 0.03em;
+        }
+        #topbar .user-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 12px;
+        }
+        #topbar .user-name {
+            color: #94a3b8;
+        }
+        #topbar a.topbar-link {
+            text-decoration: none;
+            padding: 4px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            font-weight: 500;
+            transition: background 0.15s;
+        }
+        #topbar a.admin-link {
+            color: #60a5fa;
+            border: 1px solid rgba(96,165,250,0.3);
+        }
+        #topbar a.admin-link:hover { background: rgba(96,165,250,0.1); }
+        #topbar a.logout-link {
+            color: #f87171;
+            border: 1px solid rgba(248,113,113,0.3);
+        }
+        #topbar a.logout-link:hover { background: rgba(248,113,113,0.1); }
+
         .container {
             display: flex;
-            height: 100vh;
+            flex: 1;
+            min-height: 0;
             gap: 2px;
             padding: 2px;
             background: #0a0a0a;
@@ -460,6 +508,12 @@
     </style>
 </head>
 <body>
+    <div id="topbar">
+        <span class="app-title">🤖 Mission Planner</span>
+        <div class="user-section" id="user-bar">
+            <!-- filled by renderUserBar() -->
+        </div>
+    </div>
     <div class="container">
         <!-- Map/Visualization Panel -->
         <div class="panel" id="map-panel">
@@ -870,7 +924,41 @@
         const PAGE_HOST = window.location.hostname || 'localhost';
         const PAGE_PROTOCOL = window.location.protocol === 'https:' ? 'https:' : 'http:';
         const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const SERVER_URL = `${WS_PROTOCOL}//${PAGE_HOST}:8765`;
+        const WS_HOST = (window.location.protocol === 'https:')
+            ? 'robot.saintwings.xyz'
+            : `${PAGE_HOST}:8765`;
+        const SERVER_URL = `${WS_PROTOCOL}//${WS_HOST}`;
+
+        let WS_TOKEN  = null;
+        let CURRENT_USER = null;
+
+        async function fetchWsToken() {
+            try {
+                const [tokenRes, meRes] = await Promise.all([
+                    fetch('/api/auth/ws-token'),
+                    fetch('/api/auth/me')
+                ]);
+                if (!tokenRes.ok || !meRes.ok) { window.location.href = '/login'; return; }
+                WS_TOKEN     = (await tokenRes.json()).token;
+                CURRENT_USER = await meRes.json();
+                renderUserBar();
+            } catch(e) {
+                console.error('Failed to fetch auth info:', e);
+            }
+        }
+
+        function renderUserBar() {
+            if (!CURRENT_USER) return;
+            const bar = document.getElementById('user-bar');
+            if (!bar) return;
+            bar.innerHTML = `
+                <span class="user-name">👤 ${CURRENT_USER.username}</span>
+                ${CURRENT_USER.is_admin
+                    ? `<a href="/admin" target="_blank" class="topbar-link admin-link">⚙ Admin</a>`
+                    : ''}
+                <a href="/logout" class="topbar-link logout-link">Logout</a>
+            `;
+        }
         const CLIENT_ID = 'web_' + Math.random().toString(36).substr(2, 9);
         const FIRMWARE_MISSION_MAX_WAYPOINTS = 200;
         const FIRMWARE_MIN_MISSION_SPEED_MPS = 0.05;
@@ -937,6 +1025,7 @@
             const message = {
                 type: 30,  // WEB_REGISTER
                 client_id: CLIENT_ID,
+                token: WS_TOKEN,        // auth token from /api/auth/ws-token
                 payload: {
                     client_name: 'Mission Planner v2.0'
                 }
@@ -4071,8 +4160,9 @@ document.getElementById('stats').innerHTML=\`
             }
         }
 
-        window.addEventListener('load', () => {
+        window.addEventListener('load', async () => {
             initializeVisualization();
+            await fetchWsToken();   // must have token before WS connect
             connectToServer();
             updateCoverageWaypointSelector();
             setCoverageWaypointLimitRange(3, 200, 200);

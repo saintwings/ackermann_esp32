@@ -3,7 +3,7 @@
 #include <SPI.h>
 #include <cstdlib>
 
-#include "Config.h"
+#include "Config_2.h"
 
 namespace {
 
@@ -83,38 +83,9 @@ bool parseGgaLine(const String& line, GpsFix& out) {
 
 namespace SensorComms {
 
-void connectWifiIfNeeded(SensorCommsContext& ctx) {
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!ctx.wifi_connected) {
-      ctx.wifi_connected = true;
-      SENSOR_COMMS_LOG_PRINTF("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-    }
-    return;
-  }
-
-  if (ctx.wifi_connected) {
-    ctx.wifi_connected = false;
-    SENSOR_COMMS_LOG_PRINTLN("[WIFI] Disconnected");
-  }
-
-  static unsigned long last_wifi_attempt_ms = 0;
-  static bool wifi_begin_called = false;
-  unsigned long now = millis();
-
-  if (wifi_begin_called && (now - last_wifi_attempt_ms < 8000)) return;
-
-  wifi_begin_called = true;
-  last_wifi_attempt_ms = now;
-  SENSOR_COMMS_LOG_PRINTF("[WIFI] Connecting to SSID: %s ...\n", WIFI_SSID);
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_MODE_STA);
-  IPAddress local_ip, gateway, subnet;
-  local_ip.fromString(WIFI_STATIC_IP);
-  gateway.fromString(WIFI_STATIC_GATEWAY);
-  subnet.fromString(WIFI_STATIC_SUBNET);
-  WiFi.config(local_ip, gateway, subnet);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-}
+// WiFi connection is now managed by NetManager — see net_manager.cpp.
+// sensor_comms.wifi_connected and sensor_comms.ntrip_client are updated
+// in commsTask (main.cpp) before connectNtripIfNeeded is called.
 
 void initBno085(SensorCommsContext& ctx) {
   SENSOR_COMMS_LOG_PRINTF("[IMU] Init SPI pins SCK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d\n",
@@ -191,8 +162,13 @@ void updateImu(SensorCommsContext& ctx) {
 
 void connectNtripIfNeeded(SensorCommsContext& ctx) {
 #if NTRIP_ENABLE
-  if (!ctx.wifi_connected) return;
-  if (ctx.ntrip_client.connected()) {
+  // Guard: no network transport available yet (set by NetManager in commsTask)
+  if (!ctx.ntrip_client) {
+    ctx.ntrip_connected = false;
+    return;
+  }
+
+  if (ctx.ntrip_client->connected()) {
     ctx.ntrip_connected = true;
     ctx.ntrip_reconnect_backoff_ms = 3000;
     ctx.ntrip_fail_count = 0;
@@ -203,14 +179,14 @@ void connectNtripIfNeeded(SensorCommsContext& ctx) {
   if (now - ctx.last_ntrip_reconnect_ms < ctx.ntrip_reconnect_backoff_ms) return;
   ctx.last_ntrip_reconnect_ms = now;
 
-  ctx.ntrip_client.stop();
-  ctx.ntrip_client.setTimeout(1200);
+  ctx.ntrip_client->stop();
+  ctx.ntrip_client->setTimeout(1200);
   SENSOR_COMMS_LOG_PRINTF("[NTRIP] Connecting to %s:%d (retry=%u, backoff=%lums)\n",
                 NTRIP_HOST,
                 NTRIP_PORT,
                 static_cast<unsigned>(ctx.ntrip_fail_count),
                 ctx.ntrip_reconnect_backoff_ms);
-  if (!ctx.ntrip_client.connect(NTRIP_HOST, NTRIP_PORT)) {
+  if (!ctx.ntrip_client->connect(NTRIP_HOST, NTRIP_PORT)) {
     ctx.ntrip_connected = false;
     ++ctx.ntrip_fail_count;
     ctx.ntrip_reconnect_backoff_ms = min<unsigned long>(ctx.ntrip_reconnect_backoff_ms * 2UL, 60000UL);
@@ -234,13 +210,13 @@ void connectNtripIfNeeded(SensorCommsContext& ctx) {
   request += "Authorization: Basic ";
   request += auth;
   request += "\r\nConnection: keep-alive\r\n\r\n";
-  ctx.ntrip_client.print(request);
+  ctx.ntrip_client->print(request);
 
   unsigned long t0 = millis();
   String response;
   while (millis() - t0 < 1200) {
-    while (ctx.ntrip_client.available()) {
-      response += static_cast<char>(ctx.ntrip_client.read());
+    while (ctx.ntrip_client->available()) {
+      response += static_cast<char>(ctx.ntrip_client->read());
       if (response.endsWith("\r\n\r\n")) break;
     }
     if (response.endsWith("\r\n\r\n")) break;
@@ -249,7 +225,7 @@ void connectNtripIfNeeded(SensorCommsContext& ctx) {
 
   if (response.indexOf("200 OK") >= 0 || response.indexOf("ICY 200 OK") >= 0) {
     ctx.ntrip_connected = true;
-    ctx.ntrip_client.setTimeout(20);
+    ctx.ntrip_client->setTimeout(20);
     ctx.ntrip_reconnect_backoff_ms = 3000;
     ctx.ntrip_fail_count = 0;
     SENSOR_COMMS_LOG_PRINTLN("[NTRIP] Connected");
@@ -261,7 +237,7 @@ void connectNtripIfNeeded(SensorCommsContext& ctx) {
     String status_line = (eol > 0) ? response.substring(0, eol) : response;
     SENSOR_COMMS_LOG_PRINTF("[NTRIP] Handshake failed: %s\n", status_line.c_str());
     SENSOR_COMMS_LOG_PRINTF("[NTRIP] Next retry in %lums\n", ctx.ntrip_reconnect_backoff_ms);
-    ctx.ntrip_client.stop();
+    ctx.ntrip_client->stop();
   }
 #else
   (void)ctx;
@@ -284,18 +260,18 @@ void updateGpsAndNtrip(SensorCommsContext& ctx) {
   }
 
 #if NTRIP_ENABLE
-  if (ctx.ntrip_connected && ctx.ntrip_client.connected()) {
+  if (ctx.ntrip_connected && ctx.ntrip_client && ctx.ntrip_client->connected()) {
     if (ctx.gps_fix.valid && (millis() - ctx.last_ntrip_gga_send_ms) > 1000 && ctx.gps_fix.last_gga.length() > 0) {
-      ctx.ntrip_client.print(ctx.gps_fix.last_gga);
-      ctx.ntrip_client.print("\r\n");
+      ctx.ntrip_client->print(ctx.gps_fix.last_gga);
+      ctx.ntrip_client->print("\r\n");
       ctx.last_ntrip_gga_send_ms = millis();
     }
 
-    int avail = ctx.ntrip_client.available();
+    int avail = ctx.ntrip_client->available();
     if (avail > 0) {
       uint8_t rtcm_buf[256];
       int to_read = (avail > static_cast<int>(sizeof(rtcm_buf))) ? static_cast<int>(sizeof(rtcm_buf)) : avail;
-      int read_n = ctx.ntrip_client.read(rtcm_buf, to_read);
+      int read_n = ctx.ntrip_client->read(rtcm_buf, to_read);
       if (read_n > 0) {
         ctx.gps_uart.write(rtcm_buf, read_n);
       }

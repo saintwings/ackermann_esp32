@@ -28,13 +28,31 @@
 // Control server WebSocket settings
 #define CONTROL_SERVER_ENABLE 1
 //****** */
-#define CONTROL_SERVER_HOST "192.168.1.152"
+#define CONTROL_SERVER_HOST "192.168.1.152"   // local WiFi address
 //#define CONTROL_SERVER_HOST "192.168.1.43"
 
 #define CONTROL_SERVER_PORT 8765
 #define CONTROL_SERVER_PATH "/"
 // Robot telemetry publish interval to control_server (milliseconds)
 #define ROBOT_TELEMETRY_INTERVAL_MS 500
+
+// ── SIM / cellular control server behaviour ───────────────────────────────────
+// 0 = NTRIP-only SIM mode (default — no control server over SIM)
+//     The robot keeps RTK corrections when WiFi is absent; missions run
+//     autonomously. Control server reconnects automatically when WiFi returns.
+//
+// 1 = Full-remote SIM mode — control server also runs over cellular.
+//     Requires:
+//       a) CONTROL_SERVER_HOST_SIM set to a publicly reachable address
+//          (port-forward your router, use DuckDNS/ngrok, or a VPS)
+//       b) ArduinoWebsockets library (replaces links2004/WebSockets)
+//          Add to platformio.ini:  gilmaimon/ArduinoWebsockets@^0.5.3
+#define SIM_CONTROL_ENABLE  0
+
+// Public hostname / IP for the control server when SIM_CONTROL_ENABLE = 1
+// Leave as-is if SIM_CONTROL_ENABLE = 0
+#define CONTROL_SERVER_HOST_SIM  "your-robot.duckdns.org"
+#define CONTROL_SERVER_PORT_SIM  8765
 
 // Robot identity for control_server.py registration
 #define ROBOT_ID "esp32-02"
@@ -105,6 +123,25 @@
 #define MAX_LINEAR_SPEED_MS 0.6f       // Maximum forward/reverse speed (m/s)
 #define MAX_STEERING_ANGLE_DEG 30.0f   // Maximum steering angle (degrees)
 
+// ── SIMCOM A7670X (CAT1-A7670X-V1.02 board) ─────────────────────────────────
+// Uses ESP32-S3 UART2.  Board pins: VCC=5V rail, GND, TXD→GPIO18, RXD←GPIO17,
+// EN→GPIO21 (HIGH=on), CTS=leave open, VDD=leave open.
+#define SIM_UART_NUM        2
+#define SIM_UART_BAUD       115200
+#define SIM_TX_PIN          17      // ESP32 UART2 TX → board RXD
+#define SIM_RX_PIN          18      // board TXD      → ESP32 UART2 RX
+#define SIM_EN_PIN          21      // set HIGH to power on modem
+
+// APN for your SIM card (Thailand: AIS/DTAC/TrueMove H all use "internet")
+#define SIM_APN             "internet"
+#define SIM_APN_USER        ""
+#define SIM_APN_PASS        ""
+
+// How long WiFi must be absent before activating SIM (ms)
+#define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
+// How long WiFi must be stable before switching back from SIM (ms)
+#define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL
+
 // Debug log groups (1 = enabled, 0 = disabled)
 #define DEBUG_LOG_SENSOR_1HZ 1
 #define DEBUG_LOG_SENSOR_COMMS 0
@@ -120,9 +157,11 @@
 //   - Red: Fault / Not OK
 //   - Blinking Red: E-stop active
 //
-// LED1: WiFi
-//   - Green: Connected
-//   - Red: Disconnected
+// LED1: Internet connection type
+//   - Green:          WiFi connected (primary)
+//   - Blue:           SIM / cellular connected (fallback)
+//   - Blinking Yellow: No network — actively trying (WiFi lost / SIM connecting)
+//   - Red:            No network and not connecting
 //
 // LED2: GPS fix quality
 //   - Green: Fix quality = 4 (RTK Fixed)

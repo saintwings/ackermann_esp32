@@ -59,12 +59,7 @@ void ODriveCAN::set_position(float pos_turns, float vel_ff, float torque_ff) {
   }
 }
 
-void ODriveCAN::go_home() {
-  current_target_pos = 0.0f;
-  last_sent_pos = 9999.0f;
-  last_sent_pos_ms = 0;
-  set_axis_state(kODriveAxisStateHoming);
-}
+
 
 GIM8108CAN::GIM8108CAN(uint32_t id, LoopStats* stats) : can_id_(id), loop_stats_(stats) {}
 

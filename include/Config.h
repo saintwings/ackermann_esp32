@@ -105,6 +105,18 @@
 #define MAX_LINEAR_SPEED_MS 0.6f       // Maximum forward/reverse speed (m/s)
 #define MAX_STEERING_ANGLE_DEG 30.0f   // Maximum steering angle (degrees)
 
+// ── SIMCOM A7670X (CAT1-A7670X-V1.02 board) ─────────────────────────────────
+#define SIM_UART_NUM        2
+#define SIM_UART_BAUD       115200
+#define SIM_TX_PIN          17
+#define SIM_RX_PIN          18
+#define SIM_EN_PIN          21
+#define SIM_APN             "internet"
+#define SIM_APN_USER        ""
+#define SIM_APN_PASS        ""
+#define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
+#define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL
+
 // Debug log groups (1 = enabled, 0 = disabled)
 #define DEBUG_LOG_SENSOR_1HZ 1
 #define DEBUG_LOG_SENSOR_COMMS 0
@@ -120,9 +132,11 @@
 //   - Red: Fault / Not OK
 //   - Blinking Red: E-stop active
 //
-// LED1: WiFi
-//   - Green: Connected
-//   - Red: Disconnected
+// LED1: Internet connection type
+//   - Green:          WiFi connected (primary)
+//   - Blue:           SIM / cellular connected (fallback)
+//   - Blinking Yellow: No network — actively trying (WiFi lost / SIM connecting)
+//   - Red:            No network and not connecting
 //
 // LED2: GPS fix quality
 //   - Green: Fix quality = 4 (RTK Fixed)
