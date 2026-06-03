@@ -87,7 +87,7 @@ void applyDriveOutputs(bool zero_turn_mode,
   
   // Create differential: when rotating, one motor increases while other decreases
   float left_mps = forward_mps;
-  float right_mps = forward_mps;
+  float right_mps = -forward_mps;
   
   if (fabsf(angle_deg) > 0.1f) {
     // angle_deg > 0: rotate left (increase left motor differential)

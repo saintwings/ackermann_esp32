@@ -112,7 +112,7 @@
 #define DRIVE_WHEEL_DIAMETER_M 0.2f
 
 // Robot motion limits
-#define MAX_LINEAR_SPEED_MS 0.05f       // Maximum forward/reverse speed (m/s)
+#define MAX_LINEAR_SPEED_MS 0.2f       // Maximum forward/reverse speed (m/s)
 #define MAX_STEERING_ANGLE_DEG 30.0f   // Maximum steering angle (degrees)
 
 // ── SIMCOM A7670X (CAT1-A7670X-V1.02 board) ─────────────────────────────────
