@@ -12,33 +12,54 @@ NetManager::NetManager()
 // begin() — call once in setup()
 // ─────────────────────────────────────────────────────────────────────────────
 void NetManager::begin() {
-  // EN pin: idle LOW (modem off) until SIM fallback is needed
   pinMode(SIM_EN_PIN, OUTPUT);
   digitalWrite(SIM_EN_PIN, LOW);
 
-  // Start WiFi using the credentials and static IP from Config
+#if NET_MODE == 2   // ── SIM only ──────────────────────────────────────────────
+  WiFi.mode(WIFI_OFF);
+  _wifiLostMs = 1;   // treat WiFi as already lost → SIM starts on first update()
+  Serial.println("[NET] Mode: SIM only (WiFi disabled)");
+
+#elif NET_MODE == 3  // ── WiFi only ─────────────────────────────────────────────
   WiFi.mode(WIFI_STA);
-  IPAddress ip, gw, sn;
-  ip.fromString(WIFI_STATIC_IP);
-  gw.fromString(WIFI_STATIC_GATEWAY);
+  IPAddress ip, gw, sn, dns1, dns2;
+  ip.fromString(WIFI_STATIC_IP);   gw.fromString(WIFI_STATIC_GATEWAY);
   sn.fromString(WIFI_STATIC_SUBNET);
-  WiFi.config(ip, gw, sn);
+  dns1.fromString("8.8.8.8");      dns2.fromString("1.1.1.1");
+  WiFi.config(ip, gw, sn, dns1, dns2);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.printf("[NET] WiFi connecting to SSID: %s\n", WIFI_SSID);
+  Serial.printf("[NET] Mode: WiFi only — SSID: %s\n", WIFI_SSID);
+
+#else               // ── WiFi + SIM fallback (default) ─────────────────────────
+  WiFi.mode(WIFI_STA);
+  IPAddress ip, gw, sn, dns1, dns2;
+  ip.fromString(WIFI_STATIC_IP);   gw.fromString(WIFI_STATIC_GATEWAY);
+  sn.fromString(WIFI_STATIC_SUBNET);
+  dns1.fromString("8.8.8.8");      dns2.fromString("1.1.1.1");
+  WiFi.config(ip, gw, sn, dns1, dns2);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.printf("[NET] Mode: WiFi+SIM — SSID: %s\n", WIFI_SSID);
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // update() — call every comms loop tick
 // ─────────────────────────────────────────────────────────────────────────────
 void NetManager::update() {
+#if NET_MODE == 2   // ── SIM only ──────────────────────────────────────────────
+  simTick();
+
+#elif NET_MODE == 3  // ── WiFi only ─────────────────────────────────────────────
   wifiTick();
 
-  // Only spin up SIM after WiFi has been absent long enough
+#else               // ── WiFi + SIM fallback ────────────────────────────────────
+  wifiTick();
   if (_source != NetSource::WIFI &&
       _wifiLostMs > 0 &&
       millis() - _wifiLostMs >= NET_WIFI_FAIL_TIMEOUT_MS) {
     simTick();
   }
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -110,18 +131,34 @@ void NetManager::simTick() {
       _simRetries = 0;
       break;
 
-    // ── POWERING_ON: wait for modem to boot and respond ──────────────────────
-    case SimState::POWERING_ON:
-      if (now - _simStateMs < 6000) return;  // give modem 6 s to boot
+    // ── POWERING_ON: wait for modem to boot ──────────────────────────────────
+    case SimState::POWERING_ON: {
+      // Echo any bytes the modem sends during boot (useful for debugging)
+      while (_simSerial.available()) {
+        Serial.write(_simSerial.read());
+      }
+      if (now - _simStateMs < 10000) return;  // A7670 needs up to 10 s to boot
+
+      // Flush any boot garbage, then send AT to test
+      while (_simSerial.available()) _simSerial.read();
+      _simSerial.println("AT");
+      delay(500);
+      String resp;
+      while (_simSerial.available()) resp += (char)_simSerial.read();
+      Serial.printf("[SIM] AT probe response: '%s'\n", resp.c_str());
+
       _simState   = SimState::BOOTING;
       _simStateMs = now;
+      _simRetries = 0;
       break;
+    }
 
-    // ── BOOTING: send AT, check modem is alive ───────────────────────────────
+    // ── BOOTING: init ────────────────────────────────────────────────────────
     case SimState::BOOTING:
       if (now - _simStateMs < 2000) return;
+
       if (_modem.init()) {
-        // Disable CTS/RTS hardware flow control (board has CTS pin, we leave it open)
+        // Disable hardware flow control (CTS pin on board is left open)
         _modem.sendAT("+IFC=0,0");
         _modem.waitResponse(1000);
         Serial.printf("[SIM] Modem ready: %s\n", _modem.getModemInfo().c_str());
@@ -132,11 +169,11 @@ void NetManager::simTick() {
         ++_simRetries;
         Serial.printf("[SIM] Init failed (attempt %u), retrying...\n", _simRetries);
         _simStateMs = now;  // retry in 2 s
-        if (_simRetries > 10) {
-          // Hard reset: cycle EN pin
-          Serial.println("[SIM] Too many init failures — cycling power");
+        if (_simRetries > 15) {
+          // Power cycle the modem and try again
+          Serial.println("[SIM] Cycling power after too many init failures");
           digitalWrite(SIM_EN_PIN, LOW);
-          delay(500);
+          delay(1000);
           simPowerOn();
           _simRetries = 0;
           _simStateMs = now;

@@ -25,20 +25,30 @@
 // TCP server port for line-based protocol
 #define WIFI_SERVER_PORT 7777
 
-// Control server WebSocket settings
-#define CONTROL_SERVER_ENABLE 1
-//****** */
-#define CONTROL_SERVER_HOST "192.168.1.152"
-//#define CONTROL_SERVER_HOST "192.168.1.43"
+// ── Server connection mode ────────────────────────────────────────────────────
+// 1 = LOCAL   — control server on local WiFi  (ws://, no SSL)
+// 2 = PUBLIC  — control server via Cloudflare Tunnel  (wss://, SSL)
+#define SERVER_MODE 2
 
-#define CONTROL_SERVER_PORT 8765
+#if SERVER_MODE == 1
+  #define CONTROL_SERVER_HOST    "192.168.1.166"
+  #define CONTROL_SERVER_PORT    8765
+  #define CONTROL_SERVER_USE_SSL 0
+#elif SERVER_MODE == 2
+  #define CONTROL_SERVER_HOST    "robot.saintwings.xyz"
+  #define CONTROL_SERVER_PORT    443
+  #define CONTROL_SERVER_USE_SSL 1
+#endif
+
+#define CONTROL_SERVER_ENABLE 1
 #define CONTROL_SERVER_PATH "/"
-// Robot telemetry publish interval to control_server (milliseconds)
 #define ROBOT_TELEMETRY_INTERVAL_MS 500
 
+#define SIM_CONTROL_ENABLE  (SERVER_MODE == 2 ? 1 : 0)
+
 // Robot identity for control_server.py registration
-#define ROBOT_ID "esp32-02"
-#define ROBOT_NAME "Robot2"
+#define ROBOT_ID "ladybug_001"
+#define ROBOT_NAME "ladybug"
 #define ROBOT_TYPE "ackermann"
 
 // ZED-F9P UART settings (UART1)
@@ -99,21 +109,32 @@
 #define ROBOT_GEOMETRY_W_M 0.36f
 #define ROBOT_GEOMETRY_H_M 0.36f
 // Drive wheel diameter used for m/s <-> RPM conversion.
-#define DRIVE_WHEEL_DIAMETER_M 0.20f
+#define DRIVE_WHEEL_DIAMETER_M 0.2f
 
 // Robot motion limits
-#define MAX_LINEAR_SPEED_MS 0.6f       // Maximum forward/reverse speed (m/s)
+#define MAX_LINEAR_SPEED_MS 0.05f       // Maximum forward/reverse speed (m/s)
 #define MAX_STEERING_ANGLE_DEG 30.0f   // Maximum steering angle (degrees)
 
 // ── SIMCOM A7670X (CAT1-A7670X-V1.02 board) ─────────────────────────────────
+// Uses ESP32-S3 UART2.  Board pins: VCC=5V rail, GND, TXD→GPIO18, RXD←GPIO17,
+// EN→GPIO21 (HIGH=on), CTS=leave open, VDD=leave open.
 #define SIM_UART_NUM        2
 #define SIM_UART_BAUD       115200
-#define SIM_TX_PIN          17
-#define SIM_RX_PIN          18
-#define SIM_EN_PIN          21
+#define SIM_TX_PIN          17      // ESP32 UART2 TX → board RXD
+#define SIM_RX_PIN          18      // board TXD      → ESP32 UART2 RX
+#define SIM_EN_PIN          21      // set HIGH to power on modem
+
+// APN for your SIM card (Thailand: AIS/DTAC/TrueMove H all use "internet")
 #define SIM_APN             "internet"
 #define SIM_APN_USER        ""
 #define SIM_APN_PASS        ""
+
+// ── Network mode ──────────────────────────────────────────────────────────────
+// 1 = WiFi primary, SIM fallback
+// 2 = SIM only (WiFi disabled)
+// 3 = WiFi only (no SIM)
+#define NET_MODE 3
+
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL
 

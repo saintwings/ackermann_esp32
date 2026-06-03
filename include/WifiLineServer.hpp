@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <WiFi.h>
-#include "Config.h"
+#include "RobotConfig.h"
 
 class WifiLineServer {
  public:

@@ -3,7 +3,7 @@
 #include <ArduinoJson.h>
 #include <WebSocketsClient.h>
 
-#include "Config.h"
+#include "RobotConfig.h"
 
 namespace {
 
@@ -39,7 +39,11 @@ struct RobotClient::Impl {
 RobotClient::RobotClient() : impl_(new Impl()) {}
 
 void RobotClient::begin() {
+#if CONTROL_SERVER_USE_SSL
+  impl_->websocket.beginSSL(CONTROL_SERVER_HOST, CONTROL_SERVER_PORT, CONTROL_SERVER_PATH);
+#else
   impl_->websocket.begin(CONTROL_SERVER_HOST, CONTROL_SERVER_PORT, CONTROL_SERVER_PATH);
+#endif
   impl_->websocket.setReconnectInterval(10000);
   impl_->websocket.enableHeartbeat(15000, 3000, 2);
   impl_->websocket.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {

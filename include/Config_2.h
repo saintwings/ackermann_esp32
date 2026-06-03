@@ -25,34 +25,36 @@
 // TCP server port for line-based protocol
 #define WIFI_SERVER_PORT 7777
 
-// Control server WebSocket settings
-#define CONTROL_SERVER_ENABLE 1
-//****** */
-#define CONTROL_SERVER_HOST "192.168.1.152"   // local WiFi address
-//#define CONTROL_SERVER_HOST "192.168.1.43"
+// ── Server connection mode ────────────────────────────────────────────────────
+// 1 = LOCAL   — control server on local WiFi  (ws://, no SSL)
+//               Use when robot and server are on the same network.
+//               Fast, no internet required.
+//
+// 2 = PUBLIC  — control server via Cloudflare Tunnel  (wss://, SSL)
+//               Use for remote monitoring / field deployment.
+//               Works over both WiFi and SIM.
+#define SERVER_MODE 1
 
-#define CONTROL_SERVER_PORT 8765
+#if SERVER_MODE == 1
+  #define CONTROL_SERVER_HOST    "192.168.1.152"
+  //#define CONTROL_SERVER_HOST  "192.168.1.43"
+  #define CONTROL_SERVER_PORT    8765
+  #define CONTROL_SERVER_USE_SSL 0
+#elif SERVER_MODE == 2
+  #define CONTROL_SERVER_HOST    "robot.saintwings.xyz"
+  #define CONTROL_SERVER_PORT    443
+  #define CONTROL_SERVER_USE_SSL 1
+#endif
+
+#define CONTROL_SERVER_ENABLE 1
 #define CONTROL_SERVER_PATH "/"
-// Robot telemetry publish interval to control_server (milliseconds)
 #define ROBOT_TELEMETRY_INTERVAL_MS 500
 
-// ── SIM / cellular control server behaviour ───────────────────────────────────
-// 0 = NTRIP-only SIM mode (default — no control server over SIM)
-//     The robot keeps RTK corrections when WiFi is absent; missions run
-//     autonomously. Control server reconnects automatically when WiFi returns.
-//
-// 1 = Full-remote SIM mode — control server also runs over cellular.
-//     Requires:
-//       a) CONTROL_SERVER_HOST_SIM set to a publicly reachable address
-//          (port-forward your router, use DuckDNS/ngrok, or a VPS)
-//       b) ArduinoWebsockets library (replaces links2004/WebSockets)
-//          Add to platformio.ini:  gilmaimon/ArduinoWebsockets@^0.5.3
-#define SIM_CONTROL_ENABLE  0
-
-// Public hostname / IP for the control server when SIM_CONTROL_ENABLE = 1
-// Leave as-is if SIM_CONTROL_ENABLE = 0
-#define CONTROL_SERVER_HOST_SIM  "your-robot.duckdns.org"
-#define CONTROL_SERVER_PORT_SIM  8765
+// SIM behaviour when SERVER_MODE == 1 (LOCAL):
+//   SIM is used for NTRIP corrections only. Control server only works on WiFi.
+// SIM behaviour when SERVER_MODE == 2 (PUBLIC):
+//   Both NTRIP and control server work over SIM (robot.saintwings.xyz is reachable).
+#define SIM_CONTROL_ENABLE  (SERVER_MODE == 2 ? 1 : 0)
 
 // Robot identity for control_server.py registration
 #define ROBOT_ID "esp32-02"
@@ -100,7 +102,7 @@
 
 #define STEER_MOTOR_TYPE_ODRIVE 1
 #define STEER_MOTOR_TYPE_GIM8108 2
-#define STEER_MOTOR_TYPE STEER_MOTOR_TYPE_GIM8108
+#define STEER_MOTOR_TYPE STEER_MOTOR_TYPE_ODRIVE
 
 // Motor CAN IDs used by backend adapters
 #define DRIVE_FRONT_MOTOR_ID 1
@@ -137,9 +139,16 @@
 #define SIM_APN_USER        ""
 #define SIM_APN_PASS        ""
 
-// How long WiFi must be absent before activating SIM (ms)
+// ── Network mode ──────────────────────────────────────────────────────────────
+// 1 = WiFi primary, SIM fallback   — try WiFi first; use SIM when WiFi absent
+// 2 = SIM only                      — no WiFi, SIM activates immediately on boot
+//                                     (disables WiFi radio to save power)
+// 3 = WiFi only                     — no SIM module, original behaviour
+#define NET_MODE 1
+
+// (Mode 1 only) How long WiFi must be absent before activating SIM
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
-// How long WiFi must be stable before switching back from SIM (ms)
+// (Mode 1 only) How long WiFi must be stable before switching back from SIM
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL
 
 // Debug log groups (1 = enabled, 0 = disabled)

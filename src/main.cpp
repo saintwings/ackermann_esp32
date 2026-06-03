@@ -8,7 +8,7 @@
 #include <ArduinoJson.h>
 #include "DoubleAckermann.hpp"
 #include "ControlActuationService.hpp"
-#include "Config_2.h"
+#include "RobotConfig.h"
 #include "ControlInputService.hpp"
 #include "MotorInterfaces.hpp"
 #include "NetManager.hpp"
@@ -89,7 +89,7 @@ static void logSensorsAt1Hz() {
   if (now - last_sensor_log_ms < 1000) return;
   last_sensor_log_ms = now;
 
-  //Serial.printf("[WIFI] %s", wifi_connected ? WiFi.localIP().toString().c_str() : "disconnected");
+  Serial.printf("[NET] %s", net_manager.sourceName());
   Serial.print(" | [GPS] ");
   if (gps_fix.valid) {
     Serial.print("fix=");
@@ -250,7 +250,7 @@ static void applyModeInit(RobotMode mode);
 
 static constexpr float WHEELBASE_M = ROBOT_GEOMETRY_H_M;
 static constexpr float TRACK_WIDTH_M = ROBOT_GEOMETRY_W_M;
-static constexpr float MAX_LINEAR_MPS = 1.50f;
+static constexpr float MAX_LINEAR_MPS = MAX_LINEAR_SPEED_MS;
 static constexpr float MAX_STEER_DEG = MAX_STEERING_ANGLE_DEG;
 static constexpr float WHEEL_DIAMETER_M = DRIVE_WHEEL_DIAMETER_M;
 static constexpr unsigned long IMU_STALE_TIMEOUT_MS = 1500;
@@ -1524,21 +1524,16 @@ static void commsTask(void* /*pvParameters*/) {
     wifi_connected = (net_src == NetSource::WIFI);
     // ─────────────────────────────────────────────────────────────────────────
 
-    // ── Control server: WiFi always; SIM only when SIM_CONTROL_ENABLE = 1 ────
+    // ── Control server update ─────────────────────────────────────────────────
+    // WebSocketsClient (links2004) always uses WiFi's TCP stack internally.
+    // It cannot connect over TinyGSM/SIM — attempting it causes DNS errors.
+    // Rule: only call robot_client.update() when WiFi is the active bearer.
+    // NET_MODE 3 (WiFi only): always allowed.
+    // NET_MODE 1 (WiFi+SIM):  allowed on WiFi; NTRIP-only on SIM.
+    // NET_MODE 2 (SIM only):  never allowed until WebSocket-over-TinyGSM is added.
 #if CONTROL_SERVER_ENABLE
-    {
-      // On WiFi the WebSocket library handles reconnect to local server normally.
-      // On SIM:
-      //   SIM_CONTROL_ENABLE 0 → skip (NTRIP-only SIM, control resumes on WiFi)
-      //   SIM_CONTROL_ENABLE 1 → update (needs public server + ArduinoWebsockets)
-#if SIM_CONTROL_ENABLE
-      const bool control_allowed = (net_src == NetSource::WIFI || net_src == NetSource::SIM);
-#else
-      const bool control_allowed = (net_src == NetSource::WIFI);
-#endif
-      if (control_allowed) {
-        robot_client.update();
-      }
+    if (net_src == NetSource::WIFI) {
+      robot_client.update();
     }
 #endif
     handleUsbSerialControl();

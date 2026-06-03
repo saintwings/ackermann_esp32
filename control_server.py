@@ -265,7 +265,7 @@ class ControlServer:
                 self.robot_health_check_task()
             )
     
-    async def handle_client(self, websocket):
+    async def handle_client(self, websocket, path=None):
         """Handle a new WebSocket client connection"""
         client_id = str(uuid.uuid4())[:8]
         client_type = None
@@ -383,9 +383,10 @@ class ControlServer:
         if user is None:
             self.logger.warning(f"Web client {client_id} rejected: invalid or missing token")
             await websocket.send(json.dumps({
-                'type': 'error',
+                'type': 'auth_error',
                 'payload': {'message': 'Authentication required. Please log in.'}
             }))
+            await websocket.close()
             return
 
         self.clients[client_id] = WebSocketClient(

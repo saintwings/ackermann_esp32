@@ -1056,7 +1056,15 @@
         
         function handleServerMessage(message) {
             const msgType = message.type;
-            
+
+            if (msgType === 'auth_error') {
+                // Session expired or token invalid — stop reconnecting, go to login
+                console.warn('[AUTH] Session expired — redirecting to login');
+                if (ws) { ws.onclose = null; ws.close(); }
+                window.location.href = '/login';
+                return;
+            }
+
             if (msgType === 21) {  // ROBOT_LIST
                 handleRobotList(message);
             } else if (msgType === 1) {  // SENSOR_TELEMETRY
@@ -1719,7 +1727,10 @@
         };
 
         // Coverage planning state (reuses mission waypoints by index)
-        const COVERAGE_API_URL = `${PAGE_PROTOCOL}//${PAGE_HOST}:5000/api/coverage_plan`;
+        // Local: use explicit port 5000. Public (Cloudflare): no port, same origin.
+        const COVERAGE_API_URL = (window.location.protocol === 'https:')
+            ? `${PAGE_PROTOCOL}//${PAGE_HOST}/api/coverage_plan`
+            : `${PAGE_PROTOCOL}//${PAGE_HOST}:5000/api/coverage_plan`;
         let coverageBoundaryIndices = [];
         let coverageDraftObstacleIndices = [];
         let coverageObstaclesIndices = [];
@@ -3203,6 +3214,7 @@
                 const response = await fetch(COVERAGE_API_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',   // send session cookie for @login_required
                     body: JSON.stringify(payload)
                 });
 

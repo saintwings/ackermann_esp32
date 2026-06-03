@@ -59,6 +59,10 @@ void ODriveCAN::set_position(float pos_turns, float vel_ff, float torque_ff) {
   }
 }
 
+void ODriveCAN::go_home() {
+  //send_cmd(0xC4);
+}
+
 
 
 GIM8108CAN::GIM8108CAN(uint32_t id, LoopStats* stats) : can_id_(id), loop_stats_(stats) {}

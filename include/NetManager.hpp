@@ -10,7 +10,7 @@
 #include <WiFi.h>
 #include <TinyGsmClient.h>
 
-#include "Config_2.h"
+#include "RobotConfig.h"
 
 // Which bearer is currently providing internet
 enum class NetSource { NONE, WIFI, SIM };

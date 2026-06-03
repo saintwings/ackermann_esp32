@@ -20,13 +20,8 @@ DriveCommand resolveDriveCommand(ControlTargets& targets,
                                  float max_linear_mps,
                                  float max_steer_deg) {
   DriveCommand out;
-  out.remote_active = remote_active;
-
-  if (remote_active) {
-    out.linear_mps = targets.linear_mps;
-    out.angle_deg = targets.angle_deg;
-    return out;
-  }
+  const bool use_remote = remote_active && !control_enable;
+  out.remote_active = use_remote;
 
   if (control_enable) {
     float axis_forward = -(static_cast<float>(ly) - 128.0f) / 128.0f;
@@ -43,6 +38,12 @@ DriveCommand resolveDriveCommand(ControlTargets& targets,
 
     targets.linear_mps = out.linear_mps;
     targets.angle_deg = out.angle_deg;
+    return out;
+  }
+
+  if (use_remote) {
+    out.linear_mps = targets.linear_mps;
+    out.angle_deg = targets.angle_deg;
     return out;
   }
 
