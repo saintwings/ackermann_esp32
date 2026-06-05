@@ -27,17 +27,11 @@
 
 // ── Server connection mode ────────────────────────────────────────────────────
 // 1 = LOCAL   — control server on local WiFi  (ws://, no SSL)
-//               Use when robot and server are on the same network.
-//               Fast, no internet required.
-//
 // 2 = PUBLIC  — control server via Cloudflare Tunnel  (wss://, SSL)
-//               Use for remote monitoring / field deployment.
-//               Works over both WiFi and SIM.
-#define SERVER_MODE 1
+#define SERVER_MODE 2
 
 #if SERVER_MODE == 1
-  #define CONTROL_SERVER_HOST    "192.168.1.152"
-  //#define CONTROL_SERVER_HOST  "192.168.1.43"
+  #define CONTROL_SERVER_HOST    "192.168.1.166"
   #define CONTROL_SERVER_PORT    8765
   #define CONTROL_SERVER_USE_SSL 0
 #elif SERVER_MODE == 2
@@ -50,10 +44,6 @@
 #define CONTROL_SERVER_PATH "/"
 #define ROBOT_TELEMETRY_INTERVAL_MS 500
 
-// SIM behaviour when SERVER_MODE == 1 (LOCAL):
-//   SIM is used for NTRIP corrections only. Control server only works on WiFi.
-// SIM behaviour when SERVER_MODE == 2 (PUBLIC):
-//   Both NTRIP and control server work over SIM (robot.saintwings.xyz is reachable).
 #define SIM_CONTROL_ENABLE  (SERVER_MODE == 2 ? 1 : 0)
 
 // Robot identity for control_server.py registration
@@ -102,13 +92,17 @@
 
 #define STEER_MOTOR_TYPE_ODRIVE 1
 #define STEER_MOTOR_TYPE_GIM8108 2
-#define STEER_MOTOR_TYPE STEER_MOTOR_TYPE_ODRIVE
+#define STEER_MOTOR_TYPE STEER_MOTOR_TYPE_GIM8108
 
 // Motor CAN IDs used by backend adapters
 #define DRIVE_FRONT_MOTOR_ID 1
 #define DRIVE_REAR_MOTOR_ID 2
 #define STEER_LEFT_MOTOR_ID 1
 #define STEER_RIGHT_MOTOR_ID 2
+
+// Drive direction signs (set to -1 to invert a side)
+#define DRIVE_LEFT_SIGN -1
+#define DRIVE_RIGHT_SIGN 1
 
 // GIM8108 steering direction signs (set to -1 to invert a side)
 #define STEER_GIM_LEFT_SIGN 1
@@ -118,6 +112,7 @@
 // W = track width, H = wheelbase/axle spacing used by zero-turn steering geometry.
 #define ROBOT_GEOMETRY_W_M 0.7f
 #define ROBOT_GEOMETRY_H_M 1.1f
+
 // Drive wheel diameter used for m/s <-> RPM conversion.
 #define DRIVE_WHEEL_DIAMETER_M 0.23f
 
@@ -140,19 +135,16 @@
 #define SIM_APN_PASS        ""
 
 // ── Network mode ──────────────────────────────────────────────────────────────
-// 1 = WiFi primary, SIM fallback   — try WiFi first; use SIM when WiFi absent
-// 2 = SIM only                      — no WiFi, SIM activates immediately on boot
-//                                     (disables WiFi radio to save power)
-// 3 = WiFi only                     — no SIM module, original behaviour
-#define NET_MODE 1
+// 1 = WiFi primary, SIM fallback
+// 2 = SIM only (WiFi disabled)
+// 3 = WiFi only (no SIM)
+#define NET_MODE 3
 
-// (Mode 1 only) How long WiFi must be absent before activating SIM
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
-// (Mode 1 only) How long WiFi must be stable before switching back from SIM
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL
 
 // Debug log groups (1 = enabled, 0 = disabled)
-#define DEBUG_LOG_SENSOR_1HZ 1
+#define DEBUG_LOG_SENSOR_1HZ 0
 #define DEBUG_LOG_SENSOR_COMMS 0
 #define DEBUG_LOG_MISSION 0
 #define DEBUG_LOG_SAFETY 0

@@ -14,7 +14,7 @@ import can
 CAN_INTERFACE = "can0"
 CAN_BITRATE = 500000
 
-MOTOR_ID = 0x02
+MOTOR_ID = 0x01
 
 # ============================================================
 # CAN BUS ACTIVATION
@@ -497,11 +497,16 @@ class MotorController:
 
     # --------------------------------------------------------
 
-    def go_home(self):
+    def go_home(self, settle_time=2.0):
 
+        # Home command is non-blocking on the drive; wait briefly so
+        # follow-up commands do not immediately override the homing move.
         self.send_cmd(0xC4)
 
-        self.recv()
+        self.recv(timeout=0.5)
+
+        if settle_time > 0:
+            time.sleep(settle_time)
 
     # ========================================================
     # MONITOR
@@ -546,40 +551,86 @@ if __name__ == "__main__":
 
     bus = create_bus()
 
-    motor = MotorController(
+    motor_1 = MotorController(
         bus=bus,
-        motor_id=MOTOR_ID
+        motor_id=0x01
+    )
+
+    motor_2 = MotorController(
+        bus=bus,
+        motor_id=0x02
     )
 
     # --------------------------------------------------------
     # CLEAR FAULT
     # --------------------------------------------------------
 
-    motor.clear_fault()
-
+    motor_1.clear_fault()
+    motor_2.clear_fault()
     time.sleep(1)
 
     # # --------------------------------------------------------
     # # READ INFO
     # # --------------------------------------------------------
 
-    motor.read_versions()
+    # motor.read_versions()
 
-    motor.read_motor_info()
+    # motor.read_motor_info()
 
-    motor.read_status()
+    # motor.read_status()
 
-    motor.read_realtime()
+    # motor.read_realtime()
 
     # # --------------------------------------------------------
     # # CONFIG
     # # --------------------------------------------------------
 
-    motor.set_position_max_speed(100)
+    # motor.set_position_max_speed(100)
 
-    motor.set_max_current(5.0)
+    # motor.set_max_current(5.0)
 
-    motor.set_acceleration(200)
+    # motor.set_acceleration(200)
+
+    # motor.set_current_position_as_zero()
+    # time.sleep(3)
+    
+    motor_1.read_position()
+    motor_2.read_position()
+
+
+
+
+    print("\n Go home")
+    motor_1.go_home()
+    motor_2.go_home()
+    time.sleep(3)
+
+    print("\nMove to 45 deg")
+    motor_1.absolute_position_control(45)
+    motor_2.absolute_position_control(45)
+    motor_1.read_position()
+    motor_2.read_position()
+    time.sleep(3)
+
+    # print("\nMove to 0 deg")
+    # motor.absolute_position_control(0)
+    # motor.read_position()
+    # time.sleep(3)
+
+
+    print("\n Go home")
+    motor_1.go_home()
+    motor_2.go_home()
+    time.sleep(3)
+
+
+
+    print("\nDisable motor")
+
+    motor_1.disable_motor()
+    motor_2.disable_motor()
+
+    print("\nDone")
 
     # # --------------------------------------------------------
     # # SPEED TEST
@@ -605,77 +656,73 @@ if __name__ == "__main__":
     #     motor.read_position()
     #     time.sleep(3)
 
-    print("\n===================================")
-    print("POSITION CONTROL TEST")
-    print("===================================")
-
-
-    print("\n Go home")
-    motor.go_home()
-
-    # print("\nMove to 0 deg")
-    # motor.absolute_position_control(0)
-    time.sleep(3)
-    motor.read_position()
-
-    print("\nMove to 90 deg")
-    motor.absolute_position_control(90)
-    time.sleep(3)
-    motor.read_position()
-
-    print("\nMove to 180 deg")
-    motor.absolute_position_control(180)
-    time.sleep(3)
-    motor.read_position()
-
-    print("\nMove to 270 deg")
-    motor.absolute_position_control(270)
-    time.sleep(3)
-    motor.read_position()
-
-    print("\nMove to 360 deg")
-    motor.absolute_position_control(360)
-    time.sleep(3)
-    motor.read_position()
-
-    #######################
-
-    # print("\nMove +90 deg")
-
-    # motor.relative_position_control(90)
-
-    # time.sleep(3)
-
-    # motor.read_position()
-
-    # print("\nGo home")
-
-    # motor.go_home()
-
-    # time.sleep(3)
-
-    # motor.read_position()
-
-    # # --------------------------------------------------------
-    # # TORQUE TEST
-    # # --------------------------------------------------------
-
     # print("\n===================================")
-    # print("TORQUE TEST")
+    # print("POSITION CONTROL TEST")
     # print("===================================")
 
-    # motor.torque_control(1.0)
 
-    # time.sleep(2)
+    # print("\n Go home")
+    # motor.go_home()
 
-    # motor.read_current()
+    # # print("\nMove to 0 deg")
+    # # motor.absolute_position_control(0)
+    # time.sleep(3)
+    # motor.read_position()
 
-    # --------------------------------------------------------
-    # DISABLE
-    # --------------------------------------------------------
+    # print("\nMove to 90 deg")
+    # motor.absolute_position_control(90)
+    # time.sleep(3)
+    # motor.read_position()
 
-    print("\nDisable motor")
+    # print("\nMove to 180 deg")
+    # motor.absolute_position_control(180)
+    # time.sleep(3)
+    # motor.read_position()
 
-    motor.disable_motor()
+    # print("\nMove to 270 deg")
+    # motor.absolute_position_control(270)
+    # time.sleep(3)
+    # motor.read_position()
 
-    print("\nDone")
+    # print("\nMove to 360 deg")
+    # motor.absolute_position_control(360)
+    # time.sleep(3)
+    # motor.read_position()
+
+    # #######################
+
+    # # print("\nMove +90 deg")
+
+    # # motor.relative_position_control(90)
+
+    # # time.sleep(3)
+
+    # # motor.read_position()
+
+    # # print("\nGo home")
+
+    # # motor.go_home()
+
+    # # time.sleep(3)
+
+    # # motor.read_position()
+
+    # # # --------------------------------------------------------
+    # # # TORQUE TEST
+    # # # --------------------------------------------------------
+
+    # # print("\n===================================")
+    # # print("TORQUE TEST")
+    # # print("===================================")
+
+    # # motor.torque_control(1.0)
+
+    # # time.sleep(2)
+
+    # # motor.read_current()
+
+    # # --------------------------------------------------------
+    # # DISABLE
+    # # --------------------------------------------------------
+
+    

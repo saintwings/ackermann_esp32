@@ -304,8 +304,8 @@ size_t mission_active_task_cursor = static_cast<size_t>(-1);
 int mission_loop_remaining[MISSION_MAX_TASKS];
 int mission_coverage_current_index = -1;
 
-static constexpr int8_t MOTOR_DI_LEFT = 1;
-static constexpr int8_t MOTOR_DI_RIGHT = -1;
+static constexpr int8_t MOTOR_DI_LEFT = DRIVE_LEFT_SIGN;
+static constexpr int8_t MOTOR_DI_RIGHT = DRIVE_RIGHT_SIGN;
 
 RobotMode robot_mode = RobotMode::Normal;
 DoubleAckermannSteering robot(WHEELBASE_M, TRACK_WIDTH_M);
@@ -1327,8 +1327,15 @@ static void applyModeInit(RobotMode mode) {
     steering_motors.setSteeringTurns(0.0f, 0.0f);
   } else {
     const float zero_turn_angle_deg = ControlActuation::computeZeroTurnSteeringAngleDeg(WHEELBASE_M, TRACK_WIDTH_M);
+    Serial.print("WHEELBASE_M, TRACK_WIDTH_M");
+    Serial.println(WHEELBASE_M, TRACK_WIDTH_M);
+    Serial.print("zero turn angle deg: ");
+    Serial.println(zero_turn_angle_deg);
+
     const float zero_turn_turns = ControlActuation::steeringAngleDegToTurns(zero_turn_angle_deg);
     Serial.println("Enter Mode 1 : zero turn mode");
+    Serial.print("zero turn angle deg: ");
+    Serial.println(zero_turn_angle_deg);
     steering_motors.setSteeringTurns(zero_turn_turns, -zero_turn_turns);
   }
   delay(200);

@@ -100,6 +100,11 @@
 #define STEER_LEFT_MOTOR_ID 1
 #define STEER_RIGHT_MOTOR_ID 2
 
+// Drive direction signs (set to -1 to invert a side)
+#define DRIVE_LEFT_SIGN 1
+#define DRIVE_RIGHT_SIGN -1
+
+
 // GIM8108 steering direction signs (set to -1 to invert a side)
 #define STEER_GIM_LEFT_SIGN 1
 #define STEER_GIM_RIGHT_SIGN 1
@@ -108,6 +113,8 @@
 // W = track width, H = wheelbase/axle spacing used by zero-turn steering geometry.
 #define ROBOT_GEOMETRY_W_M 0.36f
 #define ROBOT_GEOMETRY_H_M 0.36f
+// #define ROBOT_GEOMETRY_W_M 0.7f
+// #define ROBOT_GEOMETRY_H_M 1.1f
 // Drive wheel diameter used for m/s <-> RPM conversion.
 #define DRIVE_WHEEL_DIAMETER_M 0.2f
 
@@ -139,7 +146,7 @@
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL
 
 // Debug log groups (1 = enabled, 0 = disabled)
-#define DEBUG_LOG_SENSOR_1HZ 1
+#define DEBUG_LOG_SENSOR_1HZ 0
 #define DEBUG_LOG_SENSOR_COMMS 0
 #define DEBUG_LOG_MISSION 0
 #define DEBUG_LOG_SAFETY 0
