@@ -200,22 +200,6 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   gps["fix_quality"] = telemetry.gps_fix_quality;
   gps["satellites"] = telemetry.gps_satellites;
 
-  JsonObject imu = payload["imu"].to<JsonObject>();
-  imu["valid"] = telemetry.imu_valid;
-  imu["ax"] = telemetry.imu_ax;
-  imu["ay"] = telemetry.imu_ay;
-  imu["az"] = telemetry.imu_az;
-  imu["gx"] = telemetry.imu_gx;
-  imu["gy"] = telemetry.imu_gy;
-  imu["gz"] = telemetry.imu_gz;
-  imu["qx"] = telemetry.imu_qx;
-  imu["qy"] = telemetry.imu_qy;
-  imu["qz"] = telemetry.imu_qz;
-  imu["qw"] = telemetry.imu_qw;
-  imu["mx"] = telemetry.imu_mx;
-  imu["my"] = telemetry.imu_my;
-  imu["mz"] = telemetry.imu_mz;
-
   JsonObject odometry = payload["odometry"].to<JsonObject>();
   odometry["speed"] = telemetry.speed;
 

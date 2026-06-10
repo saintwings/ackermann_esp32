@@ -1284,18 +1284,6 @@ static void publishRobotTelemetry() {
   telemetry.gps_fix_quality = gps_fix.fix_quality;
   telemetry.gps_satellites = gps_fix.satellites;
 
-  telemetry.imu_valid = imu_state.valid;
-  telemetry.imu_ax = imu_state.ax;
-  telemetry.imu_ay = imu_state.ay;
-  telemetry.imu_az = imu_state.az;
-  telemetry.imu_gx = imu_state.gx;
-  telemetry.imu_gy = imu_state.gy;
-  telemetry.imu_gz = imu_state.gz;
-  telemetry.imu_qx = imu_state.qx;
-  telemetry.imu_qy = imu_state.qy;
-  telemetry.imu_qz = imu_state.qz;
-  telemetry.imu_qw = imu_state.qw;
-
   telemetry.mission_active = mission_ctx.active && (mission_ctx.state == MissionState::Queued || mission_ctx.state == MissionState::Running || mission_ctx.state == MissionState::Paused);
   telemetry.mission_name = mission_ctx.name;
   telemetry.mission_state = missionStateToString(mission_ctx.state);

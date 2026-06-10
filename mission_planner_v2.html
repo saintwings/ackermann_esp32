@@ -534,35 +534,6 @@
                         <!-- Mission Status Display -->
                         <div id="mission-status-display" style="display: none; margin-bottom: 12px;"></div>
                         
-                        <!-- IMU Data -->
-                        <div class="telemetry-group">
-                            <div class="telemetry-group-title">IMU Data</div>
-                            <div class="telemetry-item">
-                                <span class="telemetry-label">Accel X</span>
-                                <span class="telemetry-value" id="imu-ax">--</span>
-                            </div>
-                            <div class="telemetry-item">
-                                <span class="telemetry-label">Accel Y</span>
-                                <span class="telemetry-value" id="imu-ay">--</span>
-                            </div>
-                            <div class="telemetry-item">
-                                <span class="telemetry-label">Accel Z</span>
-                                <span class="telemetry-value" id="imu-az">--</span>
-                            </div>
-                            <div class="telemetry-item">
-                                <span class="telemetry-label">Gyro X</span>
-                                <span class="telemetry-value" id="imu-gx">--</span>
-                            </div>
-                            <div class="telemetry-item">
-                                <span class="telemetry-label">Gyro Y</span>
-                                <span class="telemetry-value" id="imu-gy">--</span>
-                            </div>
-                            <div class="telemetry-item">
-                                <span class="telemetry-label">Gyro Z</span>
-                                <span class="telemetry-value" id="imu-gz">--</span>
-                            </div>
-                        </div>
-                        
                         <!-- GPS Data -->
                         <div class="telemetry-group">
                             <div class="telemetry-group-title">GPS Data</div>
@@ -1095,7 +1066,6 @@
                 
                 // Store telemetry including mission status
                 latestTelemetry.set(robotId, {
-                    imu: payload.imu,
                     gps: payload.gps,
                     status: payload.status,
                     odometry: payload.odometry,
@@ -1301,29 +1271,6 @@
                     `;
                 }
                 
-                // IMU Data
-                if (telemetry.imu) {
-                    const imu = telemetry.imu;
-                    html += `
-                        <div class="telemetry-group">
-                            <div class="telemetry-label">IMU Sensors</div>
-                            <div style="font-size: 11px; color: #999;">Accel (m/s²)</div>
-                            <div class="value-row">
-                                <span class="value-key">X:</span>
-                                <span class="value-data">${imu.ax.toFixed(2)}</span>
-                            </div>
-                            <div class="value-row">
-                                <span class="value-key">Y:</span>
-                                <span class="value-data">${imu.ay.toFixed(2)}</span>
-                            </div>
-                            <div class="value-row">
-                                <span class="value-key">Z:</span>
-                                <span class="value-data">${imu.az.toFixed(2)}</span>
-                            </div>
-                        </div>
-                    `;
-                }
-                
                 // Status Data
                 if (telemetry.status) {
                     const status = telemetry.status;
@@ -1380,24 +1327,6 @@
             headerElement.textContent = robot.robot_name || robot.robot_id;
             colorIndicator.style.background = getColorForRobot(robotId);
             console.log('[TELEMETRY OVERLAY] Updated header to:', headerElement.textContent);
-            
-            // Update IMU data (or show placeholder)
-            if (telemetry && telemetry.imu) {
-                const imu = telemetry.imu;
-                document.getElementById('imu-ax').textContent = imu.ax.toFixed(2);
-                document.getElementById('imu-ay').textContent = imu.ay.toFixed(2);
-                document.getElementById('imu-az').textContent = imu.az.toFixed(2);
-                document.getElementById('imu-gx').textContent = imu.gx.toFixed(2);
-                document.getElementById('imu-gy').textContent = imu.gy.toFixed(2);
-                document.getElementById('imu-gz').textContent = imu.gz.toFixed(2);
-            } else {
-                document.getElementById('imu-ax').textContent = '--';
-                document.getElementById('imu-ay').textContent = '--';
-                document.getElementById('imu-az').textContent = '--';
-                document.getElementById('imu-gx').textContent = '--';
-                document.getElementById('imu-gy').textContent = '--';
-                document.getElementById('imu-gz').textContent = '--';
-            }
             
             // Update GPS data (or show placeholder)
             if (telemetry && hasUsableGpsFix(telemetry.gps)) {
@@ -3765,8 +3694,6 @@
             const payload = telemetry.payload || {};
             const gps = payload.gps || {};
             const status = payload.status || {};
-            const imu = payload.imu || {};
-            
             if (!hasUsableGpsFix(gps)) {
                 return; // No usable GPS data
             }
