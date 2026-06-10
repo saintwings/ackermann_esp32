@@ -43,6 +43,7 @@
 #define CONTROL_SERVER_ENABLE 1
 #define CONTROL_SERVER_PATH "/"
 #define ROBOT_TELEMETRY_INTERVAL_MS 500
+#define SIM_TELEMETRY_INTERVAL_MS   1500 // should not less than 1500 for SIM
 
 #define SIM_CONTROL_ENABLE  (SERVER_MODE == 2 ? 1 : 0)
 

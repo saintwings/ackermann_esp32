@@ -47,6 +47,7 @@
 #define CONTROL_SERVER_ENABLE 1
 #define CONTROL_SERVER_PATH "/"
 #define ROBOT_TELEMETRY_INTERVAL_MS 500
+#define SIM_TELEMETRY_INTERVAL_MS   2000 // should not less than 1500 for SIM
 
 #define SIM_CONTROL_ENABLE  (SERVER_MODE == 2 ? 1 : 0)
 
@@ -123,8 +124,8 @@
 #define DRIVE_WHEEL_DIAMETER_M 0.2f
 
 // Robot motion limits
-#define MAX_LINEAR_SPEED_MS 0.2f       // Maximum forward/reverse speed (m/s)
-#define MAX_STEERING_ANGLE_DEG 30.0f   // Maximum steering angle (degrees)
+#define MAX_LINEAR_SPEED_MS 1.0f       // Maximum forward/reverse speed (m/s)
+#define MAX_STEERING_ANGLE_DEG 35.0f   // Maximum steering angle (degrees)
 
 // ── SIMCOM A7670X (CAT1-A7670X-V1.02 board) ─────────────────────────────────
 // Uses ESP32-S3 UART2.  Board pins: VCC=5V rail, GND, TXD→GPIO18, RXD←GPIO17,

@@ -30,6 +30,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_login import login_required
 from coverage_path_service import CoveragePathService
 from auth import setup_auth, auth_bp, validate_ws_token, get_user_robots, is_admin
+from robot_logger import RobotLogger
 
 ALLOWED_HTTP_METHODS = 'GET, POST, OPTIONS'
 ALLOWED_HTTP_HEADERS = 'Content-Type'
@@ -126,6 +127,7 @@ class ControlServer:
         self.server = None
         self.logger = logging.getLogger('ControlServer')
         self.coverage_service = CoveragePathService()
+        self._robot_loggers: Dict[str, RobotLogger] = {}
         
         # Setup Flask app for HTTP endpoints
         self.flask_app = Flask(__name__)
@@ -241,6 +243,12 @@ class ControlServer:
         
         self.logger.info(f"Flask routes registered")
         
+    def _rlog(self, robot_id: str) -> RobotLogger:
+        """Return (creating if needed) the per-robot file logger."""
+        if robot_id not in self._robot_loggers:
+            self._robot_loggers[robot_id] = RobotLogger(robot_id)
+        return self._robot_loggers[robot_id]
+
     def run_flask(self):
         """Run Flask app in a separate thread"""
         self.logger.info(f"Starting HTTP server on {self.host}:{self.http_port}")
@@ -306,6 +314,11 @@ class ControlServer:
                             f"[{robot_id}] Command ACK: {payload.get('command')} -> {payload.get('status')}"
                             + (f" ({payload.get('detail')})" if payload.get('detail') else "")
                         )
+                        if robot_id:
+                            detail = f"cmd={payload.get('command')} status={payload.get('status')}"
+                            if payload.get('detail'):
+                                detail += f" ({payload.get('detail')})"
+                            self._rlog(robot_id).log_comm("CMD_ACK", detail)
                     
                     else:
                         self.logger.warning(f"Unknown message type: {msg_type}")
@@ -326,6 +339,7 @@ class ControlServer:
             if client_type == "robot" and robot_id in self.robots:
                 self.robots[robot_id].online = False
                 self.logger.info(f"Robot offline: {robot_id}")
+                self._rlog(robot_id).log_comm("DISCONNECT")
                 await self.broadcast_robot_list()
     
     async def handle_robot_register(self, client_id: str, robot_id: str,
@@ -360,6 +374,10 @@ class ControlServer:
         self.logger.info(
             f"Robot registered: {robot_id} ({robot_info.robot_name}) - "
             f"Type: {robot_info.robot_type}, Speed: {robot_info.max_speed} m/s"
+        )
+        self._rlog(robot_id).log_comm(
+            "CONNECT",
+            f"name={robot_info.robot_name} type={robot_info.robot_type} max_speed={robot_info.max_speed}"
         )
         
         # Send ACK
@@ -464,6 +482,9 @@ class ControlServer:
             if client.client_id == robot_id or (client.robot_id == robot_id):
                 client.last_message = int(datetime.now().timestamp())
         
+        # Log telemetry to per-robot file
+        self._rlog(robot_id).log_telemetry(message)
+
         # Broadcast to all web clients
         await self.broadcast_telemetry(message)
     
@@ -499,7 +520,11 @@ class ControlServer:
             return
         
         self.logger.info(f"Routing {command} command to {robot_id}")
-        
+        self._rlog(robot_id).log_comm(
+            "CMD_SENT",
+            f"cmd={command} user={getattr(sender, 'user_id', None)}"
+        )
+
         # Convert web command to robot command type
         robot_command = self._create_robot_command(command, message)
         
@@ -824,6 +849,7 @@ class ControlServer:
                 if robot.online and (now - robot.last_update) > timeout_ms:
                     self.logger.warning(f"Robot timeout: {robot_id}")
                     robot.online = False
+                    self._rlog(robot_id).log_comm("TIMEOUT", f"no telemetry for >{ROBOT_TIMEOUT}s")
                     await self.broadcast_robot_list()
 
 # ============================================================================

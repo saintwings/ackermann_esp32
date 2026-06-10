@@ -194,9 +194,11 @@ bool SimWsClient::wsHandshake(const char* host, const char* path) {
   if (!cipSend((const uint8_t*)req.c_str(), req.length())) return false;
 
   // Accumulate HTTP response until \r\n\r\n (end-of-headers).
-  // Cloudflare adds CF-RAY / alt-svc headers that may not arrive in the first
-  // read, so we must keep looping rather than returning on the first batch.
-  // Any bytes after \r\n\r\n are the start of WebSocket frame data — save to _rxBuf.
+  // Cloudflare sends CF-RAY + alt-svc AFTER the standard WebSocket headers,
+  // so the 101 response contains two \r\n\r\n sequences in the same TCP chunk:
+  //   HTTP/1.1 101 ...\r\n...\r\n\r\n      ← indexOf finds this (wrong)
+  //   CF-RAY: ...\r\nalt-svc: ...\r\n\r\n  ← lastIndexOf finds this (correct)
+  // Fix: once we find the first \r\n\r\n, drain once more then use lastIndexOf.
   String hdrs;
   uint8_t chunk[512];
   unsigned long deadline = millis() + 10000;
@@ -204,14 +206,24 @@ bool SimWsClient::wsHandshake(const char* host, const char* path) {
   while (millis() < deadline) {
     delay(200);
     int n = cipRecv(chunk, sizeof(chunk), 1500);
-    if (n <= 0) continue;
+    if (n > 0) {
+      for (int i = 0; i < n; i++) hdrs += (char)chunk[i];
+    }
+    if (hdrs.indexOf("\r\n\r\n") < 0) continue;  // no header end yet — keep reading
 
-    for (int i = 0; i < n; i++) hdrs += (char)chunk[i];
+    // Found at least one \r\n\r\n. Wait a bit longer and drain once more so
+    // that trailing Cloudflare headers (CF-RAY, alt-svc) arrive before we
+    // commit to the header boundary.
+    delay(500);
+    n = cipRecv(chunk, sizeof(chunk), 800);
+    if (n > 0) {
+      for (int i = 0; i < n; i++) hdrs += (char)chunk[i];
+    }
 
-    int hdrEnd = hdrs.indexOf("\r\n\r\n");
-    if (hdrEnd < 0) continue;  // headers not yet complete — read more
+    // Use the LAST \r\n\r\n as the true header/body boundary.
+    int hdrEnd = hdrs.lastIndexOf("\r\n\r\n");
 
-    // Save post-header bytes (they are WebSocket frame data)
+    // Save post-header bytes (start of WebSocket frame data)
     for (int i = hdrEnd + 4; i < (int)hdrs.length() && _rxLen < kRxBufSize; i++) {
       _rxBuf[_rxLen++] = (uint8_t)hdrs[i];
     }
@@ -405,7 +417,7 @@ bool SimWsClient::poll(String& textOut) {
     if (space > 0) {
       int n = cipRecv(_rxBuf + _rxLen, space, 2000);
       if (n > 0) {
-        Serial.printf("[SIM_WS] rx %d bytes (buf=%u)\n", n, (unsigned)(_rxLen + n));
+        // Serial.printf("[SIM_WS] rx %d bytes (buf=%u)\n", n, (unsigned)(_rxLen + n));
         _rxLen += (size_t)n;
       }
     }

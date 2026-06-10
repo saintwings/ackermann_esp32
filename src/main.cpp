@@ -1264,7 +1264,7 @@ static void publishRobotTelemetry() {
   // WiFi interval floods the link and leaves no time to receive server messages.
   const bool on_sim = (net_manager.source() == NetSource::SIM);
   const unsigned long telemetry_interval_ms = on_sim
-      ? 2000UL
+      ? max(20UL, static_cast<unsigned long>(SIM_TELEMETRY_INTERVAL_MS))
       : max(20UL, static_cast<unsigned long>(ROBOT_TELEMETRY_INTERVAL_MS));
   if (last_telemetry_publish_ms != 0 && (now - last_telemetry_publish_ms) < telemetry_interval_ms) {
     return;
