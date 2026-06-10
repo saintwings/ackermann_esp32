@@ -121,6 +121,10 @@
 #define MAX_LINEAR_SPEED_MS 0.6f       // Maximum forward/reverse speed (m/s)
 #define MAX_STEERING_ANGLE_DEG 30.0f   // Maximum steering angle (degrees)
 
+// Heading offset (degrees) added after IMU yaw computation.
+// Positive = rotate heading clockwise. Range: any value, normalised to 0-360.
+#define HEADING_OFFSET_DEG 0.0f
+
 // ── SIMCOM A7670X (CAT1-A7670X-V1.02 board) ─────────────────────────────────
 // Uses ESP32-S3 UART2.  Board pins: VCC=5V rail, GND, TXD→GPIO18, RXD←GPIO17,
 // EN→GPIO21 (HIGH=on), CTS=leave open, VDD=leave open.

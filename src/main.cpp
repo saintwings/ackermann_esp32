@@ -1149,6 +1149,8 @@ static float estimateHeadingDeg() {
   float cosy_cosp = 1.0f - 2.0f * (qy * qy + qz * qz);
   //float yaw_deg = DoubleAckermannSteering::rad2deg(atan2f(siny_cosp, cosy_cosp));
   float yaw_deg = DoubleAckermannSteering::rad2deg(atan2f(cosy_cosp, siny_cosp));
+  yaw_deg += HEADING_OFFSET_DEG;
+  yaw_deg = fmodf(yaw_deg, 360.0f);
   if (yaw_deg < 0.0f) yaw_deg += 360.0f;
   return yaw_deg;
 }

@@ -193,12 +193,15 @@ bool SimWsClient::wsHandshake(const char* host, const char* path) {
 
   if (!cipSend((const uint8_t*)req.c_str(), req.length())) return false;
 
-  // Accumulate HTTP response until \r\n\r\n (end-of-headers).
-  // Cloudflare sends CF-RAY + alt-svc AFTER the standard WebSocket headers,
-  // so the 101 response contains two \r\n\r\n sequences in the same TCP chunk:
-  //   HTTP/1.1 101 ...\r\n...\r\n\r\n      ← indexOf finds this (wrong)
-  //   CF-RAY: ...\r\nalt-svc: ...\r\n\r\n  ← lastIndexOf finds this (correct)
-  // Fix: once we find the first \r\n\r\n, drain once more then use lastIndexOf.
+  // Accumulate HTTP response until the last \r\n\r\n (end of all headers).
+  // Cloudflare appends CF-RAY + alt-svc after the standard 101 headers in the
+  // same TCP chunk, producing two \r\n\r\n sequences.  We loop until the first
+  // one appears, then drain once more to pick up trailing CF headers, and use
+  // lastIndexOf to find the true end.
+  //
+  // Post-header bytes are intentionally NOT saved to _rxBuf here — they consist
+  // of modem AT framing leakage (OK\r\n) that corrupts WS frame parsing.
+  // connect() clears _rxLen after this returns, so we start frame parsing clean.
   String hdrs;
   uint8_t chunk[512];
   unsigned long deadline = millis() + 10000;
@@ -209,26 +212,15 @@ bool SimWsClient::wsHandshake(const char* host, const char* path) {
     if (n > 0) {
       for (int i = 0; i < n; i++) hdrs += (char)chunk[i];
     }
-    if (hdrs.indexOf("\r\n\r\n") < 0) continue;  // no header end yet — keep reading
+    if (hdrs.indexOf("\r\n\r\n") < 0) continue;  // headers not complete yet
 
-    // Found at least one \r\n\r\n. Wait a bit longer and drain once more so
-    // that trailing Cloudflare headers (CF-RAY, alt-svc) arrive before we
-    // commit to the header boundary.
+    // One more drain to capture any Cloudflare trailing headers (CF-RAY, alt-svc)
+    // that arrive in a second TCP segment after the initial 101.
     delay(500);
     n = cipRecv(chunk, sizeof(chunk), 800);
     if (n > 0) {
       for (int i = 0; i < n; i++) hdrs += (char)chunk[i];
     }
-
-    // Use the LAST \r\n\r\n as the true header/body boundary.
-    int hdrEnd = hdrs.lastIndexOf("\r\n\r\n");
-
-    // Save post-header bytes (start of WebSocket frame data)
-    for (int i = hdrEnd + 4; i < (int)hdrs.length() && _rxLen < kRxBufSize; i++) {
-      _rxBuf[_rxLen++] = (uint8_t)hdrs[i];
-    }
-    if (_rxLen > 0)
-      Serial.printf("[SIM_WS] %u post-header WS bytes saved to rxbuf\n", (unsigned)_rxLen);
 
     bool ok = hdrs.indexOf("101") >= 0;
     if (!ok) Serial.printf("[SIM_WS] Unexpected HTTP: %.80s\n", hdrs.c_str());
@@ -349,6 +341,11 @@ bool SimWsClient::connect(const char* host, uint16_t port, const char* path) {
     disconnect();
     return false;
   }
+
+  // Discard any bytes that leaked into the buffer during the HTTP handshake
+  // (modem AT framing: OK\r\n).  The server sends nothing until after the robot
+  // sends its register message, so nothing useful is lost here.
+  _rxLen = 0;
 
   _connected   = true;
   _lastProbeMs = millis();
