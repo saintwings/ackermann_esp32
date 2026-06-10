@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Arduino.h>
+#include "NetManager.hpp"
+#include "SimWsClient.hpp"
 
 enum class RobotCommandType : uint8_t {
   None = 0,
@@ -61,7 +63,8 @@ class RobotClient {
  public:
   RobotClient();
 
-  void begin();
+  // Pass the NetManager so RobotClient can route through WiFi or SIM transport.
+  void begin(NetManager* net);
   void update();
   bool isConnected() const;
 
@@ -75,6 +78,18 @@ class RobotClient {
   void handleTextMessage(const String& text);
   void queueCommand(const RobotCommand& command);
 
+  // Reconnect helpers
+  void reconnectWifi();
+  void reconnectSim();
+  void beginSimWs();
+
   struct Impl;
   Impl* impl_;
+
+  NetManager*   _net{nullptr};
+  SimWsClient*  _simWs{nullptr};
+  NetSource     _lastSource{NetSource::NONE};
+  unsigned long _lastReconnectMs{0};
+  unsigned long _lastPingMs{0};
+  bool          _simConnected{false};
 };

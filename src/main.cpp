@@ -1260,7 +1260,12 @@ static void publishRobotTelemetry() {
 
   static unsigned long last_telemetry_publish_ms = 0;
   const unsigned long now = millis();
-  const unsigned long telemetry_interval_ms = max(20UL, static_cast<unsigned long>(ROBOT_TELEMETRY_INTERVAL_MS));
+  // SIM cellular link: each AT+CIPSEND round-trip takes 200-500ms, so 500ms
+  // WiFi interval floods the link and leaves no time to receive server messages.
+  const bool on_sim = (net_manager.source() == NetSource::SIM);
+  const unsigned long telemetry_interval_ms = on_sim
+      ? 2000UL
+      : max(20UL, static_cast<unsigned long>(ROBOT_TELEMETRY_INTERVAL_MS));
   if (last_telemetry_publish_ms != 0 && (now - last_telemetry_publish_ms) < telemetry_interval_ms) {
     return;
   }
@@ -1362,7 +1367,7 @@ void setup() {
   Serial.println(GPS_UART_TX_PIN);
   SensorComms::initBno085(sensor_comms);
 #if CONTROL_SERVER_ENABLE
-  robot_client.begin();
+  robot_client.begin(&net_manager);
 #else
   Serial.println("[ROBOT_CLIENT] Disabled by config");
 #endif
@@ -1532,14 +1537,10 @@ static void commsTask(void* /*pvParameters*/) {
     // ─────────────────────────────────────────────────────────────────────────
 
     // ── Control server update ─────────────────────────────────────────────────
-    // WebSocketsClient (links2004) always uses WiFi's TCP stack internally.
-    // It cannot connect over TinyGSM/SIM — attempting it causes DNS errors.
-    // Rule: only call robot_client.update() when WiFi is the active bearer.
-    // NET_MODE 3 (WiFi only): always allowed.
-    // NET_MODE 1 (WiFi+SIM):  allowed on WiFi; NTRIP-only on SIM.
-    // NET_MODE 2 (SIM only):  never allowed until WebSocket-over-TinyGSM is added.
+    // WiFi uses WebSocketsClient (Links2004); SIM uses SimWsClient (AT+CCH).
+    // Both paths are handled inside robot_client.update().
 #if CONTROL_SERVER_ENABLE
-    if (net_src == NetSource::WIFI) {
+    if (net_manager.isConnected()) {
       robot_client.update();
     }
 #endif

@@ -34,10 +34,14 @@
   #define CONTROL_SERVER_HOST    "192.168.1.166"
   #define CONTROL_SERVER_PORT    8765
   #define CONTROL_SERVER_USE_SSL 0
+  #define SIM_CONTROL_SERVER_PORT 8765
 #elif SERVER_MODE == 2
   #define CONTROL_SERVER_HOST    "robot.saintwings.xyz"
   #define CONTROL_SERVER_PORT    443
   #define CONTROL_SERVER_USE_SSL 1
+  // SIM uses plain TCP on port 80 (Cloudflare HTTP).
+  // Requires "Always Use HTTPS" = OFF in Cloudflare SSL/TLS settings.
+  #define SIM_CONTROL_SERVER_PORT 80
 #endif
 
 #define CONTROL_SERVER_ENABLE 1
@@ -129,7 +133,10 @@
 #define SIM_UART_BAUD       115200
 #define SIM_TX_PIN          17      // ESP32 UART2 TX → board RXD
 #define SIM_RX_PIN          18      // board TXD      → ESP32 UART2 RX
-#define SIM_EN_PIN          21      // set HIGH to power on modem
+// Enable pin for modem power control. Set to -1 if the board auto-powers on.
+// FS-HCore-A7670C: board powers on automatically, no EN pin needed.
+#define SIM_EN_PIN          -1
+
 
 // APN for your SIM card (Thailand: AIS/DTAC/TrueMove H all use "internet")
 #define SIM_APN             "internet"
@@ -140,7 +147,7 @@
 // 1 = WiFi primary, SIM fallback
 // 2 = SIM only (WiFi disabled)
 // 3 = WiFi only (no SIM)
-#define NET_MODE 3
+#define NET_MODE 2  // 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
 
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL

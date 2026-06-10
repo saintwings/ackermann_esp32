@@ -127,7 +127,8 @@
 #define SIM_UART_BAUD       115200
 #define SIM_TX_PIN          17      // ESP32 UART2 TX → board RXD
 #define SIM_RX_PIN          18      // board TXD      → ESP32 UART2 RX
-#define SIM_EN_PIN          21      // set HIGH to power on modem
+#define SIM_EN_PIN          -1
+
 
 // APN for your SIM card (Thailand: AIS/DTAC/TrueMove H all use "internet")
 #define SIM_APN             "internet"

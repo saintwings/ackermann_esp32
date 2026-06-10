@@ -12,8 +12,10 @@ NetManager::NetManager()
 // begin() — call once in setup()
 // ─────────────────────────────────────────────────────────────────────────────
 void NetManager::begin() {
+#if SIM_EN_PIN >= 0
   pinMode(SIM_EN_PIN, OUTPUT);
   digitalWrite(SIM_EN_PIN, LOW);
+#endif
 
 #if NET_MODE == 2   // ── SIM only ──────────────────────────────────────────────
   WiFi.mode(WIFI_OFF);
@@ -110,8 +112,12 @@ void NetManager::wifiTick() {
 // simPowerOn — assert EN pin HIGH; modem boots automatically
 // ─────────────────────────────────────────────────────────────────────────────
 void NetManager::simPowerOn() {
+#if SIM_EN_PIN >= 0
   Serial.println("[SIM] EN → HIGH (powering on modem)");
   digitalWrite(SIM_EN_PIN, HIGH);
+#else
+  Serial.println("[SIM] No EN pin — modem auto-powers on");
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,8 +178,10 @@ void NetManager::simTick() {
         if (_simRetries > 15) {
           // Power cycle the modem and try again
           Serial.println("[SIM] Cycling power after too many init failures");
+#if SIM_EN_PIN >= 0
           digitalWrite(SIM_EN_PIN, LOW);
           delay(1000);
+#endif
           simPowerOn();
           _simRetries = 0;
           _simStateMs = now;
@@ -195,8 +203,10 @@ void NetManager::simTick() {
         Serial.printf("[SIM] Not registered yet (%u)...\n", _simRetries);
         if (_simRetries > 30) {
           Serial.println("[SIM] Registration timeout — restarting modem");
+#if SIM_EN_PIN >= 0
           digitalWrite(SIM_EN_PIN, LOW);
           delay(500);
+#endif
           simPowerOn();
           _simRetries = 0;
           _simState   = SimState::POWERING_ON;
@@ -225,6 +235,7 @@ void NetManager::simTick() {
     // ── READY: periodic keep-alive check ─────────────────────────────────────
     case SimState::READY:
       if (now - _simStateMs < 30000) return;  // check every 30 s
+      if (_skipGprsCheck) { _simStateMs = now; return; }  // WS client owns serial
       _simStateMs = now;
       if (!_modem.isGprsConnected()) {
         Serial.println("[SIM] GPRS dropped — reconnecting");

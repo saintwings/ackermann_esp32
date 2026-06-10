@@ -33,6 +33,14 @@ class NetManager {
   NetSource   source()      const { return _source; }
   const char* sourceName()  const;
 
+  // Direct access to the SIM serial stream for custom AT command use.
+  // Only valid when in SIM mode (NET_MODE 1 or 2).
+  Stream& simStream() { return _simSerial; }
+
+  // When true, simTick() skips the 30-second isGprsConnected() keep-alive check.
+  // Set this while SimWsClient owns the serial for AT+CCH commands.
+  void setSkipGprsCheck(bool skip) { _skipGprsCheck = skip; }
+
  private:
   // ── WiFi tick ────────────────────────────────────────────────────────────
   void wifiTick();
@@ -51,8 +59,9 @@ class NetManager {
   };
 
   NetSource     _source       = NetSource::NONE;
-  unsigned long _wifiLostMs   = 0;   // when WiFi was last seen as connected
-  unsigned long _wifiBackMs   = 0;   // when WiFi returned (for recovery delay)
+  unsigned long _wifiLostMs   = 0;
+  unsigned long _wifiBackMs   = 0;
+  bool          _skipGprsCheck = false;
 
   // Declare in this exact order — each depends on the one above it
   HardwareSerial _simSerial;         // UART2

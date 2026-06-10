@@ -38,7 +38,10 @@ struct RobotClient::Impl {
 
 RobotClient::RobotClient() : impl_(new Impl()) {}
 
-void RobotClient::begin() {
+void RobotClient::begin(NetManager* net) {
+  _net = net;
+
+  // WiFi WebSocket setup (Links2004 library) — used when source == WIFI
 #if CONTROL_SERVER_USE_SSL
   impl_->websocket.beginSSL(CONTROL_SERVER_HOST, CONTROL_SERVER_PORT, CONTROL_SERVER_PATH);
 #else
@@ -51,14 +54,14 @@ void RobotClient::begin() {
       case WStype_CONNECTED:
         impl_->connected = true;
 #if DEBUG_LOG_ROBOT_CLIENT
-        Serial.println("[ROBOT_CLIENT] WebSocket connected");
+        Serial.println("[ROBOT_CLIENT] WiFi WebSocket connected");
 #endif
         sendRegister();
         break;
       case WStype_DISCONNECTED:
         impl_->connected = false;
 #if DEBUG_LOG_ROBOT_CLIENT
-        Serial.println("[ROBOT_CLIENT] WebSocket disconnected");
+        Serial.println("[ROBOT_CLIENT] WiFi WebSocket disconnected");
 #endif
         break;
       case WStype_TEXT:
@@ -68,13 +71,84 @@ void RobotClient::begin() {
         break;
     }
   });
+
+  // SIM WebSocket (SimWsClient) — allocated lazily when SIM is active
+  // _simWs is created on first SIM connect in beginSimWs()
+}
+
+void RobotClient::beginSimWs() {
+  delete _simWs;
+  _simWs = new SimWsClient(_net->simStream());
+  _net->setSkipGprsCheck(true);  // own the serial during WS operations
+  if (_simWs->connect(CONTROL_SERVER_HOST, SIM_CONTROL_SERVER_PORT, CONTROL_SERVER_PATH)) {
+    _simConnected  = true;
+    _lastPingMs    = millis();
+    sendRegister();
+  } else {
+    _simConnected = false;
+    Serial.println("[RC] SIM WebSocket connect failed — will retry");
+  }
 }
 
 void RobotClient::update() {
-  impl_->websocket.loop();
+  if (!_net) return;
+
+  const NetSource src = _net->source();
+
+  // ── Transport switch: tear down whichever side was active ─────────────────
+  if (src != _lastSource) {
+    if (_lastSource == NetSource::SIM && _simWs) {
+      _simWs->disconnect();
+      _simConnected = false;
+      _net->setSkipGprsCheck(false);
+    }
+    if (_lastSource == NetSource::WIFI) {
+      impl_->connected = false;
+    }
+    _lastSource = src;
+  }
+
+  // ── WiFi path (unchanged behaviour via WebSocketsClient) ─────────────────
+  if (src == NetSource::WIFI) {
+    impl_->websocket.loop();
+    return;
+  }
+
+  // ── SIM path via SimWsClient ──────────────────────────────────────────────
+  if (src != NetSource::SIM) return;
+
+  if (!_simConnected || !_simWs || !_simWs->connected()) {
+    _simConnected = false;
+    unsigned long now = millis();
+    if (now - _lastReconnectMs >= 12000) {
+      _lastReconnectMs = now;
+      beginSimWs();
+    }
+    return;
+  }
+
+  // Periodic ping to keep connection alive through Cloudflare idle timeout
+  unsigned long now = millis();
+  if (now - _lastPingMs >= 15000) {
+    _lastPingMs = now;
+    _simWs->sendPing();
+  }
+
+  // Poll for incoming frames
+  String rx;
+  if (_simWs->poll(rx)) {
+    handleTextMessage(rx);
+  }
+
+  // Detect connection drop reported by poll()
+  if (!_simWs->connected()) {
+    _simConnected = false;
+    Serial.println("[RC] SIM WebSocket dropped");
+  }
 }
 
 bool RobotClient::isConnected() const {
+  if (_net && _net->source() == NetSource::SIM) return _simConnected;
   return impl_->connected;
 }
 
@@ -91,11 +165,17 @@ void RobotClient::sendRegister() {
 
   String json;
   serializeJson(doc, json);
-  impl_->websocket.sendTXT(json);
+  NetSource src = _net ? _net->source() : NetSource::WIFI;
+  if (src == NetSource::SIM && _simWs) {
+    bool ok = _simWs->sendText(json);
+    Serial.printf("[RC] Register send %s (%u bytes)\n", ok ? "OK" : "FAILED", json.length());
+  } else {
+    impl_->websocket.sendTXT(json.c_str());
+  }
 }
 
 void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
-  if (!impl_->connected) return;
+  if (!isConnected()) return;
   unsigned long now = millis();
   if (now - impl_->last_telemetry_ms < 200) return;
   impl_->last_telemetry_ms = now;
@@ -151,7 +231,9 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
 
   String json;
   serializeJson(doc, json);
-  impl_->websocket.sendTXT(json);
+  NetSource src = _net ? _net->source() : NetSource::WIFI;
+  if (src == NetSource::SIM && _simWs) { _simWs->sendText(json); }
+  else { impl_->websocket.sendTXT(json.c_str()); }
 }
 
 bool RobotClient::hasPendingCommand() const {
@@ -171,7 +253,7 @@ void RobotClient::queueCommand(const RobotCommand& command) {
 }
 
 void RobotClient::sendCommandAck(const RobotCommand& command, const char* status, const char* detail) {
-  if (!impl_->connected) return;
+  if (!isConnected()) return;
 
   JsonDocument doc;
   doc["type"] = MSG_COMMAND_ACK;
@@ -188,7 +270,9 @@ void RobotClient::sendCommandAck(const RobotCommand& command, const char* status
 
   String json;
   serializeJson(doc, json);
-  impl_->websocket.sendTXT(json);
+  NetSource src = _net ? _net->source() : NetSource::WIFI;
+  if (src == NetSource::SIM && _simWs) { _simWs->sendText(json); }
+  else { impl_->websocket.sendTXT(json.c_str()); }
 }
 
 void RobotClient::handleTextMessage(const String& text) {
