@@ -263,10 +263,16 @@ bool SimWsClient::sendWsFrame(uint8_t opcode, const uint8_t* payload, size_t pay
   bool ok = cipSend(frame, frameLen);
   delete[] frame;
 
+  if (!ok) {
+    Serial.println("[SIM_WS] cipSend failed — marking disconnected");
+    _connected = false;
+    return false;
+  }
+
   // Drain any incoming data that arrived while cipSend() was blocking.
   // waitStr() consumes bytes including +CIPRXGET URCs, but the modem still
   // buffers the data — an explicit AT+CIPRXGET=2 call retrieves it.
-  if (ok && _rxLen < kRxBufSize) {
+  if (_rxLen < kRxBufSize) {
     int n = cipRecv(_rxBuf + _rxLen, kRxBufSize - _rxLen, 300);
     if (n > 0) {
       Serial.printf("[SIM_WS] Drained %d bytes after send\n", n);
@@ -354,15 +360,16 @@ bool SimWsClient::connect(const char* host, uint16_t port, const char* path) {
 }
 
 void SimWsClient::disconnect() {
-  if (_connected || _sslStarted) {
-    char cmd[32];
-    snprintf(cmd, sizeof(cmd), "AT+CIPCLOSE=%u\r\n", kMux);
-    _stream.print(cmd);
-    waitStr("OK", 3000);
-    _sslStarted = false;
-  }
-  _connected = false;
-  _rxLen     = 0;
+  // Always send AT+CIPCLOSE regardless of internal state.
+  // If the channel is already closed the modem returns ERROR — harmless.
+  // This guarantees a clean slate before any reconnect attempt.
+  char cmd[32];
+  snprintf(cmd, sizeof(cmd), "AT+CIPCLOSE=%u\r\n", kMux);
+  _stream.print(cmd);
+  waitStr("OK", 2000);
+  _sslStarted = false;
+  _connected  = false;
+  _rxLen      = 0;
 }
 
 bool SimWsClient::sendText(const String& text) {
