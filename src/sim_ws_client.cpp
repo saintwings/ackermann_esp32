@@ -308,7 +308,12 @@ int SimWsClient::parseWsFrame(String& payloadOut) {
 
   // Log every non-text frame opcode for diagnostics
   if (opcode != 0x01 && opcode != 0x00) {
-    Serial.printf("[SIM_WS] ctrl op=0x%02X plen=%u\n", opcode, (unsigned)plen);
+    if (opcode == 0x0A && _pingSentMs > 0) {
+      Serial.printf("[SIM_WS] pong RTT=%lums\n", millis() - _pingSentMs);
+      _pingSentMs = 0;
+    } else {
+      Serial.printf("[SIM_WS] ctrl op=0x%02X plen=%u\n", opcode, (unsigned)plen);
+    }
   }
 
   if (opcode == 0x01 || opcode == 0x00) {
@@ -379,6 +384,7 @@ bool SimWsClient::sendText(const String& text) {
 
 void SimWsClient::sendPing() {
   if (!_connected) return;
+  _pingSentMs = millis();
   sendWsFrame(0x09, nullptr, 0);
 }
 

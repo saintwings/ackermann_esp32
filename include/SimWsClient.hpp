@@ -60,4 +60,5 @@ class SimWsClient {
   size_t   _rxLen = 0;
 
   unsigned long _lastProbeMs = 0;  // for periodic poll-when-no-URC
+  unsigned long _pingSentMs  = 0;  // millis() when last ping was sent
 };
