@@ -74,6 +74,70 @@
             padding: 2px;
             background: #0a0a0a;
         }
+
+        #admin-log-bar {
+            flex-shrink: 0;
+            background: #111;
+            border-top: 1px solid #3d3d3d;
+            display: none;
+        }
+        #admin-log-bar.visible { display: block; }
+        #admin-log-header {
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            height: 28px;
+            cursor: pointer;
+            user-select: none;
+            font-size: 11px;
+            color: #aaa;
+            gap: 8px;
+        }
+        #admin-log-header:hover { background: #1a1a1a; }
+        #admin-log-header .log-title { color: #60a5fa; font-weight: 600; font-size: 11px; }
+        #admin-log-header .log-counts { color: #666; }
+        #admin-log-header .log-chevron { margin-left: auto; }
+        #admin-log-content {
+            display: none;
+            height: 200px;
+            font-family: monospace;
+            font-size: 11px;
+            line-height: 1.7;
+            border-top: 1px solid #222;
+        }
+        #admin-log-bar.expanded #admin-log-content { display: flex; flex-direction: column; }
+        #admin-log-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            border-bottom: 1px solid #222;
+            flex-shrink: 0;
+        }
+        #admin-log-filters { display: flex; gap: 4px; }
+        .log-filter-btn {
+            padding: 2px 8px;
+            font-size: 10px;
+            border-radius: 10px;
+            border: 1px solid #444;
+            background: transparent;
+            color: #888;
+            cursor: pointer;
+        }
+        .log-filter-btn:hover { border-color: #666; color: #ccc; }
+        .log-filter-btn.active { background: #1e3a5f; border-color: #60a5fa; color: #93c5fd; }
+        #admin-log-search {
+            margin-left: auto;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 3px;
+            color: #ccc;
+            font-size: 10px;
+            padding: 2px 7px;
+            width: 140px;
+        }
+        #admin-log-search::placeholder { color: #555; }
+        #server-log-entries { flex: 1; overflow-y: auto; }
         
         .panel {
             background: #2d2d2d;
@@ -615,23 +679,6 @@
                             </div>
                         </div>
                     </div>
-                    <!-- Server event log -->
-                    <div class="panel" id="server-log-panel" style="margin-top: 8px;">
-                        <div class="panel-header" onclick="toggleServerLog()" style="cursor: pointer; user-select: none;">
-                            📋 Server Log
-                            <span id="server-log-counts" style="margin-left: 8px; font-size: 11px; color: #aaa;"></span>
-                            <span id="server-log-toggle" style="margin-left: auto; font-size: 11px; color: #aaa;">▼</span>
-                        </div>
-                        <div id="server-log-body" class="panel-content" style="padding: 0;">
-                            <div id="server-log-entries" style="
-                                max-height: 220px; overflow-y: auto;
-                                font-family: monospace; font-size: 11px;
-                                padding: 6px 8px; line-height: 1.6;
-                            ">
-                                <span style="color: #555;">No events yet.</span>
-                            </div>
-                        </div>
-                    </div>
                 </div>
                 
                 
@@ -899,7 +946,28 @@
             </div>
         </div>
     </div>
-    
+
+    <!-- Admin-only server log — hidden for non-admins, collapsed by default -->
+    <div id="admin-log-bar">
+        <div id="admin-log-header" onclick="toggleServerLog()">
+            <span class="log-title">⚙ Server Log</span>
+            <span id="server-log-counts" class="log-counts"></span>
+            <span id="server-log-toggle" class="log-chevron">▶</span>
+        </div>
+        <div id="admin-log-content">
+            <div id="admin-log-toolbar">
+                <div id="admin-log-filters">
+                    <button class="log-filter-btn active" data-filter="all"       onclick="setLogFilter('all')">All</button>
+                    <button class="log-filter-btn"        data-filter="events"    onclick="setLogFilter('events')">Events</button>
+                    <button class="log-filter-btn"        data-filter="telemetry" onclick="setLogFilter('telemetry')">Telemetry</button>
+                    <button class="log-filter-btn"        data-filter="errors"    onclick="setLogFilter('errors')">Errors</button>
+                </div>
+                <input id="admin-log-search" type="text" placeholder="Search..." oninput="renderAdminLog()">
+            </div>
+            <div id="server-log-entries"><span style="color:#555;">No events yet.</span></div>
+        </div>
+    </div>
+
     <script>
         (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.googleapis.com/maps/api/js?`+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})({
             key: "AIzaSyA21u1FcRnpyDpn8lECbJi2vnpWpseYDac",
@@ -949,6 +1017,9 @@
                     : ''}
                 <a href="/logout" class="topbar-link logout-link">Logout</a>
             `;
+            if (CURRENT_USER.is_admin) {
+                document.getElementById('admin-log-bar').classList.add('visible');
+            }
         }
         const CLIENT_ID = 'web_' + Math.random().toString(36).substr(2, 9);
         const FIRMWARE_MISSION_MAX_WAYPOINTS = 1000;
@@ -1113,15 +1184,137 @@
                 
                 // Update robot position on map
                 updateRobotOnMap(robotId, message);
+
+                // Admin telemetry log (throttled)
+                if (CURRENT_USER?.is_admin) {
+                    _logTelemetry(robotId, payload);
+                }
+            }
+        }
+
+        function _logTelemetry(robotId, payload) {
+            const now   = Date.now();
+            const robot = robots.get(robotId);
+            const name  = robot?.robot_name || robotId;
+
+            const gps     = payload.gps     || {};
+            const status  = payload.status  || {};
+            const odo     = payload.odometry || {};
+            const mission = payload.mission  || {};
+
+            const mState = mission.state || 'idle';
+            const stateChanged = _lastMissionState[robotId] !== mState;
+            _lastMissionState[robotId] = mState;
+
+            const interval = (mState !== 'idle' && mState !== 'completed') ? 5000 : 30000;
+            const due = stateChanged || !_telemetryTimer[robotId] || (now - _telemetryTimer[robotId]) >= interval;
+            if (!due) return;
+            _telemetryTimer[robotId] = now;
+
+            const lat  = gps.latitude  != null ? Number(gps.latitude).toFixed(6)  : '--';
+            const lon  = gps.longitude != null ? Number(gps.longitude).toFixed(6) : '--';
+            const bat  = status.battery_level != null ? `bat:${Math.round(status.battery_level)}%` : '';
+            const spd  = odo.speed != null ? `spd:${Number(odo.speed).toFixed(2)}m/s` : '';
+            const hdg  = odo.heading != null ? `hdg:${Math.round(odo.heading)}°` : '';
+            const wp   = mission.waypoint_index != null
+                ? `WP:${mission.waypoint_index}/${mission.waypoint_total || '?'}` : '';
+
+            const parts = [`[${name}]`, `GPS ${lat},${lon}`, bat, spd, hdg, mState !== 'idle' ? mState : '', wp]
+                .filter(Boolean).join(' ');
+
+            _telemetryLog.push({
+                ts:     _now(),
+                level:  'telemetry',
+                msg:    parts,
+                source: 'telemetry',
+                _ms:    now,
+            });
+            if (_telemetryLog.length > _MAX_LOG) _telemetryLog.shift();
+
+            // Re-render only if log is expanded
+            if (document.getElementById('admin-log-bar')?.classList.contains('expanded')) {
+                renderAdminLog();
             }
         }
         
-        let _serverLogCollapsed = false;
+
+        // ── Admin log state ──────────────────────────────────────────────────────
+        const _MAX_LOG = 300;
+        let _serverEvents   = [];          // latest snapshot from server (type 22)
+        let _telemetryLog   = [];          // client-side telemetry entries
+        let _logFilter      = 'all';       // 'all' | 'events' | 'telemetry' | 'errors'
+        let _telemetryTimer = {};          // robot_id → last log ms
+        let _lastMissionState = {};        // robot_id → last seen mission state
+
+        const LOG_COLOR = {
+            success:   '#4CAF50',
+            error:     '#f44336',
+            warning:   '#FF9800',
+            info:      '#90CAF9',
+            telemetry: '#b0bec5',
+        };
+
+        function _now() {
+            return new Date().toLocaleTimeString('en-GB', { hour12: false });
+        }
+
+        function setLogFilter(f) {
+            _logFilter = f;
+            document.querySelectorAll('.log-filter-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.filter === f);
+            });
+            renderAdminLog();
+        }
+
+        function renderAdminLog() {
+            if (!CURRENT_USER?.is_admin) return;
+            const container = document.getElementById('server-log-entries');
+            if (!container) return;
+
+            const search = (document.getElementById('admin-log-search')?.value || '').toLowerCase();
+
+            let entries = [];
+            if (_logFilter === 'all' || _logFilter === 'events') {
+                entries = entries.concat(_serverEvents.map(e => ({ ...e, source: 'event' })));
+            }
+            if (_logFilter === 'all' || _logFilter === 'telemetry') {
+                entries = entries.concat(_telemetryLog);
+            }
+            if (_logFilter === 'errors') {
+                const all = _serverEvents.concat(_telemetryLog);
+                entries = all.filter(e => e.level === 'error');
+            }
+
+            // Sort by raw timestamp (ms), fall back to order
+            entries.sort((a, b) => (a._ms || 0) - (b._ms || 0));
+
+            // Text search
+            if (search) {
+                entries = entries.filter(e => String(e.msg || '').toLowerCase().includes(search));
+            }
+
+            if (!entries.length) {
+                container.innerHTML = '<span style="color:#555; padding:6px 12px; display:block;">No entries.</span>';
+                return;
+            }
+
+            container.innerHTML = entries.map(e => {
+                const color = LOG_COLOR[e.level] || '#ccc';
+                const badge = e.source === 'telemetry'
+                    ? `<span style="color:#546e7a;font-size:9px;margin-right:4px;">[telem]</span>`
+                    : '';
+                return `<div style="padding:1px 12px;">${badge}<span style="color:#555;">${e.ts}</span> <span style="color:${color};">${e.msg}</span></div>`;
+            }).join('');
+
+            container.scrollTop = container.scrollHeight;
+        }
 
         function toggleServerLog() {
-            _serverLogCollapsed = !_serverLogCollapsed;
-            document.getElementById('server-log-body').style.display = _serverLogCollapsed ? 'none' : '';
-            document.getElementById('server-log-toggle').textContent = _serverLogCollapsed ? '▶' : '▼';
+            const bar = document.getElementById('admin-log-bar');
+            const chevron = document.getElementById('server-log-toggle');
+            const expanded = bar.classList.toggle('expanded');
+            chevron.textContent = expanded ? '▼' : '▶';
+            if (expanded) renderAdminLog();
         }
 
         function handleUploadProgress(p) {
@@ -1137,10 +1330,11 @@
         }
 
         function handleServerStatus(message) {
+            if (!CURRENT_USER?.is_admin) return;
             const payload = message.payload || {};
             const events  = Array.isArray(payload.events) ? payload.events : [];
 
-            // Update counts
+            // Update header counts
             const counts = document.getElementById('server-log-counts');
             if (counts) {
                 const r = payload.robots_online ?? '?';
@@ -1148,30 +1342,23 @@
                 counts.textContent = `${r} robot${r !== 1 ? 's' : ''} · ${w} browser${w !== 1 ? 's' : ''}`;
             }
 
-            const container = document.getElementById('server-log-entries');
-            if (!container) return;
+            // Stamp each server event with a numeric ms for sorting
+            // Server sends HH:MM:SS strings; convert to today's ms-since-epoch
+            _serverEvents = events.map((ev, i) => {
+                const tsStr = String(ev.ts || '');
+                const [h, m, s] = tsStr.split(':').map(Number);
+                const d = new Date();
+                d.setHours(h || 0, m || 0, s || 0, 0);
+                return {
+                    ts:     tsStr,
+                    level:  ev.level || 'info',
+                    msg:    String(ev.msg || ''),
+                    source: 'event',
+                    _ms:    d.getTime() + i * 0.001,  // tiny offset preserves order within same second
+                };
+            });
 
-            if (!events.length) {
-                container.innerHTML = '<span style="color:#555;">No events yet.</span>';
-                return;
-            }
-
-            const colorMap = {
-                success: '#4CAF50',
-                error:   '#f44336',
-                warning: '#FF9800',
-                info:    '#90CAF9',
-            };
-
-            container.innerHTML = events.map(ev => {
-                const color = colorMap[ev.level] || '#ccc';
-                const ts    = String(ev.ts || '');
-                const msg   = String(ev.msg || '');
-                return `<div><span style="color:#666;">${ts}</span> <span style="color:${color};">${msg}</span></div>`;
-            }).join('');
-
-            // Auto-scroll to latest
-            container.scrollTop = container.scrollHeight;
+            renderAdminLog();
         }
         
         // ====================================================================
