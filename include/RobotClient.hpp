@@ -13,6 +13,9 @@ enum class RobotCommandType : uint8_t {
   ExecuteMission,
   PauseMission,
   CancelMission,
+  MissionUploadStart,    // type 40 — begin batched upload, carries tasks JSON
+  MissionUploadBatch,    // type 41 — one chunk of waypoints
+  MissionUploadExecute,  // type 42 — all batches done, start mission
 };
 
 struct RobotCommand {
@@ -26,8 +29,14 @@ struct RobotCommand {
   float longitude{0.0f};
   float altitude{0.0f};
   String mission_name{};
-  String mission_json{};
+  String mission_json{};        // reused: tasks JSON for START, waypoints JSON for BATCH
   unsigned long received_ms{0};
+  // Batch upload fields
+  String upload_session_id{};
+  int    upload_batch_index{-1};
+  int    upload_offset{0};
+  int    upload_total_waypoints{0};
+  int    upload_total_batches{0};
 };
 
 struct RobotTelemetry {

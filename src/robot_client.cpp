@@ -17,6 +17,9 @@ constexpr uint8_t MSG_COMMAND_CANCEL_TASK = 13;
 constexpr uint8_t MSG_COMMAND_EXECUTE_MISSION = 14;
 constexpr uint8_t MSG_COMMAND_PAUSE_MISSION = 15;
 constexpr uint8_t MSG_COMMAND_CANCEL_MISSION = 16;
+constexpr uint8_t MSG_MISSION_UPLOAD_START   = 40;
+constexpr uint8_t MSG_MISSION_UPLOAD_BATCH   = 41;
+constexpr uint8_t MSG_MISSION_UPLOAD_EXECUTE = 42;
 constexpr uint8_t MSG_HEARTBEAT = 99;
 
 template <typename T>
@@ -312,6 +315,29 @@ void RobotClient::handleTextMessage(const String& text) {
     case MSG_COMMAND_CANCEL_MISSION:
       command.type = RobotCommandType::CancelMission;
       command.command_name = "cancel_mission";
+      break;
+    case MSG_MISSION_UPLOAD_START:
+      command.type = RobotCommandType::MissionUploadStart;
+      command.command_name = "mission_upload_start";
+      command.upload_session_id     = payload["session_id"] | "";
+      command.upload_total_waypoints = payload["total_waypoints"] | 0;
+      command.upload_total_batches   = payload["total_batches"] | 0;
+      command.mission_name          = payload["name"] | "Mission";
+      serializeJson(payload["tasks"], command.mission_json);
+      break;
+    case MSG_MISSION_UPLOAD_BATCH:
+      command.type = RobotCommandType::MissionUploadBatch;
+      command.command_name = "mission_upload_batch";
+      command.upload_session_id  = payload["session_id"] | "";
+      command.upload_batch_index = payload["batch_index"] | -1;
+      command.upload_offset      = payload["offset"] | 0;
+      serializeJson(payload["waypoints"], command.mission_json);
+      break;
+    case MSG_MISSION_UPLOAD_EXECUTE:
+      command.type = RobotCommandType::MissionUploadExecute;
+      command.command_name = "mission_upload_execute";
+      command.upload_session_id      = payload["session_id"] | "";
+      command.upload_total_waypoints = payload["total_waypoints"] | 0;
       break;
     default:
       return;

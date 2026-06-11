@@ -421,15 +421,18 @@ bool SimWsClient::poll(String& textOut) {
   }
 
   // --- Fetch data ---
+  // Loop to drain all modem-buffered chunks in one poll() call.
+  // Each cipRecv gets up to 1460 bytes; large frames (e.g. mission JSON ~11 KB)
+  // need multiple consecutive reads.  500 ms timeout: returns fast when data is
+  // available, stops looping quickly once the modem buffer is empty.
   if (fetchNow) {
     _lastProbeMs = now;
-    size_t space = kRxBufSize - _rxLen;
-    if (space > 0) {
-      int n = cipRecv(_rxBuf + _rxLen, space, 2000);
-      if (n > 0) {
-        // Serial.printf("[SIM_WS] rx %d bytes (buf=%u)\n", n, (unsigned)(_rxLen + n));
-        _rxLen += (size_t)n;
-      }
+    for (;;) {
+      size_t space = kRxBufSize - _rxLen;
+      if (space == 0) break;
+      int n = cipRecv(_rxBuf + _rxLen, space, 500);
+      if (n <= 0) break;
+      _rxLen += (size_t)n;
     }
   }
 

@@ -261,7 +261,7 @@ static constexpr float MISSION_WAYPOINT_REACHED_M = 1.5f;
 static constexpr float MISSION_COVERAGE_WAYPOINT_REACHED_M = 0.5f;
 static constexpr float MISSION_SLOWDOWN_RADIUS_M = 1.0f;
 static constexpr float MISSION_HEADING_SLOWDOWN_CRAWL_MPS = 0.12f;
-static constexpr size_t MISSION_MAX_WAYPOINTS = 200;
+static constexpr size_t MISSION_MAX_WAYPOINTS = 1000;
 static constexpr size_t MISSION_MAX_TASKS = 512;
 
 enum class MissionTaskType : uint8_t {
@@ -271,6 +271,7 @@ enum class MissionTaskType : uint8_t {
   LoopEnd,
   CoveragePath,
   Spiral,
+  SetOutput,  // turn output channel A/B/C/D on or off
 };
 
 struct MissionWaypointPlan {
@@ -292,12 +293,29 @@ struct MissionTaskPlan {
   float spiral_radius_end{1.3f};
   float spiral_loops{1.0f};
   int8_t spiral_direction{1};  // +1 = ccw, -1 = cw
+  // SetOutput params (only used when type == SetOutput)
+  uint8_t output_channel{0};   // 0=A 1=B 2=C 3=D
+  bool    output_state{false}; // true=ON false=OFF
 };
 
 MissionWaypointPlan mission_waypoints[MISSION_MAX_WAYPOINTS];
 MissionTaskPlan mission_tasks[MISSION_MAX_TASKS];
 size_t mission_waypoint_count = 0;
 size_t mission_task_count = 0;
+
+struct MissionUploadCtx {
+  bool   active{false};
+  String session_id{};
+  size_t expected_total{0};
+  size_t expected_batches{0};
+  size_t received_count{0};
+  size_t received_batches{0};
+};
+static MissionUploadCtx upload_ctx;
+
+static constexpr uint8_t kOutputPins[OUTPUT_COUNT] = {
+  OUTPUT_A_PIN, OUTPUT_B_PIN, OUTPUT_C_PIN, OUTPUT_D_PIN
+};
 size_t mission_task_cursor = 0;
 unsigned long mission_task_started_ms = 0;
 size_t mission_active_task_cursor = static_cast<size_t>(-1);
@@ -489,6 +507,16 @@ static bool parseMissionPlan(const String& mission_json) {
         start_idx = loop_start_stack[--loop_start_stack_size];
       }
       mission_tasks[mission_task_count++] = {MissionTaskType::LoopEnd, -1, -1, 0.0f, 0, max(1, count), start_idx};
+    } else if (type == "set_output") {
+      String ch_str = task["channel"] | "A";
+      ch_str.toUpperCase();
+      uint8_t ch = (ch_str == "B") ? 1 : (ch_str == "C") ? 2 : (ch_str == "D") ? 3 : 0;
+      bool state = task["state"] | false;
+      MissionTaskPlan t{};
+      t.type           = MissionTaskType::SetOutput;
+      t.output_channel = ch;
+      t.output_state   = state;
+      mission_tasks[mission_task_count++] = t;
     }
   }
 
@@ -770,6 +798,20 @@ static void updateMissionExecutor() {
     }
 
     MissionTaskPlan* next_task = &mission_tasks[mission_task_cursor];
+
+    // SetOutput executes instantly — toggle GPIO and immediately advance
+    if (next_task->type == MissionTaskType::SetOutput) {
+      uint8_t ch = next_task->output_channel;
+      bool    on = next_task->output_state;
+      if (ch < OUTPUT_COUNT) {
+        digitalWrite(kOutputPins[ch], on ? HIGH : LOW);
+        Serial.printf("[MISSION] Output %c %s (pin %u)\n",
+          'A' + ch, on ? "ON" : "OFF", kOutputPins[ch]);
+      }
+      mission_task_cursor++;
+      return;
+    }
+
     if (next_task->type == MissionTaskType::LoopStart ||
         next_task->type == MissionTaskType::LoopEnd ||
         next_task->type == MissionTaskType::Wait ||
@@ -1250,6 +1292,75 @@ static void handleRobotClientCommand() {
       setMissionState(MissionState::Cancelled);
       robot_client.sendCommandAck(command, "accepted");
       break;
+    case RobotCommandType::MissionUploadStart: {
+      // Parse tasks now; waypoints arrive in subsequent BATCH messages
+      String wrapped = "{\"waypoints\":[],\"tasks\":";
+      wrapped += command.mission_json;
+      wrapped += "}";
+      parseMissionPlan(wrapped);  // clears arrays, fills mission_tasks[]
+      upload_ctx.active           = true;
+      upload_ctx.session_id       = command.upload_session_id;
+      upload_ctx.expected_total   = (size_t)command.upload_total_waypoints;
+      upload_ctx.expected_batches = (size_t)command.upload_total_batches;
+      upload_ctx.received_count   = 0;
+      upload_ctx.received_batches = 0;
+      Serial.printf("[UPLOAD] Start session=%s total=%u batches=%u tasks=%u\n",
+        upload_ctx.session_id.c_str(),
+        (unsigned)upload_ctx.expected_total,
+        (unsigned)upload_ctx.expected_batches,
+        (unsigned)mission_task_count);
+      robot_client.sendCommandAck(command, "ok");
+      break;
+    }
+    case RobotCommandType::MissionUploadBatch: {
+      if (!upload_ctx.active || command.upload_session_id != upload_ctx.session_id) {
+        robot_client.sendCommandAck(command, "error", "no_active_session");
+        break;
+      }
+      JsonDocument doc;
+      deserializeJson(doc, command.mission_json);
+      JsonArrayConst wps = doc.as<JsonArrayConst>();
+      size_t offset = (size_t)command.upload_offset;
+      for (JsonVariantConst wp_var : wps) {
+        if (offset >= MISSION_MAX_WAYPOINTS) break;
+        JsonObjectConst wp = wp_var.as<JsonObjectConst>();
+        mission_waypoints[offset++] = {wp["lat"] | 0.0, wp["lon"] | 0.0, wp["alt"] | 0.0};
+      }
+      upload_ctx.received_count = offset;
+      upload_ctx.received_batches++;
+      Serial.printf("[UPLOAD] Batch %d: %u/%u wps\n",
+        command.upload_batch_index,
+        (unsigned)upload_ctx.received_count,
+        (unsigned)upload_ctx.expected_total);
+      robot_client.sendCommandAck(command, "ok");
+      break;
+    }
+    case RobotCommandType::MissionUploadExecute: {
+      if (!upload_ctx.active || command.upload_session_id != upload_ctx.session_id) {
+        robot_client.sendCommandAck(command, "error", "session_mismatch");
+        break;
+      }
+      size_t expected = (size_t)command.upload_total_waypoints;
+      if (upload_ctx.received_count != expected) {
+        Serial.printf("[UPLOAD] Execute failed: got=%u expected=%u\n",
+          (unsigned)upload_ctx.received_count, (unsigned)expected);
+        robot_client.sendCommandAck(command, "error", "waypoint_count_mismatch");
+        upload_ctx.active = false;
+        break;
+      }
+      mission_waypoint_count = upload_ctx.received_count;
+      upload_ctx.active = false;
+      mission_ctx.active = true;
+      mission_ctx.name = "";
+      mission_ctx.phase = 0;
+      mission_ctx.waypoint_index = -1;
+      mission_ctx.started_ms = millis();
+      setMissionState(MissionState::Queued);
+      Serial.printf("[UPLOAD] Execute: %u wps %u tasks — QUEUED\n",
+        (unsigned)mission_waypoint_count, (unsigned)mission_task_count);
+      robot_client.sendCommandAck(command, "accepted");
+      break;
+    }
     case RobotCommandType::None:
       break;
   }
@@ -1348,6 +1459,11 @@ void setup() {
   delay(1000);
   Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
+
+  for (uint8_t pin : kOutputPins) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+  }
 
   net_manager.begin();   // starts WiFi; activates SIM fallback automatically if WiFi absent
   gps_uart.begin(GPS_UART_BAUD, SERIAL_8N1, GPS_UART_RX_PIN, GPS_UART_TX_PIN);

@@ -45,6 +45,12 @@ WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
 HEARTBEAT_INTERVAL = 10  # seconds
 ROBOT_TIMEOUT = 15  # seconds - robot considered offline if no data received
 
+# Mission batch upload
+UPLOAD_BATCH_SIZE      = 200   # waypoints per batch (fits in 16 KB rx buffer)
+UPLOAD_BATCH_THRESHOLD = 200   # use batching when total waypoints exceed this
+UPLOAD_BATCH_TIMEOUT   = 15.0  # seconds to wait for each batch ACK
+UPLOAD_MAX_RETRIES     = 3     # retries per batch before aborting
+
 # ============================================================================
 # Logging Setup
 # ============================================================================
@@ -81,6 +87,10 @@ class MessageType(Enum):
     WEB_REQUEST_LIST = 31
     WEB_SEND_COMMAND = 32
     WEB_SELECT_ROBOT = 33
+
+    MISSION_UPLOAD_START   = 40
+    MISSION_UPLOAD_BATCH   = 41
+    MISSION_UPLOAD_EXECUTE = 42
 
 # ============================================================================
 # Data Classes
@@ -128,7 +138,10 @@ class ControlServer:
         self.logger = logging.getLogger('ControlServer')
         self.coverage_service = CoveragePathService()
         self._robot_loggers: Dict[str, RobotLogger] = {}
-        
+        self._events: list = []          # recent server events, newest last
+        self._MAX_EVENTS = 60
+        self._upload_ack_queues: dict = {}  # robot_id -> asyncio.Queue for batch upload ACKs
+
         # Setup Flask app for HTTP endpoints
         self.flask_app = Flask(__name__)
         setup_auth(self.flask_app)               # login/signup sessions
@@ -249,6 +262,140 @@ class ControlServer:
             self._robot_loggers[robot_id] = RobotLogger(robot_id)
         return self._robot_loggers[robot_id]
 
+    def _events_payload(self) -> dict:
+        robots_online = sum(1 for r in self.robots.values() if r.online)
+        web_clients   = sum(1 for c in self.clients.values() if c.client_type == 'web')
+        return {
+            'events': list(self._events),
+            'robots_online': robots_online,
+            'web_clients': web_clients,
+        }
+
+    async def _push_event(self, level: str, msg: str):
+        """Append an event to the ring buffer and broadcast to all web clients."""
+        ts = datetime.now().strftime('%H:%M:%S')
+        self._events.append({'ts': ts, 'level': level, 'msg': msg})
+        if len(self._events) > self._MAX_EVENTS:
+            self._events = self._events[-self._MAX_EVENTS:]
+        status_msg = json.dumps({'type': MessageType.SERVER_STATUS.value,
+                                 'payload': self._events_payload()})
+        dead = []
+        for cid, client in list(self.clients.items()):
+            if client.client_type != 'web':
+                continue
+            try:
+                await client.websocket.send(status_msg)
+            except Exception:
+                dead.append(cid)
+        for cid in dead:
+            self.clients.pop(cid, None)
+
+    async def _upload_mission_batched(self, robot_ws, robot_id: str, robot, compiled: dict, web_ws) -> bool:
+        """Upload a large mission to the robot in waypoint batches. Returns True on success."""
+        session_id = uuid.uuid4().hex[:8]
+        waypoints   = compiled['waypoints']
+        tasks       = compiled['tasks']
+        total       = len(waypoints)
+        total_batches = math.ceil(total / UPLOAD_BATCH_SIZE)
+        robot_label = robot.robot_name or robot_id
+
+        queue: asyncio.Queue = asyncio.Queue()
+        self._upload_ack_queues[robot_id] = queue
+
+        async def _wait_ack(expected_cmd: str, accept_statuses=('ok', 'accepted')) -> bool:
+            try:
+                ack = await asyncio.wait_for(queue.get(), timeout=UPLOAD_BATCH_TIMEOUT)
+                return ack.get('command') == expected_cmd and ack.get('status') in accept_statuses
+            except asyncio.TimeoutError:
+                return False
+
+        async def _send_progress(step: str, current_batch: int = 0):
+            try:
+                await web_ws.send(json.dumps({
+                    'type': 'upload_progress',
+                    'payload': {
+                        'step': step,
+                        'current_batch': current_batch,
+                        'total_batches': total_batches,
+                        'total_waypoints': total,
+                    }
+                }))
+            except Exception:
+                pass
+
+        try:
+            await self._push_event('info', f'Upload start: {total} wps → {robot_label}')
+
+            # ── 1. START ──────────────────────────────────────────────────────
+            await robot_ws.send(json.dumps({
+                'type': MessageType.MISSION_UPLOAD_START.value,
+                'robot_id': robot_id,
+                'client_id': '',
+                'payload': {
+                    'session_id':    session_id,
+                    'total_waypoints': total,
+                    'total_batches': total_batches,
+                    'tasks':         tasks,
+                    'name':          compiled.get('name', 'Mission'),
+                    'description':   compiled.get('description', ''),
+                }
+            }))
+            await _send_progress('start')
+
+            if not await _wait_ack('mission_upload_start'):
+                await self._push_event('error', f'Upload start timed out → {robot_label}')
+                return False
+
+            # ── 2. BATCHES ────────────────────────────────────────────────────
+            for i in range(total_batches):
+                offset  = i * UPLOAD_BATCH_SIZE
+                wps     = waypoints[offset:offset + UPLOAD_BATCH_SIZE]
+                batch_msg = json.dumps({
+                    'type': MessageType.MISSION_UPLOAD_BATCH.value,
+                    'robot_id': robot_id,
+                    'payload': {
+                        'session_id':  session_id,
+                        'batch_index': i,
+                        'offset':      offset,
+                        'waypoints':   wps,
+                    }
+                })
+
+                ok = False
+                for attempt in range(UPLOAD_MAX_RETRIES):
+                    await robot_ws.send(batch_msg)
+                    if await _wait_ack('mission_upload_batch'):
+                        ok = True
+                        break
+                    self.logger.warning(f'Upload batch {i} attempt {attempt+1} timed out, retrying')
+
+                if not ok:
+                    await self._push_event('error', f'Upload batch {i} failed → {robot_label}')
+                    return False
+
+                await _send_progress('batch', i + 1)
+
+            # ── 3. EXECUTE ────────────────────────────────────────────────────
+            await robot_ws.send(json.dumps({
+                'type': MessageType.MISSION_UPLOAD_EXECUTE.value,
+                'robot_id': robot_id,
+                'payload': {
+                    'session_id':     session_id,
+                    'total_waypoints': total,
+                }
+            }))
+
+            if not await _wait_ack('mission_upload_execute', accept_statuses=('accepted',)):
+                await self._push_event('error', f'Upload execute rejected → {robot_label}')
+                return False
+
+            await self._push_event('success', f'Upload done: {total} wps → {robot_label}')
+            await _send_progress('done', total_batches)
+            return True
+
+        finally:
+            self._upload_ack_queues.pop(robot_id, None)
+
     def run_flask(self):
         """Run Flask app in a separate thread"""
         self.logger.info(f"Starting HTTP server on {self.host}:{self.http_port}")
@@ -319,6 +466,20 @@ class ControlServer:
                             if payload.get('detail'):
                                 detail += f" ({payload.get('detail')})"
                             self._rlog(robot_id).log_comm("CMD_ACK", detail)
+                            cmd    = payload.get('command', '?')
+                            status = payload.get('status', '?')
+                            rname  = self.robots[robot_id].robot_name if robot_id in self.robots else robot_id
+                            # Route batch-upload ACKs to the waiting upload coroutine
+                            if cmd.startswith('mission_upload_') and robot_id in self._upload_ack_queues:
+                                await self._upload_ack_queues[robot_id].put({
+                                    'command': cmd,
+                                    'status':  status,
+                                    'detail':  payload.get('detail', '')
+                                })
+                            else:
+                                level = 'success' if status == 'accepted' else 'warning'
+                                detail_str = f" ({payload.get('detail')})" if payload.get('detail') else ''
+                                await self._push_event(level, f'ACK {cmd}: {status}{detail_str} ← {rname}')
                     
                     else:
                         self.logger.warning(f"Unknown message type: {msg_type}")
@@ -337,10 +498,12 @@ class ControlServer:
                 del self.clients[client_id]
             
             if client_type == "robot" and robot_id in self.robots:
+                robot_name = self.robots[robot_id].robot_name
                 self.robots[robot_id].online = False
                 self.logger.info(f"Robot offline: {robot_id}")
                 self._rlog(robot_id).log_comm("DISCONNECT")
                 await self.broadcast_robot_list()
+                await self._push_event('error', f'Robot offline: {robot_name} ({robot_id})')
     
     async def handle_robot_register(self, client_id: str, robot_id: str,
                                    message: dict, websocket):
@@ -379,7 +542,8 @@ class ControlServer:
             "CONNECT",
             f"name={robot_info.robot_name} type={robot_info.robot_type} max_speed={robot_info.max_speed}"
         )
-        
+        await self._push_event('success', f'Robot online: {robot_info.robot_name} ({robot_id})')
+
         # Send ACK
         ack = {
             'type': MessageType.COMMAND_ACK.value,
@@ -433,6 +597,12 @@ class ControlServer:
 
         # Send robot list filtered to this user's assignments
         await self.broadcast_robot_list(target_websocket=websocket)
+
+        # Send current server event log so the new client sees history immediately
+        await websocket.send(json.dumps({
+            'type': MessageType.SERVER_STATUS.value,
+            'payload': self._events_payload()
+        }))
     
     async def handle_telemetry(self, robot_id: str, message: dict, websocket):
         """Handle sensor telemetry from robot"""
@@ -493,6 +663,7 @@ class ControlServer:
         robot_id = message.get('robot_id')
         payload  = message.get('payload', {})
         command  = payload.get('command')
+        self.logger.info(f"Web command received: {command} for robot {robot_id}")
 
         # Find which client sent this
         sender = next(
@@ -512,11 +683,27 @@ class ControlServer:
 
         if robot_id not in self.robots:
             self.logger.error(f"Command to unknown robot: {robot_id}")
+            await self._push_event('error', f'Unknown robot: {robot_id}')
+            try:
+                await websocket.send(json.dumps({
+                    'type': 'error',
+                    'payload': {'message': f'Unknown robot: {robot_id}'}
+                }))
+            except Exception:
+                pass
             return
 
         robot = self.robots[robot_id]
         if not robot.online:
             self.logger.error(f"Command to offline robot: {robot_id}")
+            await self._push_event('error', f'Robot offline: {robot.robot_name} ({robot_id})')
+            try:
+                await websocket.send(json.dumps({
+                    'type': 'error',
+                    'payload': {'message': f'Robot "{robot.robot_name}" is offline'}
+                }))
+            except Exception:
+                pass
             return
         
         self.logger.info(f"Routing {command} command to {robot_id}")
@@ -526,8 +713,44 @@ class ControlServer:
         )
 
         # Convert web command to robot command type
-        robot_command = self._create_robot_command(command, message)
-        
+        try:
+            robot_command = self._create_robot_command(command, message)
+        except (ValueError, TypeError) as e:
+            self.logger.error(f"Mission compile error for {robot_id}: {e}")
+            await self._push_event('error', f'Mission error ({robot.robot_name}): {e}')
+            try:
+                await websocket.send(json.dumps({
+                    'type': 'error',
+                    'payload': {'message': str(e)}
+                }))
+            except Exception:
+                pass
+            return
+
+        robot_label = robot.robot_name or robot_id
+
+        # Large execute_mission: use batched upload instead of single frame
+        if command == 'execute_mission':
+            wps = robot_command.get('payload', {}).get('waypoints', [])
+            if len(wps) > UPLOAD_BATCH_THRESHOLD:
+                compiled = {
+                    'name':        robot_command['payload'].get('name', 'Mission'),
+                    'description': robot_command['payload'].get('description', ''),
+                    'waypoints':   wps,
+                    'tasks':       robot_command['payload'].get('tasks', []),
+                }
+                for _cid, _client in list(self.clients.items()):
+                    if _client.robot_id == robot_id and _client.client_type == "robot":
+                        self.logger.info(f"Batched upload: {len(wps)} wps → {robot_id}")
+                        await self._upload_mission_batched(
+                            _client.websocket, robot_id, robot, compiled, websocket
+                        )
+                        return
+                await self._push_event('error', f'Robot WebSocket not found: {robot_id}')
+                return
+
+        await self._push_event('info', f'CMD {command} → {robot_label}')
+
         # Find robot connection and send command
         for client_id, client in list(self.clients.items()):
             if client.robot_id == robot_id and client.client_type == "robot":
@@ -563,6 +786,10 @@ class ControlServer:
     def _compile_mission_payload(self, payload: dict) -> dict:
         """Compile mission payload into firmware-ready waypoint-index tasks."""
         source = payload.get('source_mission') if isinstance(payload.get('source_mission'), dict) else None
+        self.logger.info(
+            f"Compiling mission: source={'yes' if source else 'no'}, "
+            f"tasks={len(source.get('tasks', []) if source else payload.get('tasks', []))}"
+        )
         mission_name = payload.get('name', 'Unnamed Mission')
         mission_desc = payload.get('description', '')
 
@@ -610,12 +837,20 @@ class ControlServer:
                 continue
 
             coverage_points = self._sanitize_coverage_waypoints(compiled_task.get('coverage_waypoints', []))
+            self.logger.info(
+                f"Coverage task '{compiled_task.get('coverage_name', 'Coverage')}': "
+                f"embedded_wps={len(compiled_task.get('coverage_waypoints') or [])}, "
+                f"sanitized={len(coverage_points)}, path_index={compiled_task.get('coverage_path_index')}"
+            )
 
             if not coverage_points:
                 path_index = compiled_task.get('coverage_path_index')
                 if isinstance(path_index, int) and 0 <= path_index < len(saved_paths):
                     path_obj = saved_paths[path_index] if isinstance(saved_paths[path_index], dict) else {}
                     coverage_points = self._sanitize_coverage_waypoints(path_obj.get('coverage_waypoints', []))
+                    self.logger.info(
+                        f"  -> fallback to saved_path[{path_index}]: {len(coverage_points)} points"
+                    )
                     if not compiled_task.get('coverage_name'):
                         compiled_task['coverage_name'] = path_obj.get('name', 'Coverage')
 

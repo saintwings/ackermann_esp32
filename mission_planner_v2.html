@@ -615,6 +615,23 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Server event log -->
+                    <div class="panel" id="server-log-panel" style="margin-top: 8px;">
+                        <div class="panel-header" onclick="toggleServerLog()" style="cursor: pointer; user-select: none;">
+                            📋 Server Log
+                            <span id="server-log-counts" style="margin-left: 8px; font-size: 11px; color: #aaa;"></span>
+                            <span id="server-log-toggle" style="margin-left: auto; font-size: 11px; color: #aaa;">▼</span>
+                        </div>
+                        <div id="server-log-body" class="panel-content" style="padding: 0;">
+                            <div id="server-log-entries" style="
+                                max-height: 220px; overflow-y: auto;
+                                font-family: monospace; font-size: 11px;
+                                padding: 6px 8px; line-height: 1.6;
+                            ">
+                                <span style="color: #555;">No events yet.</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 
                 
@@ -740,6 +757,7 @@
                                         <option value="wait">Wait</option>
                                         <option value="loop_start">Loop Start</option>
                                         <option value="loop_end">Loop End</option>
+                                        <option value="set_output">Set Output (A/B/C/D)</option>
                                     </select>
                                 </div>
                                 <div id="task-options"></div>
@@ -760,6 +778,7 @@
                             
                             <!-- Execute Mission -->
                             <div class="command-section">
+                                <div id="mission-feedback" style="display:none; background:#3d3d3d; padding:8px; border-radius:4px; font-size:12px; color:#ccc; margin-bottom:10px; border-left:3px solid #4CAF50;"></div>
                                 <button class="btn-primary" onclick="executeMission()" style="width: 100%; background: #4CAF50;">
                                     ✓ Execute Mission
                                 </button>
@@ -848,14 +867,15 @@
                                     <input type="number" id="coverage-robot-speed" value="1.0" min="0.1" max="5" step="0.1">
                                 </div>
                                 <div class="form-group">
-                                    <label>Requested Waypoints: <span id="coverage-max-waypoints-value">200</span></label>
-                                    <input type="range" id="coverage-max-waypoints" value="200" min="3" max="200" step="1" oninput="updateCoverageWaypointLimitLabel()" onchange="handleCoverageWaypointLimitChanged()">
+                                    <label>Requested Waypoints: <span id="coverage-max-waypoints-value">1000</span></label>
+                                    <input type="range" id="coverage-max-waypoints" value="1000" min="3" max="1000" step="1" oninput="updateCoverageWaypointLimitLabel()" onchange="handleCoverageWaypointLimitChanged()">
                                     <div style="font-size: 11px; color: #b0b0b0; margin-top: 4px;">
                                         Minimum required: <span id="coverage-min-waypoints">--</span>
                                         | Available before limit: <span id="coverage-available-waypoints">--</span>
                                     </div>
                                 </div>
                                 <button class="btn-primary" onclick="generateCoveragePlan()" style="width: 100%;">Generate Coverage Plan</button>
+                                <div id="coverage-feedback" style="display:none; background:#3d3d3d; padding:8px; border-radius:4px; font-size:12px; color:#ccc; margin-top:8px; border-left:3px solid #4CAF50;"></div>
                             </div>
 
                             <div class="command-section" style="background: #2d2d2d;">
@@ -931,7 +951,7 @@
             `;
         }
         const CLIENT_ID = 'web_' + Math.random().toString(36).substr(2, 9);
-        const FIRMWARE_MISSION_MAX_WAYPOINTS = 200;
+        const FIRMWARE_MISSION_MAX_WAYPOINTS = 1000;
         const FIRMWARE_MIN_MISSION_SPEED_MPS = 0.05;
         const FIRMWARE_MAX_MISSION_SPEED_MPS = 1.50;
         const PLANNER_WHEELBASE_M = 0.36;
@@ -1036,7 +1056,12 @@
                 return;
             }
 
-            if (msgType === 21) {  // ROBOT_LIST
+            if (msgType === 'error') {
+                const errMsg = message.payload?.message || 'Server error';
+                updateStatusMessage(`Server: ${errMsg}`, 'error');
+            } else if (msgType === 'upload_progress') {
+                handleUploadProgress(message.payload);
+            } else if (msgType === 21) {  // ROBOT_LIST
                 handleRobotList(message);
             } else if (msgType === 1) {  // SENSOR_TELEMETRY
                 handleTelemetryUpdate(message);
@@ -1091,8 +1116,62 @@
             }
         }
         
+        let _serverLogCollapsed = false;
+
+        function toggleServerLog() {
+            _serverLogCollapsed = !_serverLogCollapsed;
+            document.getElementById('server-log-body').style.display = _serverLogCollapsed ? 'none' : '';
+            document.getElementById('server-log-toggle').textContent = _serverLogCollapsed ? '▶' : '▼';
+        }
+
+        function handleUploadProgress(p) {
+            if (!p) return;
+            const total = p.total_waypoints;
+            if (p.step === 'start') {
+                updateStatusMessage(`Uploading mission (${total} waypoints)...`, 'info');
+            } else if (p.step === 'batch') {
+                updateStatusMessage(`Uploading: batch ${p.current_batch}/${p.total_batches} (${total} wps)`, 'info');
+            } else if (p.step === 'done') {
+                updateStatusMessage(`Mission uploaded: ${total} waypoints sent`);
+            }
+        }
+
         function handleServerStatus(message) {
-            console.log('Server status:', message.payload);
+            const payload = message.payload || {};
+            const events  = Array.isArray(payload.events) ? payload.events : [];
+
+            // Update counts
+            const counts = document.getElementById('server-log-counts');
+            if (counts) {
+                const r = payload.robots_online ?? '?';
+                const w = payload.web_clients   ?? '?';
+                counts.textContent = `${r} robot${r !== 1 ? 's' : ''} · ${w} browser${w !== 1 ? 's' : ''}`;
+            }
+
+            const container = document.getElementById('server-log-entries');
+            if (!container) return;
+
+            if (!events.length) {
+                container.innerHTML = '<span style="color:#555;">No events yet.</span>';
+                return;
+            }
+
+            const colorMap = {
+                success: '#4CAF50',
+                error:   '#f44336',
+                warning: '#FF9800',
+                info:    '#90CAF9',
+            };
+
+            container.innerHTML = events.map(ev => {
+                const color = colorMap[ev.level] || '#ccc';
+                const ts    = String(ev.ts || '');
+                const msg   = String(ev.msg || '');
+                return `<div><span style="color:#666;">${ts}</span> <span style="color:${color};">${msg}</span></div>`;
+            }).join('');
+
+            // Auto-scroll to latest
+            container.scrollTop = container.scrollHeight;
         }
         
         // ====================================================================
@@ -1470,15 +1549,29 @@
         }
         
         function updateStatusMessage(message, type = 'info') {
-            const elem = document.getElementById('status-message');
             const color = type === 'error' ? '#f44336' : (type === 'warning' ? '#FF9800' : '#4CAF50');
-            elem.style.borderLeftColor = color;
-            elem.textContent = message;
-            
-            // Clear message after 5 seconds
-            setTimeout(() => {
-                elem.textContent = '';
-            }, 5000);
+
+            // Update the primary status bar (Control tab)
+            const elem = document.getElementById('status-message');
+            if (elem) {
+                elem.style.borderLeftColor = color;
+                elem.textContent = message;
+                setTimeout(() => { if (elem.textContent === message) elem.textContent = ''; }, 5000);
+            }
+
+            // Mirror into whichever tab-local feedback element is present
+            ['mission-feedback', 'coverage-feedback'].forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.style.display = 'block';
+                el.style.borderLeftColor = color;
+                el.textContent = message;
+                clearTimeout(el._clearTimer);
+                el._clearTimer = setTimeout(() => {
+                    el.style.display = 'none';
+                    el.textContent = '';
+                }, 5000);
+            });
         }
 
         function hasFiniteGpsCoordinates(gps) {
@@ -1672,7 +1765,7 @@
         let coverageEndMarker = null;
         let coverageLastResult = null;
         let coverageMinimumRequiredWaypoints = 3;
-        let coverageAvailableWaypoints = 200;
+        let coverageAvailableWaypoints = 1000;
 
         function coveragePreviewMatchesMissionPlan() {
             if (!coverageGeneratedWaypoints.length || missionWaypoints.length !== coverageGeneratedWaypoints.length) {
@@ -2507,6 +2600,25 @@
                         <input type="number" id="task-loop-count" value="${lastTaskParams.loopCount}" min="1" step="1">
                     </div>
                 `;
+            } else if (taskType === 'set_output') {
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Output Channel</label>
+                        <select id="task-output-channel">
+                            <option value="A">Output A (GPIO 35)</option>
+                            <option value="B">Output B (GPIO 36)</option>
+                            <option value="C">Output C (GPIO 37)</option>
+                            <option value="D">Output D (GPIO 38)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>State</label>
+                        <select id="task-output-state">
+                            <option value="on">ON</option>
+                            <option value="off">OFF</option>
+                        </select>
+                    </div>
+                `;
             }
 
             if (taskType === 'spiral') {
@@ -2601,6 +2713,10 @@
                 task.description = `Loop ${task.count}x`;
                 // Remember parameters for next time
                 lastTaskParams.loopCount = task.count;
+            } else if (taskType === 'set_output') {
+                task.channel = document.getElementById('task-output-channel').value;
+                task.state   = document.getElementById('task-output-state').value === 'on';
+                task.description = `Output ${task.channel} ${task.state ? 'ON' : 'OFF'}`;
             }
             
             if (editingTaskIndex >= 0) {
@@ -3417,10 +3533,10 @@
             coverageGeneratedWaypoints = [];
             coverageLastResult = null;
             coverageMinimumRequiredWaypoints = 3;
-            coverageAvailableWaypoints = 200;
+            coverageAvailableWaypoints = 1000;
             missionCoveragePaths = [];
             selectedCoveragePathIndex = -1;
-            setCoverageWaypointLimitRange(3, 200, 200);
+            setCoverageWaypointLimitRange(3, 1000, 1000);
             clearCoveragePreviewOnMap();
             renderCoverageResultSummary(null);
             document.getElementById('mission-name').value = '';
@@ -4104,7 +4220,7 @@ document.getElementById('stats').innerHTML=\`
             await fetchWsToken();   // must have token before WS connect
             connectToServer();
             updateCoverageWaypointSelector();
-            setCoverageWaypointLimitRange(3, 200, 200);
+            setCoverageWaypointLimitRange(3, 1000, 1000);
             updateCoverageGeometryDisplay();
         });
     </script>

@@ -55,7 +55,9 @@ class SimWsClient {
   bool    _connected   = false;
   bool    _sslStarted  = false;
 
-  static constexpr size_t kRxBufSize = 4096;
+  // Buffer must fit the largest single WebSocket frame we expect to receive.
+  // A 200-waypoint coverage mission JSON is ~11 KB after WS framing.
+  static constexpr size_t kRxBufSize = 16384;
   uint8_t  _rxBuf[kRxBufSize];
   size_t   _rxLen = 0;
 

@@ -81,6 +81,13 @@
 #define PS2_DAT GPIO_NUM_13
 #define PS2_CLK GPIO_NUM_11
 
+// Mission output channels A-D (dummy GPIO — replace with real relay pins when wired)
+#define OUTPUT_A_PIN 35
+#define OUTPUT_B_PIN 36
+#define OUTPUT_C_PIN 37
+#define OUTPUT_D_PIN 38
+#define OUTPUT_COUNT 4
+
 // WS2812B NeoPixel Status LEDs (8 LEDs)
 #define NEOPIXEL_PIN 8
 #define NEOPIXEL_COUNT 8
