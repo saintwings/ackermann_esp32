@@ -123,7 +123,7 @@ void RobotClient::update() {
   if (!_simConnected || !_simWs || !_simWs->connected()) {
     _simConnected = false;
     unsigned long now = millis();
-    if (now - _lastReconnectMs >= 12000) {
+    if (now - _lastReconnectMs >= 5000) {
       _lastReconnectMs = now;
       beginSimWs();
     }

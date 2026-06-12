@@ -79,7 +79,7 @@ bool SimWsClient::sslOpen(const char* host, uint16_t port) {
   String line;
   char openUrc[20];
   snprintf(openUrc, sizeof(openUrc), "+CIPOPEN: %u,", kMux);
-  unsigned long deadline = millis() + 35000;
+  unsigned long deadline = millis() + 15000;
 
   while (millis() < deadline) {
     while (_stream.available()) {

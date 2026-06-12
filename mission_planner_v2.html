@@ -4125,11 +4125,17 @@
                     </div>
                 `);
                 
-                // Update path (keep last 100 points)
+                // Update path (keep last 200 points, reject GPS jumps > 30 m)
                 const path = robotPaths.get(robotId);
                 const pathArray = path.getPath().getArray();
+                if (pathArray.length > 0) {
+                    const last = pathArray[pathArray.length - 1];
+                    const dLat = (lat - last.lat()) * 111000;
+                    const dLon = (lon - last.lng()) * 111000 * Math.cos(lat * Math.PI / 180);
+                    if ((dLat * dLat + dLon * dLon) > 900) return; // > 30 m → GPS spike, skip
+                }
                 pathArray.push(new google.maps.LatLng(lat, lon));
-                if (pathArray.length > 100) {
+                if (pathArray.length > 200) {
                     pathArray.shift();
                 }
                 path.setPath(pathArray);
