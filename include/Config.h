@@ -131,7 +131,7 @@
 #define DRIVE_WHEEL_DIAMETER_M 0.2f
 
 // Robot motion limits
-#define MAX_LINEAR_SPEED_MS 1.0f       // Maximum forward/reverse speed (m/s)
+#define MAX_LINEAR_SPEED_MS 0.5f       // Maximum forward/reverse speed (m/s)
 #define MAX_STEERING_ANGLE_DEG 35.0f   // Maximum steering angle (degrees)
 
 // Heading offset (degrees) added after IMU yaw computation.
