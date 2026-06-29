@@ -156,10 +156,11 @@
 #define SIM_APN_PASS        ""
 
 // ── Network mode ──────────────────────────────────────────────────────────────
+// 0 = Offline  — no WiFi, no SIM, no NTRIP (serial-only control, fastest loop)
 // 1 = WiFi primary, SIM fallback
 // 2 = SIM only (WiFi disabled)
 // 3 = WiFi only (no SIM)
-#define NET_MODE 2  // 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
+#define NET_MODE 0  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
 
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL

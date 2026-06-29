@@ -12,6 +12,11 @@ NetManager::NetManager()
 // begin() — call once in setup()
 // ─────────────────────────────────────────────────────────────────────────────
 void NetManager::begin() {
+#if NET_MODE == 0   // ── Offline ───────────────────────────────────────────────
+  WiFi.mode(WIFI_OFF);
+  Serial.println("[NET] Mode: Offline (WiFi/SIM/NTRIP disabled — serial-only)");
+
+#else
 #if SIM_EN_PIN >= 0
   pinMode(SIM_EN_PIN, OUTPUT);
   digitalWrite(SIM_EN_PIN, LOW);
@@ -42,16 +47,20 @@ void NetManager::begin() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.printf("[NET] Mode: WiFi+SIM — SSID: %s\n", WIFI_SSID);
 #endif
+#endif // NET_MODE == 0
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // update() — call every comms loop tick
 // ─────────────────────────────────────────────────────────────────────────────
 void NetManager::update() {
-#if NET_MODE == 2   // ── SIM only ──────────────────────────────────────────────
+#if NET_MODE == 0   // ── Offline ───────────────────────────────────────────────
+  return;
+
+#elif NET_MODE == 2  // ── SIM only ─────────────────────────────────────────────
   simTick();
 
-#elif NET_MODE == 3  // ── WiFi only ─────────────────────────────────────────────
+#elif NET_MODE == 3  // ── WiFi only ────────────────────────────────────────────
   wifiTick();
 
 #else               // ── WiFi + SIM fallback ────────────────────────────────────

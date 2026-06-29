@@ -1626,6 +1626,7 @@ static void commsTask(void* /*pvParameters*/) {
     if (dt_ms > loop_stats.max_comms_dt_ms) loop_stats.max_comms_dt_ms = dt_ms;
     if (dt_ms > COMMS_OVERRUN_MS) ++loop_stats.comms_overrun_count;
 
+#if NET_MODE != 0
     // ── Network management: WiFi primary, SIM fallback ────────────────────────
     net_manager.update();
     const NetSource net_src = net_manager.source();
@@ -1650,16 +1651,23 @@ static void commsTask(void* /*pvParameters*/) {
       robot_client.update();
     }
 #endif
+#endif // NET_MODE != 0
+
     handleUsbSerialControl();
-  #if NTRIP_ENABLE
+
+#if NET_MODE != 0 && NTRIP_ENABLE
     SensorComms::connectNtripIfNeeded(sensor_comms);
-  #endif
+#endif
     SensorComms::updateGpsAndNtrip(sensor_comms);
     SensorComms::updateImu(sensor_comms);
     updateSafetyGuards();
+#if NET_MODE != 0
     handleRobotClientCommand();
+#endif
     updateMissionExecutor();
+#if NET_MODE != 0
     publishRobotTelemetry();
+#endif
     logSensorsAt1Hz();
     updateStatusLeds();
     vTaskDelay(pdMS_TO_TICKS(2));
