@@ -72,14 +72,14 @@ class DoubleAckermannSteering:
     def update(self):
         self.angle_fl = self.compute_steering_angle(self.R_current, 'left')
         self.angle_fr = self.compute_steering_angle(self.R_current, 'right')
-        self.angle_rl = -self.angle_fl
-        self.angle_rr = -self.angle_fr
+        self.angle_rl = self.compute_steering_angle(self.R_current, 'right')
+        self.angle_rr = self.compute_steering_angle(self.R_current, 'left')
 
 
         self.speed_fl = self.compute_wheel_speed('left')
         self.speed_fr = self.compute_wheel_speed('right')
-        self.speed_rl = self.compute_wheel_speed('left')
-        self.speed_rr = self.compute_wheel_speed('right')
+        self.speed_rl = self.compute_wheel_speed('right')
+        self.speed_rr = self.compute_wheel_speed('left')
 
         #self.print_status()
 

@@ -19,13 +19,13 @@ class DoubleAckermannSteering {
   const AckermannState& update() {
     st_.angle_fl = computeSteeringAngle(st_.R_current, true);
     st_.angle_fr = computeSteeringAngle(st_.R_current, false);
-    st_.angle_rl = -st_.angle_fl;
-    st_.angle_rr = -st_.angle_fr;
+    st_.angle_rl = computeSteeringAngle(st_.R_current, false);
+    st_.angle_rr = computeSteeringAngle(st_.R_current, true);
 
     st_.speed_fl = computeWheelSpeed(true);
     st_.speed_fr = computeWheelSpeed(false);
-    st_.speed_rl = computeWheelSpeed(true);
-    st_.speed_rr = computeWheelSpeed(false);
+    st_.speed_rl = computeWheelSpeed(false);
+    st_.speed_rr = computeWheelSpeed(true);
     return st_;
   }
 
