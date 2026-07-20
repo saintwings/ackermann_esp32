@@ -74,8 +74,19 @@ void applyDriveOutputs(bool zero_turn_mode,
   steering_motors.setSteeringTurns(zero_turn_turns, -zero_turn_turns);
 
 
+  Serial.println("!!zeroturn");
+  Serial.println("H , W");
+  Serial.println(wheelbase_m);
+  Serial.println(track_width_m);
+  Serial.printf("zero_turn_angle_deg: %f\n", zero_turn_angle_deg);
+
+
+
   
   float forward_mps = linear_mps;
+
+  Serial.println("speed");
+  Serial.println(forward_mps);
 
   
   // Create differential: when rotating, one motor increases while other decreases

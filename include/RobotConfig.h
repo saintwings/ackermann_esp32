@@ -7,5 +7,5 @@
 //
 //   Config.h   = Robot "ladybug"  (ODrive steering, NET_MODE 2, SERVER_MODE 2)
 //   Config_2.h = Robot "esp32-02" (GIM8108 steering, NET_MODE 1, SERVER_MODE 1)
-#include "Config.h"
-//#include "Config_2.h"
+//#include "Config.h"
+#include "Config_2.h"
