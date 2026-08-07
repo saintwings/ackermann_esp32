@@ -12,7 +12,7 @@ import can
 # ============================================================
 
 CAN_INTERFACE = "can0"
-CAN_BITRATE = 500000
+CAN_BITRATE = 1000000
 
 MOTOR_ID = 0x01
 
@@ -197,6 +197,13 @@ class MotorController:
         print("HW Version   :", hw_ver)
         print("CAN Protocol :", can_proto)
 
+        return {
+            "boot_ver": boot_ver,
+            "app_ver": app_ver,
+            "hw_ver": hw_ver,
+            "can_proto": can_proto,
+        }
+
     # --------------------------------------------------------
 
     def read_motor_info(self):
@@ -220,6 +227,12 @@ class MotorController:
         print("Pole Pairs      :", pole_pairs)
         print("Torque Constant :", torque_constant, "Nm/A")
         print("Gear Ratio      :", gear_ratio)
+
+        return {
+            "pole_pairs": pole_pairs,
+            "torque_constant": torque_constant,
+            "gear_ratio": gear_ratio,
+        }
 
     # ========================================================
     # STATUS
@@ -291,6 +304,14 @@ class MotorController:
 
         self.decode_fault(fault)
 
+        return {
+            "voltage": voltage,
+            "current": current,
+            "temp": temp,
+            "mode": mode_names.get(mode, "Unknown"),
+            "fault": fault,
+        }
+
     # ========================================================
     # REALTIME DATA
     # ========================================================
@@ -354,6 +375,11 @@ class MotorController:
         print("Single Turn :", single_deg, "deg")
         print("Total Angle :", total_deg, "deg")
 
+        return {
+            "single_deg": single_deg,
+            "total_deg": total_deg,
+        }
+
     # --------------------------------------------------------
 
     def read_realtime(self):
@@ -382,6 +408,13 @@ class MotorController:
         print("Current :", current, "A")
         print("Speed   :", speed, "RPM")
         print("Angle   :", angle_deg, "deg")
+
+        return {
+            "temp": temp,
+            "current": current,
+            "speed": speed,
+            "angle_deg": angle_deg,
+        }
 
     # ========================================================
     # CONFIGURATION
