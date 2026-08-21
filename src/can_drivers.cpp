@@ -63,6 +63,36 @@ void ODriveCAN::go_home() {
   //send_cmd(0xC4);
 }
 
+bool ODriveCAN::get_position_turns(float* out_turns, unsigned long timeout_ms) {
+  const uint32_t estimate_id = (node_id << 5) | 0x09;
+
+  twai_message_t req = {};
+  req.identifier = estimate_id;
+  req.extd = 0;
+  req.rtr = 1;
+  req.data_length_code = 8;
+  if (twai_transmit(&req, pdMS_TO_TICKS(10)) != ESP_OK) {
+    if (loop_stats_) ++loop_stats_->can_runtime_tx_drop_count;
+    return false;
+  }
+  if (loop_stats_) ++loop_stats_->can_runtime_tx_ok_count;
+
+  const unsigned long start = millis();
+  twai_message_t resp;
+  while (millis() - start < timeout_ms) {
+    if (twai_receive(&resp, pdMS_TO_TICKS(10)) != ESP_OK) continue;
+    if (resp.rtr) continue;
+    if (resp.identifier != estimate_id) continue;
+    if (resp.data_length_code < 4) continue;
+
+    float pos_turns = 0.0f;
+    memcpy(&pos_turns, &resp.data[0], 4);
+    *out_turns = pos_turns;
+    return true;
+  }
+  return false;
+}
+
 
 
 GIM8108CAN::GIM8108CAN(uint32_t id, LoopStats* stats) : can_id_(id), loop_stats_(stats) {}
@@ -120,6 +150,13 @@ void GIM8108CAN::set_absolute_position_turns(float turns) {
   uint8_t payload[4];
   memcpy(payload, &counts, sizeof(counts));
   send_cmd(0xC2, payload, sizeof(payload));
+}
+
+void GIM8108CAN::move_relative_position_turns(float turns) {
+  int32_t counts = static_cast<int32_t>(turns * 16384.0f);
+  uint8_t payload[4];
+  memcpy(payload, &counts, sizeof(counts));
+  send_cmd(0xC3, payload, sizeof(payload));
 }
 
 void GIM8108CAN::go_home() {

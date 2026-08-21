@@ -316,6 +316,39 @@ static MissionUploadCtx upload_ctx;
 static constexpr uint8_t kOutputPins[OUTPUT_COUNT] = {
   OUTPUT_A_PIN, OUTPUT_B_PIN, OUTPUT_C_PIN, OUTPUT_D_PIN
 };
+
+// ── USB serial FUNC_<n> actuators ───────────────────────────────────────────
+enum class FuncActuatorType : uint8_t {
+  GPIO    = FUNC_TYPE_GPIO,
+  ODRIVE  = FUNC_TYPE_ODRIVE,
+  GIM8108 = FUNC_TYPE_GIM8108,
+};
+
+struct FuncActuatorConfig {
+  FuncActuatorType type;
+  uint32_t id;
+};
+
+static const FuncActuatorConfig kFuncConfigs[FUNC_COUNT] = {
+  { static_cast<FuncActuatorType>(FUNC_0_TYPE), FUNC_0_ID },
+  { static_cast<FuncActuatorType>(FUNC_1_TYPE), FUNC_1_ID },
+};
+
+struct FuncActuator {
+  FuncActuatorType type{FuncActuatorType::GPIO};
+  uint32_t id{0};
+  ODriveCAN* odrive{nullptr};
+  GIM8108CAN* gim{nullptr};
+  float current_deg{0.0f};  // last commanded REL_DEG resting position (CAN actuators only)
+};
+static FuncActuator func_actuators[FUNC_COUNT];
+
+enum class FuncPhase : uint8_t { Idle, Active };
+struct FuncRuntimeState {
+  FuncPhase phase{FuncPhase::Idle};
+  unsigned long off_at_ms{0};
+};
+static FuncRuntimeState func_state[FUNC_COUNT];
 size_t mission_task_cursor = 0;
 unsigned long mission_task_started_ms = 0;
 size_t mission_active_task_cursor = static_cast<size_t>(-1);
@@ -1017,7 +1050,7 @@ static void applyUsbVelocityCommand(float linear_mps, float angular_rads, unsign
   float angle_deg;
   if (robot_mode == RobotMode::ZeroTurn) {
     // Scale angular velocity to [-MAX_STEER_DEG, MAX_STEER_DEG] range
-    // Assuming typical angular_rads in [-π, π], scale to steering deg range
+    // Assuming typical angular_rads in [-pi, pi], scale to steering deg range
     float angular_deg = (angular_rads * 180.0f / M_PI);
     angle_deg = clampf(angular_deg * 0.5f, -MAX_STEER_DEG, MAX_STEER_DEG);
   } else {
@@ -1054,6 +1087,215 @@ static void applyUsbVelocityCommand(float linear_mps, float angular_rads, unsign
   }
 }
 
+static void initFuncActuators() {
+  for (size_t i = 0; i < FUNC_COUNT; ++i) {
+    func_actuators[i].type = kFuncConfigs[i].type;
+    func_actuators[i].id = kFuncConfigs[i].id;
+
+    switch (func_actuators[i].type) {
+      case FuncActuatorType::ODRIVE: {
+        ODriveCAN* odrive = new ODriveCAN(kFuncConfigs[i].id, &loop_stats);
+        func_actuators[i].odrive = odrive;
+        odrive->set_controller_mode(3, 1);
+        odrive->set_axis_state(8);  // closed loop control — ODrive syncs input_pos to the
+                                     // current pos_estimate on entry, so this holds wherever
+                                     // the axis physically already is; no move is commanded.
+        float raw_turns = 0.0f;
+        if (odrive->get_position_turns(&raw_turns, 250)) {
+          func_actuators[i].current_deg = (raw_turns / odrive->gear_ratio) * 360.0f;
+          Serial.printf("[FUNC_%d] ODrive id=%u boot position read: %.1f deg\n",
+                        static_cast<int>(i), kFuncConfigs[i].id, func_actuators[i].current_deg);
+        } else {
+          func_actuators[i].current_deg = 0.0f;
+          Serial.printf("[FUNC_%d] WARNING: could not read ODrive id=%u position at boot\n",
+                        static_cast<int>(i), kFuncConfigs[i].id);
+        }
+        break;
+      }
+      case FuncActuatorType::GIM8108:
+        func_actuators[i].gim = new GIM8108CAN(kFuncConfigs[i].id, &loop_stats);
+        func_actuators[i].gim->set_position_max_speed_rpm(100.0f);
+        func_actuators[i].gim->set_max_current_amp(5.0f);
+        func_actuators[i].gim->set_acceleration_rpm_per_sec(200.0f);
+        func_actuators[i].gim->clear_fault();
+        // No boot-time move — clear_fault() alone holds the current physical position.
+        break;
+      case FuncActuatorType::GPIO:
+        // kOutputPins already configured as OUTPUT/LOW earlier in setup().
+        break;
+    }
+  }
+}
+
+// Starts FUNC_<idx>:
+//   GPIO actuator:     <seconds> SEC     — turn on, then auto-off after <seconds>
+//   CAN actuator:      <degrees> DEG     — move +<degrees> from home, hold, then auto-return to 0
+//   CAN actuator:      <degrees> REL_DEG — move +<degrees> from its current resting position and
+//                                          just hold there (no auto-off/return)
+// Non-blocking — SEC/DEG completion is handled by updateFuncExecutor(); REL_DEG completes
+// immediately since it doesn't schedule an auto-off.
+static bool triggerFunc(int idx, float value, const String& unit) {
+  if (idx < 0 || idx >= static_cast<int>(FUNC_COUNT)) {
+    Serial.printf("[USB_SERIAL] Invalid FUNC index: %d\n", idx);
+    return false;
+  }
+  if (e_stop_active) {
+    Serial.println("[USB_SERIAL] FUNC rejected: e-stop active");
+    return false;
+  }
+  if (func_state[idx].phase == FuncPhase::Active) {
+    Serial.printf("[USB_SERIAL] FUNC_%d rejected: still active from a previous command\n", idx);
+    return false;
+  }
+
+  FuncActuator& act = func_actuators[idx];
+
+  if (act.type == FuncActuatorType::GPIO) {
+    if (unit != "SEC") {
+      Serial.printf("[USB_SERIAL] FUNC_%d is a GPIO actuator — usage: FUNC_%d <seconds> SEC\n", idx, idx);
+      return false;
+    }
+    if (value <= 0.0f) {
+      Serial.printf("[USB_SERIAL] FUNC_%d rejected: seconds must be > 0\n", idx);
+      return false;
+    }
+    digitalWrite(kOutputPins[act.id], HIGH);
+    func_state[idx].phase = FuncPhase::Active;
+    func_state[idx].off_at_ms = millis() + static_cast<unsigned long>(value * 1000.0f);
+    Serial.printf("[USB_SERIAL] FUNC_%d ON (GPIO pin %d) for %.2f sec\n", idx, kOutputPins[act.id], value);
+    return true;
+  }
+
+  if (unit == "REL_DEG") {
+    if (value == 0.0f) {
+      Serial.printf("[USB_SERIAL] FUNC_%d rejected: degrees must be non-zero\n", idx);
+      return false;
+    }
+
+    if (act.type == FuncActuatorType::GIM8108) {
+      // Native relative move on the drive itself — no position readback needed.
+      act.gim->move_relative_position_turns(value / 360.0f);
+      Serial.printf("[USB_SERIAL] FUNC_%d moved %+.1f deg relative\n", idx, value);
+      return true;
+    }
+
+    // ODrive has no native relative-move command, so read its actual live position first
+    // and compute the new absolute target from that — never from a software-cached value,
+    // which would drift from reality across restarts or external motion.
+    float raw_turns = 0.0f;
+    if (!act.odrive->get_position_turns(&raw_turns, 200)) {
+      Serial.printf("[USB_SERIAL] FUNC_%d rejected: could not read current ODrive position (no CAN response)\n", idx);
+      return false;
+    }
+    const float actual_deg = (raw_turns / act.odrive->gear_ratio) * 360.0f;
+    act.current_deg = actual_deg + value;
+    act.odrive->set_position(act.current_deg / 360.0f);
+    Serial.printf("[USB_SERIAL] FUNC_%d moved %+.1f deg (was %.1f deg, now targeting %.1f deg)\n",
+                  idx, value, actual_deg, act.current_deg);
+    return true;
+  }
+
+  if (unit != "DEG") {
+    Serial.printf("[USB_SERIAL] FUNC_%d is a CAN actuator — usage: FUNC_%d <degrees> DEG|REL_DEG\n", idx, idx);
+    return false;
+  }
+  if (value <= 0.0f) {
+    Serial.printf("[USB_SERIAL] FUNC_%d rejected: degrees must be > 0\n", idx);
+    return false;
+  }
+  const float turns = value / 360.0f;
+  if (act.type == FuncActuatorType::ODRIVE) {
+    act.odrive->set_position(turns);
+  } else {
+    act.gim->set_absolute_position_turns(turns);
+  }
+  func_state[idx].phase = FuncPhase::Active;
+  func_state[idx].off_at_ms = millis() + FUNC_DEG_HOLD_MS;
+  Serial.printf("[USB_SERIAL] FUNC_%d moving +%.1f deg, will hold %lu ms then return to 0\n",
+                idx, value, static_cast<unsigned long>(FUNC_DEG_HOLD_MS));
+  return true;
+}
+
+static void updateFuncExecutor() {
+  const unsigned long now = millis();
+  for (size_t i = 0; i < FUNC_COUNT; ++i) {
+    if (func_state[i].phase != FuncPhase::Active) continue;
+    if (now < func_state[i].off_at_ms) continue;
+
+    FuncActuator& act = func_actuators[i];
+    if (!e_stop_active) {
+      switch (act.type) {
+        case FuncActuatorType::GPIO:
+          digitalWrite(kOutputPins[act.id], LOW);
+          break;
+        case FuncActuatorType::ODRIVE:
+          act.odrive->set_position(0.0f);
+          act.current_deg = 0.0f;
+          break;
+        case FuncActuatorType::GIM8108:
+          act.gim->set_absolute_position_turns(0.0f);
+          act.current_deg = 0.0f;
+          break;
+      }
+    }
+    func_state[i].phase = FuncPhase::Idle;
+    Serial.printf("[USB_SERIAL] FUNC_%d OFF\n", static_cast<int>(i));
+  }
+}
+
+// Listens on the CAN bus for any frame from <node_id> (ODrive-style identifier:
+// node_id = identifier >> 5) for up to timeout_ms. Blocking, but bounded — this is a
+// manual diagnostic command, not part of the normal control path.
+static void handleCanPing(const String& args) {
+  unsigned long node_id = 0;
+  unsigned long timeout_ms = 500;
+  int parsed = sscanf(args.c_str(), "%lu %lu", &node_id, &timeout_ms);
+  if (parsed < 1) {
+    Serial.println("[USB_SERIAL] Invalid CAN_PING. Usage: CAN_PING <node_id> [timeout_ms]");
+    return;
+  }
+  timeout_ms = max(50UL, min(timeout_ms, 2000UL));
+
+  Serial.printf("[USB_SERIAL] CAN_PING node_id=%lu listening for %lu ms...\n", node_id, timeout_ms);
+
+  const unsigned long start = millis();
+  unsigned long other_frame_count = 0;
+  bool matched = false;
+  twai_message_t msg;
+
+  while (millis() - start < timeout_ms) {
+    if (twai_receive(&msg, pdMS_TO_TICKS(10)) != ESP_OK) continue;
+
+    const unsigned long frame_node_id = msg.identifier >> 5;
+    const unsigned long frame_cmd_id = msg.identifier & 0x1F;
+
+    if (frame_node_id == node_id) {
+      String hex;
+      for (int i = 0; i < msg.data_length_code; ++i) {
+        char byte_buf[4];
+        snprintf(byte_buf, sizeof(byte_buf), "%02X ", msg.data[i]);
+        hex += byte_buf;
+      }
+      Serial.printf("[USB_SERIAL] CAN_PING match: id=0x%03lX (node=%lu cmd=0x%02lX) dlc=%d data=%s(after %lu ms)\n",
+                    static_cast<unsigned long>(msg.identifier), frame_node_id, frame_cmd_id,
+                    msg.data_length_code, hex.c_str(), millis() - start);
+      matched = true;
+      break;
+    }
+    ++other_frame_count;
+  }
+
+  if (matched) return;
+
+  Serial.printf("[USB_SERIAL] CAN_PING node_id=%lu: no response in %lu ms (saw %lu frames from other node ids)\n",
+                node_id, timeout_ms, other_frame_count);
+  if (other_frame_count == 0) {
+    Serial.println("[USB_SERIAL]   No CAN traffic at all — check bus wiring/termination/power, or a baud rate mismatch");
+  } else {
+    Serial.println("[USB_SERIAL]   Bus has traffic but none from this node id — check the device's configured CAN node id");
+  }
+}
+
 static void handleUsbSerialLine(const String& raw_line) {
   String line = raw_line;
   line.trim();
@@ -1063,7 +1305,36 @@ static void handleUsbSerialLine(const String& raw_line) {
   upper.toUpperCase();
 
   if (upper == "HELP" || upper == "?") {
-    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?");
+    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, FUNC_<n> <value> <SEC|DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
+    return;
+  }
+
+  if (upper.startsWith("CAN_PING")) {
+    String args = line.substring(8);
+    args.trim();
+    handleCanPing(args);
+    return;
+  }
+
+  if (upper.startsWith("FUNC_")) {
+    int sep = line.indexOf(' ');
+    String func_tok = (sep > 0) ? upper.substring(0, sep) : upper;
+    String args = (sep > 0) ? line.substring(sep + 1) : "";
+    args.trim();
+
+    int idx = func_tok.substring(5).toInt();
+
+    float value = 0.0f;
+    char unit_buf[8] = {0};
+    int parsed = sscanf(args.c_str(), "%f %7s", &value, unit_buf);
+    if (parsed < 2) {
+      Serial.println("[USB_SERIAL] Invalid FUNC command. Usage: FUNC_<n> <value> <SEC|DEG|REL_DEG>");
+      return;
+    }
+    String unit = String(unit_buf);
+    unit.toUpperCase();
+
+    triggerFunc(idx, value, unit);
     return;
   }
 
@@ -1111,14 +1382,16 @@ static void handleUsbSerialLine(const String& raw_line) {
     const bool remote_active = (control_targets.remote_move_expire_ms == 0) || (control_targets.remote_move_expire_ms > now);
     const unsigned long remaining_ms = (control_targets.remote_move_expire_ms == 0) ? 0 : remote_active ? (control_targets.remote_move_expire_ms - now) : 0;
     const char* mode_str = (robot_mode == RobotMode::Normal) ? "NORMAL" : "ZERO_TURN";
-    Serial.printf("[USB_SERIAL] status mode=%s e_stop=%d mission=%s remote_active=%d linear=%.3f angle=%.2f timeout_left_ms=%lu\n",
+    Serial.printf("[USB_SERIAL] status mode=%s e_stop=%d mission=%s remote_active=%d linear=%.3f angle=%.2f timeout_left_ms=%lu can_tx_ok=%lu can_tx_drop=%lu\n",
                   mode_str,
                   e_stop_active ? 1 : 0,
                   missionStateToString(mission_ctx.state),
                   remote_active ? 1 : 0,
                   control_targets.linear_mps,
                   control_targets.angle_deg,
-                  remaining_ms);
+                  remaining_ms,
+                  loop_stats.can_runtime_tx_ok_count,
+                  loop_stats.can_runtime_tx_drop_count);
     return;
   }
 
@@ -1457,8 +1730,11 @@ void setup() {
     delay(10);
   }
   delay(1000);
-  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?");
+  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, FUNC_<n> <value> <SEC|DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
+  Serial.println("[USB_SERIAL]   FUNC_<n> <seconds> SEC turns a GPIO actuator on then off; FUNC_<n> <degrees> DEG moves a CAN actuator then returns it to 0");
+  Serial.println("[USB_SERIAL]   FUNC_<n> <degrees> REL_DEG moves a CAN actuator relative to its current position and just holds there");
+  Serial.println("[USB_SERIAL]   CAN_PING <node_id> [timeout_ms] listens for any CAN frame from that node id (diagnostic)");
 
   for (uint8_t pin : kOutputPins) {
     pinMode(pin, OUTPUT);
@@ -1509,6 +1785,9 @@ void setup() {
   Serial.println("Configuring steering motor backend...");
   steering_motors.begin();
 
+  Serial.println("Configuring FUNC actuators...");
+  initFuncActuators();
+
   applyModeInit(robot_mode);
 
   xTaskCreatePinnedToCore(
@@ -1540,6 +1819,7 @@ void setup() {
 // ==========================================
 static void controlTask(void* /*pvParameters*/) {
   unsigned long last_control_time = millis();
+  bool func1_combo_prev = false;
   for (;;) {
     if (millis() - last_control_time >= 20) {
       unsigned long now = millis();
@@ -1581,6 +1861,14 @@ static void controlTask(void* /*pvParameters*/) {
           robot_mode = RobotMode::Normal;
           applyModeInit(robot_mode);
         }
+
+        // R1 + L1 held together triggers FUNC_1 45 REL_DEG once per press (edge-detected so
+        // holding the combo doesn't repeatedly re-trigger it every control cycle).
+        bool func1_combo_enable = ps2x.Button(PSB_R1) && ps2x.Button(PSB_L1);
+        if (func1_combo_enable && !func1_combo_prev) {
+          triggerFunc(1, 45.0f, "REL_DEG");
+        }
+        func1_combo_prev = func1_combo_enable;
 
         // Remote command active if timeout is 0 (infinite) or expire time hasn't passed
         bool remote_active = (control_targets.remote_move_expire_ms == 0) ? true : (control_targets.remote_move_expire_ms > millis());
@@ -1665,6 +1953,7 @@ static void commsTask(void* /*pvParameters*/) {
     handleRobotClientCommand();
 #endif
     updateMissionExecutor();
+    updateFuncExecutor();
 #if NET_MODE != 0
     publishRobotTelemetry();
 #endif

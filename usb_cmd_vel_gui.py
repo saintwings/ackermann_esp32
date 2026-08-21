@@ -14,8 +14,8 @@ class UsbCmdVelGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("USB CMD_VEL Sender")
-        self.root.geometry("560x420")
-        self.root.minsize(520, 380)
+        self.root.geometry("560x560")
+        self.root.minsize(520, 520)
 
         self.ser = None
         self.reader_thread = None
@@ -28,6 +28,11 @@ class UsbCmdVelGui:
         self.linear_var = tk.StringVar(value="0.00")
         self.angular_var = tk.StringVar(value="0.00")
         self.status_var = tk.StringVar(value="Disconnected")
+        self.func_index_var = tk.StringVar(value="0")
+        self.func_value_var = tk.StringVar(value="5")
+        self.func_unit_var = tk.StringVar(value="SEC")
+        self.can_ping_id_var = tk.StringVar(value="3")
+        self.can_ping_timeout_var = tk.StringVar(value="500")
 
         self._build_ui()
         self._refresh_ports()
@@ -73,6 +78,34 @@ class UsbCmdVelGui:
 
         ttk.Button(cmd, text="Send CMD_VEL", command=self.send_cmd_vel).grid(row=1, column=0, columnspan=3, sticky="we", **pad)
         ttk.Button(cmd, text="STOP", command=self.send_stop).grid(row=1, column=3, columnspan=3, sticky="we", **pad)
+
+        func = ttk.LabelFrame(self.root, text="FUNC Actuators")
+        func.pack(fill="x", padx=10, pady=(0, 10))
+
+        ttk.Label(func, text="FUNC index").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Spinbox(func, textvariable=self.func_index_var, from_=0, to=9, width=6).grid(row=0, column=1, sticky="w", **pad)
+
+        ttk.Label(func, text="Value").grid(row=0, column=2, sticky="w", **pad)
+        ttk.Entry(func, textvariable=self.func_value_var, width=10).grid(row=0, column=3, sticky="w", **pad)
+
+        ttk.Label(func, text="Unit").grid(row=0, column=4, sticky="w", **pad)
+        unit_combo = ttk.Combobox(
+            func, textvariable=self.func_unit_var, values=["SEC", "DEG", "REL_DEG"], state="readonly", width=10
+        )
+        unit_combo.grid(row=0, column=5, sticky="w", **pad)
+
+        ttk.Button(func, text="Send FUNC", command=self.send_func).grid(row=1, column=0, columnspan=6, sticky="we", **pad)
+
+        ping = ttk.LabelFrame(self.root, text="CAN_PING (diagnostic)")
+        ping.pack(fill="x", padx=10, pady=(0, 10))
+
+        ttk.Label(ping, text="Node ID").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Entry(ping, textvariable=self.can_ping_id_var, width=8).grid(row=0, column=1, sticky="w", **pad)
+
+        ttk.Label(ping, text="Timeout (ms)").grid(row=0, column=2, sticky="w", **pad)
+        ttk.Entry(ping, textvariable=self.can_ping_timeout_var, width=10).grid(row=0, column=3, sticky="w", **pad)
+
+        ttk.Button(ping, text="Send CAN_PING", command=self.send_can_ping).grid(row=0, column=4, sticky="we", **pad)
 
         status = ttk.Frame(self.root)
         status.pack(fill="x", padx=10, pady=(0, 6))
@@ -211,6 +244,33 @@ class UsbCmdVelGui:
 
     def send_stop(self) -> None:
         self._send_line("STOP")
+
+    def send_func(self) -> None:
+        try:
+            index = int(self.func_index_var.get().strip())
+            value = float(self.func_value_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Invalid input", "FUNC index must be an integer, value must be a number")
+            return
+
+        unit = self.func_unit_var.get().strip()
+        if not unit:
+            messagebox.showerror("Invalid input", "Select a unit (SEC, DEG, or REL_DEG)")
+            return
+
+        cmd = f"FUNC_{index} {value:.4f} {unit}"
+        self._send_line(cmd)
+
+    def send_can_ping(self) -> None:
+        try:
+            node_id = int(self.can_ping_id_var.get().strip())
+            timeout_ms = int(self.can_ping_timeout_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Node ID and timeout must be integers")
+            return
+
+        cmd = f"CAN_PING {node_id} {timeout_ms}"
+        self._send_line(cmd)
 
     def on_close(self) -> None:
         self.reader_running = False

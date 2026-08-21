@@ -19,6 +19,11 @@ class ODriveCAN {
   void set_position(float pos_turns, float vel_ff = 0.0f, float torque_ff = 0.0f);
   void go_home();
 
+  // Requests Get_Encoder_Estimates over CAN (RTR frame) and blocks up to timeout_ms
+  // waiting for the reply. On success, *out_turns is the ODrive's raw pos_estimate in
+  // motor/axis turns (not divided by gear_ratio). Returns false on timeout/no response.
+  bool get_position_turns(float* out_turns, unsigned long timeout_ms = 200);
+
  private:
   LoopStats* loop_stats_;
 };
@@ -33,6 +38,9 @@ class GIM8108CAN {
   void set_max_current_amp(float current_amp);
   void set_acceleration_rpm_per_sec(float accel_rpm_per_sec);
   void set_absolute_position_turns(float turns);
+  // Moves by <turns> relative to the drive's current position (native relative move —
+  // no position readback needed, immune to any software/hardware baseline drift).
+  void move_relative_position_turns(float turns);
   void go_home();
 
  private:

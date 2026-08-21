@@ -92,6 +92,33 @@
 #define OUTPUT_D_PIN 38
 #define OUTPUT_COUNT 4
 
+// ── USB serial FUNC_<n> actuator mapping ────────────────────────────────────
+// Lets a USB serial command turn one named actuator on, act, then automatically
+// switch it off again — no manual OFF command needed:
+//   FUNC_<n> <seconds> SEC   — GPIO/relay actuator: turn ON, then OFF after <seconds>
+//   FUNC_<n> <degrees> DEG   — CAN position actuator (ODRIVE/GIM8108):
+//                              move +<degrees> from home, hold for FUNC_DEG_HOLD_MS,
+//                              then return to 0 and hold there
+//
+// FUNC_<n>_TYPE is one of FUNC_TYPE_GPIO / FUNC_TYPE_ODRIVE / FUNC_TYPE_GIM8108.
+// FUNC_<n>_ID is:
+//   - FUNC_TYPE_GPIO:    index into OUTPUT_A..D (0=A 1=B 2=C 3=D), reuses those pins
+//   - FUNC_TYPE_ODRIVE / FUNC_TYPE_GIM8108: CAN node/axis id of that actuator
+#define FUNC_TYPE_GPIO    0
+#define FUNC_TYPE_ODRIVE  1
+#define FUNC_TYPE_GIM8108 2
+
+#define FUNC_COUNT 2
+
+#define FUNC_0_TYPE FUNC_TYPE_GPIO
+#define FUNC_0_ID   0   // OUTPUT_A_PIN
+
+#define FUNC_1_TYPE FUNC_TYPE_GIM8108
+#define FUNC_1_ID   3   // GIM8108 CAN id 3
+
+// How long a DEG-type actuator holds at the target position before it auto-returns to 0.
+#define FUNC_DEG_HOLD_MS 1000UL
+
 // WS2812B NeoPixel Status LEDs (8 LEDs)
 #define NEOPIXEL_PIN 8
 #define NEOPIXEL_COUNT 8
