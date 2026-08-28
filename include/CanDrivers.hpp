@@ -16,7 +16,10 @@ class ODriveCAN {
 
   void set_axis_state(uint32_t state_id);
   void set_controller_mode(int32_t control_mode, int32_t input_mode);
-  void set_position(float pos_turns, float vel_ff = 0.0f, float torque_ff = 0.0f);
+  // force=true bypasses the unchanged-target throttle below — use it for one-shot
+  // commands (not the 20ms steering control loop, which relies on the throttle to
+  // avoid spamming the bus with an unchanged target every tick).
+  void set_position(float pos_turns, float vel_ff = 0.0f, float torque_ff = 0.0f, bool force = false);
   void go_home();
 
   // Requests Get_Encoder_Estimates over CAN (RTR frame) and blocks up to timeout_ms

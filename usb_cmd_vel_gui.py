@@ -30,7 +30,7 @@ class UsbCmdVelGui:
         self.status_var = tk.StringVar(value="Disconnected")
         self.func_index_var = tk.StringVar(value="0")
         self.func_value_var = tk.StringVar(value="5")
-        self.func_unit_var = tk.StringVar(value="SEC")
+        self.func_unit_var = tk.StringVar(value="ON")
         self.can_ping_id_var = tk.StringVar(value="3")
         self.can_ping_timeout_var = tk.StringVar(value="500")
 
@@ -90,7 +90,7 @@ class UsbCmdVelGui:
 
         ttk.Label(func, text="Unit").grid(row=0, column=4, sticky="w", **pad)
         unit_combo = ttk.Combobox(
-            func, textvariable=self.func_unit_var, values=["SEC", "DEG", "REL_DEG"], state="readonly", width=10
+            func, textvariable=self.func_unit_var, values=["ON", "OFF", "DEG", "REL_DEG"], state="readonly", width=10
         )
         unit_combo.grid(row=0, column=5, sticky="w", **pad)
 
@@ -248,14 +248,24 @@ class UsbCmdVelGui:
     def send_func(self) -> None:
         try:
             index = int(self.func_index_var.get().strip())
-            value = float(self.func_value_var.get().strip())
         except ValueError:
-            messagebox.showerror("Invalid input", "FUNC index must be an integer, value must be a number")
+            messagebox.showerror("Invalid input", "FUNC index must be an integer")
             return
 
         unit = self.func_unit_var.get().strip()
         if not unit:
-            messagebox.showerror("Invalid input", "Select a unit (SEC, DEG, or REL_DEG)")
+            messagebox.showerror("Invalid input", "Select ON, OFF, DEG, or REL_DEG")
+            return
+
+        if unit in ("ON", "OFF"):
+            cmd = f"FUNC_{index} {unit}"
+            self._send_line(cmd)
+            return
+
+        try:
+            value = float(self.func_value_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Value must be a number")
             return
 
         cmd = f"FUNC_{index} {value:.4f} {unit}"

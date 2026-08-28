@@ -93,12 +93,13 @@
 #define OUTPUT_COUNT 4
 
 // ── USB serial FUNC_<n> actuator mapping ────────────────────────────────────
-// Lets a USB serial command turn one named actuator on, act, then automatically
-// switch it off again — no manual OFF command needed:
-//   FUNC_<n> <seconds> SEC   — GPIO/relay actuator: turn ON, then OFF after <seconds>
+// Lets a USB serial command drive one named actuator:
+//   FUNC_<n> ON|OFF          — GPIO/relay actuator: drive it directly, no timer
 //   FUNC_<n> <degrees> DEG   — CAN position actuator (ODRIVE/GIM8108):
 //                              move +<degrees> from home, hold for FUNC_DEG_HOLD_MS,
 //                              then return to 0 and hold there
+//   FUNC_<n> <degrees> REL_DEG — CAN position actuator: move +<degrees> relative to
+//                              its current position and just hold there
 //
 // FUNC_<n>_TYPE is one of FUNC_TYPE_GPIO / FUNC_TYPE_ODRIVE / FUNC_TYPE_GIM8108.
 // FUNC_<n>_ID is:
@@ -118,6 +119,20 @@
 
 // How long a DEG-type actuator holds at the target position before it auto-returns to 0.
 #define FUNC_DEG_HOLD_MS 1000UL
+
+// REL_DEG busy-guard: a new REL_DEG command is rejected while the previous one hasn't
+// finished yet, so rapid re-presses / button-debounce glitches can't chain onto a move
+// still in flight and compound into runaway motion.
+//   ODRIVE:  compares live position (read over CAN) against the last commanded target —
+//            "arrived" means within this many degrees of it.
+#define FUNC_REL_DEG_ARRIVAL_TOLERANCE_DEG 2.0f
+// If ODRIVE's arrival check keeps rejecting the same mismatch for longer than this, the
+// tracked baseline is desynced from reality (not "still moving" — a normal move settles in
+// well under this) and gets auto-resynced to the live reading instead of blocking forever.
+#define FUNC_REL_DEG_STUCK_TIMEOUT_MS 3000UL
+//   GIM8108: has no position readback here, so it uses a fixed busy window instead —
+//            how long (ms) a REL_DEG move is assumed to take before another is allowed.
+#define FUNC_REL_DEG_GIM_BUSY_MS 500UL
 
 // WS2812B NeoPixel Status LEDs (8 LEDs)
 #define NEOPIXEL_PIN 8

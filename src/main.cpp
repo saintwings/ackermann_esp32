@@ -339,7 +339,19 @@ struct FuncActuator {
   uint32_t id{0};
   ODriveCAN* odrive{nullptr};
   GIM8108CAN* gim{nullptr};
-  float current_deg{0.0f};  // last commanded REL_DEG resting position (CAN actuators only)
+  float current_deg{0.0f};  // last known/commanded resting position, degrees (CAN actuators only)
+  // False until current_deg reflects a real reading/command (boot read, or any accepted
+  // move). REL_DEG's arrival check is skipped while false, so a failed boot-time position
+  // read can't permanently deadlock every future REL_DEG against a fictitious 0 baseline.
+  bool current_deg_valid{false};
+  // 0 = no active reject streak; otherwise millis() when the current run of "still moving"
+  // rejections started, used to auto-resync if it runs longer than a real move ever would.
+  unsigned long rel_deg_reject_since_ms{0};
+  // The boot-time position read can succeed but still be stale (caught mid-leftover-motion
+  // from before an ESP reset — the ODrive doesn't reset with it). So the arrival check isn't
+  // enforced until after the first REL_DEG actually commits — that command always trusts the
+  // live reading outright rather than waiting out FUNC_REL_DEG_STUCK_TIMEOUT_MS to resync.
+  bool rel_deg_committed_once{false};
 };
 static FuncActuator func_actuators[FUNC_COUNT];
 
@@ -347,6 +359,10 @@ enum class FuncPhase : uint8_t { Idle, Active };
 struct FuncRuntimeState {
   FuncPhase phase{FuncPhase::Idle};
   unsigned long off_at_ms{0};
+  // true (DEG): updateFuncExecutor() actuates (off/return-to-0) when off_at_ms elapses.
+  // false (REL_DEG busy-lock on GIM8108): off_at_ms elapsing just releases the lock —
+  // no actuation, the move was already sent.
+  bool auto_return{false};
 };
 static FuncRuntimeState func_state[FUNC_COUNT];
 size_t mission_task_cursor = 0;
@@ -1103,11 +1119,14 @@ static void initFuncActuators() {
         float raw_turns = 0.0f;
         if (odrive->get_position_turns(&raw_turns, 250)) {
           func_actuators[i].current_deg = (raw_turns / odrive->gear_ratio) * 360.0f;
+          func_actuators[i].current_deg_valid = true;
           Serial.printf("[FUNC_%d] ODrive id=%u boot position read: %.1f deg\n",
                         static_cast<int>(i), kFuncConfigs[i].id, func_actuators[i].current_deg);
         } else {
           func_actuators[i].current_deg = 0.0f;
-          Serial.printf("[FUNC_%d] WARNING: could not read ODrive id=%u position at boot\n",
+          func_actuators[i].current_deg_valid = false;
+          Serial.printf("[FUNC_%d] WARNING: could not read ODrive id=%u position at boot "
+                        "(REL_DEG's arrival check will be skipped until its first successful move)\n",
                         static_cast<int>(i), kFuncConfigs[i].id);
         }
         break;
@@ -1127,13 +1146,32 @@ static void initFuncActuators() {
   }
 }
 
+// FUNC_<idx> ON|OFF for a GPIO/relay actuator — direct, immediate, no timer.
+static bool setFuncGpio(int idx, bool on) {
+  if (idx < 0 || idx >= static_cast<int>(FUNC_COUNT)) {
+    Serial.printf("[USB_SERIAL] Invalid FUNC index: %d\n", idx);
+    return false;
+  }
+  FuncActuator& act = func_actuators[idx];
+  if (act.type != FuncActuatorType::GPIO) {
+    Serial.printf("[USB_SERIAL] FUNC_%d is not a GPIO actuator — ON/OFF only applies to GPIO\n", idx);
+    return false;
+  }
+  if (on && e_stop_active) {
+    Serial.println("[USB_SERIAL] FUNC rejected: e-stop active");
+    return false;
+  }
+  digitalWrite(kOutputPins[act.id], on ? HIGH : LOW);
+  Serial.printf("[USB_SERIAL] FUNC_%d %s (GPIO pin %d)\n", idx, on ? "ON" : "OFF", kOutputPins[act.id]);
+  return true;
+}
+
 // Starts FUNC_<idx>:
-//   GPIO actuator:     <seconds> SEC     — turn on, then auto-off after <seconds>
-//   CAN actuator:      <degrees> DEG     — move +<degrees> from home, hold, then auto-return to 0
-//   CAN actuator:      <degrees> REL_DEG — move +<degrees> from its current resting position and
-//                                          just hold there (no auto-off/return)
-// Non-blocking — SEC/DEG completion is handled by updateFuncExecutor(); REL_DEG completes
-// immediately since it doesn't schedule an auto-off.
+//   CAN actuator: <degrees> DEG     — move +<degrees> from home, hold, then auto-return to 0
+//   CAN actuator: <degrees> REL_DEG — move +<degrees> from its current resting position and
+//                                     just hold there (no auto-off/return)
+// Non-blocking — DEG completion is handled by updateFuncExecutor(); REL_DEG (ODrive) completes
+// immediately, and REL_DEG (GIM8108) is busy-locked for a fixed window instead.
 static bool triggerFunc(int idx, float value, const String& unit) {
   if (idx < 0 || idx >= static_cast<int>(FUNC_COUNT)) {
     Serial.printf("[USB_SERIAL] Invalid FUNC index: %d\n", idx);
@@ -1151,19 +1189,8 @@ static bool triggerFunc(int idx, float value, const String& unit) {
   FuncActuator& act = func_actuators[idx];
 
   if (act.type == FuncActuatorType::GPIO) {
-    if (unit != "SEC") {
-      Serial.printf("[USB_SERIAL] FUNC_%d is a GPIO actuator — usage: FUNC_%d <seconds> SEC\n", idx, idx);
-      return false;
-    }
-    if (value <= 0.0f) {
-      Serial.printf("[USB_SERIAL] FUNC_%d rejected: seconds must be > 0\n", idx);
-      return false;
-    }
-    digitalWrite(kOutputPins[act.id], HIGH);
-    func_state[idx].phase = FuncPhase::Active;
-    func_state[idx].off_at_ms = millis() + static_cast<unsigned long>(value * 1000.0f);
-    Serial.printf("[USB_SERIAL] FUNC_%d ON (GPIO pin %d) for %.2f sec\n", idx, kOutputPins[act.id], value);
-    return true;
+    Serial.printf("[USB_SERIAL] FUNC_%d is a GPIO actuator — usage: FUNC_%d ON|OFF\n", idx, idx);
+    return false;
   }
 
   if (unit == "REL_DEG") {
@@ -1173,8 +1200,12 @@ static bool triggerFunc(int idx, float value, const String& unit) {
     }
 
     if (act.type == FuncActuatorType::GIM8108) {
-      // Native relative move on the drive itself — no position readback needed.
+      // Native relative move on the drive itself — no position readback needed. Busy-locked
+      // for a fixed window since there's no feedback here to know when it actually arrives.
       act.gim->move_relative_position_turns(value / 360.0f);
+      func_state[idx].phase = FuncPhase::Active;
+      func_state[idx].auto_return = false;
+      func_state[idx].off_at_ms = millis() + FUNC_REL_DEG_GIM_BUSY_MS;
       Serial.printf("[USB_SERIAL] FUNC_%d moved %+.1f deg relative\n", idx, value);
       return true;
     }
@@ -1188,8 +1219,39 @@ static bool triggerFunc(int idx, float value, const String& unit) {
       return false;
     }
     const float actual_deg = (raw_turns / act.odrive->gear_ratio) * 360.0f;
+
+    // Reject if the last commanded target hasn't actually been reached yet — otherwise a
+    // rapid re-press (or a bounced/duplicate button edge) would chain a new +value on top
+    // of a move still in flight and compound into runaway motion. Skipped when current_deg
+    // isn't valid yet (e.g. the boot-time position read failed), and skipped for the very
+    // first REL_DEG since boot even if it was "valid" — that boot read can still be stale
+    // (leftover motion from before an ESP reset), so the first command always trusts the
+    // live reading immediately instead of waiting out the stuck-timeout to resync.
+    if (act.current_deg_valid && act.rel_deg_committed_once &&
+        fabsf(actual_deg - act.current_deg) > FUNC_REL_DEG_ARRIVAL_TOLERANCE_DEG) {
+      const unsigned long now_ms = millis();
+      if (act.rel_deg_reject_since_ms == 0) {
+        act.rel_deg_reject_since_ms = now_ms;
+      }
+      // A single 45deg-ish move settles in well under a second, so if the SAME mismatch is
+      // still being rejected this long later, it isn't "our own move still in flight" — the
+      // tracked baseline is desynced from reality (stale boot read, leftover motion from
+      // before an ESP reset, etc.) and would otherwise block this actuator forever. Resync
+      // to the live reading instead of continuing to reject.
+      if (now_ms - act.rel_deg_reject_since_ms < FUNC_REL_DEG_STUCK_TIMEOUT_MS) {
+        Serial.printf("[USB_SERIAL] FUNC_%d rejected: still moving (actual=%.1f deg, previous target=%.1f deg)\n",
+                      idx, actual_deg, act.current_deg);
+        return false;
+      }
+      Serial.printf("[USB_SERIAL] FUNC_%d resync: stuck for over %lu ms (actual=%.1f deg, stale target=%.1f deg) — using live position as new baseline\n",
+                    idx, static_cast<unsigned long>(FUNC_REL_DEG_STUCK_TIMEOUT_MS), actual_deg, act.current_deg);
+    }
+
+    act.rel_deg_reject_since_ms = 0;
+    act.rel_deg_committed_once = true;
     act.current_deg = actual_deg + value;
-    act.odrive->set_position(act.current_deg / 360.0f);
+    act.current_deg_valid = true;
+    act.odrive->set_position(act.current_deg / 360.0f, 0.0f, 0.0f, /*force=*/true);
     Serial.printf("[USB_SERIAL] FUNC_%d moved %+.1f deg (was %.1f deg, now targeting %.1f deg)\n",
                   idx, value, actual_deg, act.current_deg);
     return true;
@@ -1205,11 +1267,12 @@ static bool triggerFunc(int idx, float value, const String& unit) {
   }
   const float turns = value / 360.0f;
   if (act.type == FuncActuatorType::ODRIVE) {
-    act.odrive->set_position(turns);
+    act.odrive->set_position(turns, 0.0f, 0.0f, /*force=*/true);
   } else {
     act.gim->set_absolute_position_turns(turns);
   }
   func_state[idx].phase = FuncPhase::Active;
+  func_state[idx].auto_return = true;
   func_state[idx].off_at_ms = millis() + FUNC_DEG_HOLD_MS;
   Serial.printf("[USB_SERIAL] FUNC_%d moving +%.1f deg, will hold %lu ms then return to 0\n",
                 idx, value, static_cast<unsigned long>(FUNC_DEG_HOLD_MS));
@@ -1223,23 +1286,29 @@ static void updateFuncExecutor() {
     if (now < func_state[i].off_at_ms) continue;
 
     FuncActuator& act = func_actuators[i];
-    if (!e_stop_active) {
-      switch (act.type) {
-        case FuncActuatorType::GPIO:
-          digitalWrite(kOutputPins[act.id], LOW);
-          break;
-        case FuncActuatorType::ODRIVE:
-          act.odrive->set_position(0.0f);
-          act.current_deg = 0.0f;
-          break;
-        case FuncActuatorType::GIM8108:
-          act.gim->set_absolute_position_turns(0.0f);
-          act.current_deg = 0.0f;
-          break;
+    if (func_state[i].auto_return) {
+      // Only DEG (ODRIVE/GIM8108) sets auto_return — GPIO is now ON/OFF-only (setFuncGpio())
+      // and never goes through this timer.
+      if (!e_stop_active) {
+        switch (act.type) {
+          case FuncActuatorType::ODRIVE:
+            act.odrive->set_position(0.0f, 0.0f, 0.0f, /*force=*/true);
+            act.current_deg = 0.0f;
+            act.current_deg_valid = true;
+            break;
+          case FuncActuatorType::GIM8108:
+            act.gim->set_absolute_position_turns(0.0f);
+            act.current_deg = 0.0f;
+            act.current_deg_valid = true;
+            break;
+          case FuncActuatorType::GPIO:
+            break;
+        }
       }
+      Serial.printf("[USB_SERIAL] FUNC_%d OFF\n", static_cast<int>(i));
     }
+    // else: this was a REL_DEG busy-lock (GIM8108) — just release it, no actuation.
     func_state[i].phase = FuncPhase::Idle;
-    Serial.printf("[USB_SERIAL] FUNC_%d OFF\n", static_cast<int>(i));
   }
 }
 
@@ -1305,7 +1374,7 @@ static void handleUsbSerialLine(const String& raw_line) {
   upper.toUpperCase();
 
   if (upper == "HELP" || upper == "?") {
-    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, FUNC_<n> <value> <SEC|DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
+    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
     return;
   }
 
@@ -1324,11 +1393,18 @@ static void handleUsbSerialLine(const String& raw_line) {
 
     int idx = func_tok.substring(5).toInt();
 
+    String args_upper = args;
+    args_upper.toUpperCase();
+    if (args_upper == "ON" || args_upper == "OFF") {
+      setFuncGpio(idx, args_upper == "ON");
+      return;
+    }
+
     float value = 0.0f;
     char unit_buf[8] = {0};
     int parsed = sscanf(args.c_str(), "%f %7s", &value, unit_buf);
     if (parsed < 2) {
-      Serial.println("[USB_SERIAL] Invalid FUNC command. Usage: FUNC_<n> <value> <SEC|DEG|REL_DEG>");
+      Serial.println("[USB_SERIAL] Invalid FUNC command. Usage: FUNC_<n> ON|OFF, or FUNC_<n> <value> <DEG|REL_DEG>");
       return;
     }
     String unit = String(unit_buf);
@@ -1730,9 +1806,9 @@ void setup() {
     delay(10);
   }
   delay(1000);
-  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, FUNC_<n> <value> <SEC|DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
+  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
-  Serial.println("[USB_SERIAL]   FUNC_<n> <seconds> SEC turns a GPIO actuator on then off; FUNC_<n> <degrees> DEG moves a CAN actuator then returns it to 0");
+  Serial.println("[USB_SERIAL]   FUNC_<n> ON|OFF drives a GPIO actuator directly; FUNC_<n> <degrees> DEG moves a CAN actuator then returns it to 0");
   Serial.println("[USB_SERIAL]   FUNC_<n> <degrees> REL_DEG moves a CAN actuator relative to its current position and just holds there");
   Serial.println("[USB_SERIAL]   CAN_PING <node_id> [timeout_ms] listens for any CAN frame from that node id (diagnostic)");
 
@@ -1820,6 +1896,9 @@ void setup() {
 static void controlTask(void* /*pvParameters*/) {
   unsigned long last_control_time = millis();
   bool func1_combo_prev = false;
+  unsigned long func1_combo_last_trigger_ms = 0;
+  bool func1_combo_neg_prev = false;
+  unsigned long func1_combo_neg_last_trigger_ms = 0;
   for (;;) {
     if (millis() - last_control_time >= 20) {
       unsigned long now = millis();
@@ -1862,13 +1941,28 @@ static void controlTask(void* /*pvParameters*/) {
           applyModeInit(robot_mode);
         }
 
-        // R1 + L1 held together triggers FUNC_1 45 REL_DEG once per press (edge-detected so
-        // holding the combo doesn't repeatedly re-trigger it every control cycle).
+        // R1 + L1 held together triggers FUNC_1 +45 REL_DEG once per press; R1 + L2 triggers
+        // -45 REL_DEG, so the two combos jog the actuator in opposite directions. Both are
+        // edge-detected so holding a combo doesn't repeatedly re-trigger it every control
+        // cycle, plus a minimum gap between triggers so PS2 button-read bounce/noise across
+        // a couple of 20ms polls can't be mistaken for a release-and-re-press and double-fire
+        // the move.
+
         bool func1_combo_enable = ps2x.Button(PSB_R1) && ps2x.Button(PSB_L1);
-        if (func1_combo_enable && !func1_combo_prev) {
+        if (func1_combo_enable && !func1_combo_prev && (now - func1_combo_last_trigger_ms) > 500) {
           triggerFunc(1, 45.0f, "REL_DEG");
+          func1_combo_last_trigger_ms = now;
         }
         func1_combo_prev = func1_combo_enable;
+
+        bool func1_combo_neg_enable = ps2x.Button(PSB_R1) && ps2x.Button(PSB_L2);
+        if (func1_combo_neg_enable && !func1_combo_neg_prev && (now - func1_combo_neg_last_trigger_ms) > 500) {
+          triggerFunc(1, -45.0f, "REL_DEG");
+          func1_combo_neg_last_trigger_ms = now;
+        }
+        func1_combo_neg_prev = func1_combo_neg_enable;
+
+        
 
         // Remote command active if timeout is 0 (infinite) or expire time hasn't passed
         bool remote_active = (control_targets.remote_move_expire_ms == 0) ? true : (control_targets.remote_move_expire_ms > millis());

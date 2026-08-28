@@ -30,12 +30,12 @@ void ODriveCAN::set_controller_mode(int32_t control_mode, int32_t input_mode) {
   twai_transmit(&msg, pdMS_TO_TICKS(10));
 }
 
-void ODriveCAN::set_position(float pos_turns, float vel_ff, float torque_ff) {
+void ODriveCAN::set_position(float pos_turns, float vel_ff, float torque_ff, bool force) {
   pos_turns = pos_turns * gear_ratio;
   current_target_pos = pos_turns;
 
   unsigned long now = millis();
-  if (fabsf(pos_turns - last_sent_pos) < 0.01f && (now - last_sent_pos_ms) < 100) {
+  if (!force && fabsf(pos_turns - last_sent_pos) < 0.01f && (now - last_sent_pos_ms) < 100) {
     return;
   }
 
@@ -65,6 +65,16 @@ void ODriveCAN::go_home() {
 
 bool ODriveCAN::get_position_turns(float* out_turns, unsigned long timeout_ms) {
   const uint32_t estimate_id = (node_id << 5) | 0x09;
+
+  // The ODrive broadcasts Get_Encoder_Estimates on its own, independent of our request.
+  // Between calls (seconds apart, since this is only hit on a FUNC command) the RX queue
+  // backs up with stale broadcasts, and twai_receive() below would hand us the oldest one
+  // first. Drain whatever's already queued so the frame we accept after the request below
+  // is guaranteed to be a fresh reply, not leftover backlog.
+  twai_message_t stale;
+  while (twai_receive(&stale, 0) == ESP_OK) {
+    // discard
+  }
 
   twai_message_t req = {};
   req.identifier = estimate_id;
