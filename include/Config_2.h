@@ -61,6 +61,11 @@
 #define GPS_UART_RX_PIN 9
 #define GPS_UART_TX_PIN 10
 
+// Echo GPS data to USB Serial as JSON, same fields as the "gps" object sent
+// to the web UI in robot telemetry (valid/latitude/longitude/altitude/hdop/
+// fix_quality/satellites), at the same telemetry interval.
+#define GPS_SERIAL_OUTPUT_ENABLE 0
+
 // NTRIP client settings (for RTK corrections)
 #define NTRIP_ENABLE 1
 #define NTRIP_HOST "110.78.0.54"

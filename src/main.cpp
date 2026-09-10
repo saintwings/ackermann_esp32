@@ -1746,6 +1746,25 @@ static void publishRobotTelemetry() {
   telemetry.gps_fix_quality = gps_fix.fix_quality;
   telemetry.gps_satellites = gps_fix.satellites;
 
+#if GPS_SERIAL_OUTPUT_ENABLE
+  {
+    JsonDocument gps_doc;
+    gps_doc["type"] = "gps";
+    gps_doc["timestamp"] = now;
+    JsonObject gps_out = gps_doc["gps"].to<JsonObject>();
+    gps_out["valid"] = telemetry.gps_valid;
+    gps_out["latitude"] = telemetry.gps_latitude;
+    gps_out["longitude"] = telemetry.gps_longitude;
+    gps_out["altitude"] = telemetry.gps_altitude;
+    gps_out["hdop"] = telemetry.gps_hdop;
+    gps_out["fix_quality"] = telemetry.gps_fix_quality;
+    gps_out["satellites"] = telemetry.gps_satellites;
+    String gps_json;
+    serializeJson(gps_doc, gps_json);
+    Serial.println(gps_json);
+  }
+#endif
+
   telemetry.mission_active = mission_ctx.active && (mission_ctx.state == MissionState::Queued || mission_ctx.state == MissionState::Running || mission_ctx.state == MissionState::Paused);
   telemetry.mission_name = mission_ctx.name;
   telemetry.mission_state = missionStateToString(mission_ctx.state);

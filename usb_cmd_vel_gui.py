@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Simple GUI to send CMD_VEL commands over USB serial to the ESP32 robot."""
 
+import json
 import threading
 import time
 import tkinter as tk
@@ -33,6 +34,15 @@ class UsbCmdVelGui:
         self.func_unit_var = tk.StringVar(value="ON")
         self.can_ping_id_var = tk.StringVar(value="3")
         self.can_ping_timeout_var = tk.StringVar(value="500")
+
+        self.gps_valid_var = tk.StringVar(value="--")
+        self.gps_fix_var = tk.StringVar(value="--")
+        self.gps_sats_var = tk.StringVar(value="--")
+        self.gps_lat_var = tk.StringVar(value="--")
+        self.gps_lon_var = tk.StringVar(value="--")
+        self.gps_alt_var = tk.StringVar(value="--")
+        self.gps_hdop_var = tk.StringVar(value="--")
+        self.gps_updated_var = tk.StringVar(value="never")
 
         self._build_ui()
         self._refresh_ports()
@@ -106,6 +116,33 @@ class UsbCmdVelGui:
         ttk.Entry(ping, textvariable=self.can_ping_timeout_var, width=10).grid(row=0, column=3, sticky="w", **pad)
 
         ttk.Button(ping, text="Send CAN_PING", command=self.send_can_ping).grid(row=0, column=4, sticky="we", **pad)
+
+        gps = ttk.LabelFrame(self.root, text="GPS (requires GPS_SERIAL_OUTPUT_ENABLE=1 on the robot)")
+        gps.pack(fill="x", padx=10, pady=(0, 10))
+
+        ttk.Label(gps, text="Valid").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Label(gps, textvariable=self.gps_valid_var).grid(row=0, column=1, sticky="w", **pad)
+
+        ttk.Label(gps, text="Fix quality").grid(row=0, column=2, sticky="w", **pad)
+        ttk.Label(gps, textvariable=self.gps_fix_var).grid(row=0, column=3, sticky="w", **pad)
+
+        ttk.Label(gps, text="Satellites").grid(row=0, column=4, sticky="w", **pad)
+        ttk.Label(gps, textvariable=self.gps_sats_var).grid(row=0, column=5, sticky="w", **pad)
+
+        ttk.Label(gps, text="Latitude").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Label(gps, textvariable=self.gps_lat_var).grid(row=1, column=1, sticky="w", **pad)
+
+        ttk.Label(gps, text="Longitude").grid(row=1, column=2, sticky="w", **pad)
+        ttk.Label(gps, textvariable=self.gps_lon_var).grid(row=1, column=3, sticky="w", **pad)
+
+        ttk.Label(gps, text="Altitude").grid(row=1, column=4, sticky="w", **pad)
+        ttk.Label(gps, textvariable=self.gps_alt_var).grid(row=1, column=5, sticky="w", **pad)
+
+        ttk.Label(gps, text="HDOP").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Label(gps, textvariable=self.gps_hdop_var).grid(row=2, column=1, sticky="w", **pad)
+
+        ttk.Label(gps, text="Last update").grid(row=2, column=2, sticky="w", **pad)
+        ttk.Label(gps, textvariable=self.gps_updated_var).grid(row=2, column=3, columnspan=3, sticky="w", **pad)
 
         status = ttk.Frame(self.root)
         status.pack(fill="x", padx=10, pady=(0, 6))
@@ -203,10 +240,36 @@ class UsbCmdVelGui:
             except Exception:
                 text = str(raw)
 
-            if text:
+            if not text:
+                continue
+
+            gps_payload = self._parse_gps_line(text)
+            if gps_payload is not None:
+                self.root.after(0, lambda g=gps_payload: self._update_gps_display(g))
+            else:
                 self.root.after(0, lambda t=text: self._append_log(f"ESP32: {t}"))
 
         self.root.after(0, self._disconnect_serial)
+
+    @staticmethod
+    def _parse_gps_line(text: str):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return None
+        if not isinstance(data, dict) or data.get("type") != "gps":
+            return None
+        return data.get("gps", {})
+
+    def _update_gps_display(self, gps: dict) -> None:
+        self.gps_valid_var.set(str(gps.get("valid", "--")))
+        self.gps_fix_var.set(str(gps.get("fix_quality", "--")))
+        self.gps_sats_var.set(str(gps.get("satellites", "--")))
+        self.gps_lat_var.set(f"{gps.get('latitude', 0.0):.7f}" if "latitude" in gps else "--")
+        self.gps_lon_var.set(f"{gps.get('longitude', 0.0):.7f}" if "longitude" in gps else "--")
+        self.gps_alt_var.set(f"{gps.get('altitude', 0.0):.2f}" if "altitude" in gps else "--")
+        self.gps_hdop_var.set(f"{gps.get('hdop', 0.0):.2f}" if "hdop" in gps else "--")
+        self.gps_updated_var.set(time.strftime("%H:%M:%S"))
 
     def _send_line(self, line: str) -> bool:
         if not self.ser or not self.ser.is_open:

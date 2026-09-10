@@ -61,6 +61,11 @@
 #define GPS_UART_RX_PIN 9
 #define GPS_UART_TX_PIN 10
 
+// Echo GPS data to USB Serial as JSON, same fields as the "gps" object sent
+// to the web UI in robot telemetry (valid/latitude/longitude/altitude/hdop/
+// fix_quality/satellites), at the same telemetry interval.
+#define GPS_SERIAL_OUTPUT_ENABLE 1
+
 // NTRIP client settings (for RTK corrections)
 #define NTRIP_ENABLE 1
 #define NTRIP_HOST "110.78.0.54"
@@ -203,7 +208,7 @@
 // 1 = WiFi primary, SIM fallback
 // 2 = SIM only (WiFi disabled)
 // 3 = WiFi only (no SIM)
-#define NET_MODE 0  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
+#define NET_MODE 2  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
 
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL
