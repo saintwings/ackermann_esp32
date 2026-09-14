@@ -11,14 +11,21 @@
             box-sizing: border-box;
         }
         
+        html {
+            height: 100%;
+            -webkit-text-size-adjust: 100%;
+        }
+
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: #1a1a1a;
             color: #e0e0e0;
             height: 100vh;
+            height: 100dvh;
             overflow: hidden;
             display: flex;
             flex-direction: column;
+            overscroll-behavior: none;
         }
 
         #topbar {
@@ -28,24 +35,35 @@
             background: #111;
             border-bottom: 1px solid #3d3d3d;
             padding: 0 16px;
+            padding-left: max(16px, env(safe-area-inset-left));
+            padding-right: max(16px, env(safe-area-inset-right));
             height: 38px;
             flex-shrink: 0;
             z-index: 100;
+            gap: 8px;
         }
         #topbar .app-title {
             font-size: 13px;
             font-weight: 700;
             color: #4CAF50;
             letter-spacing: 0.03em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         #topbar .user-section {
             display: flex;
             align-items: center;
             gap: 12px;
             font-size: 12px;
+            flex-shrink: 0;
         }
         #topbar .user-name {
             color: #94a3b8;
+            max-width: 26vw;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         #topbar a.topbar-link {
             text-decoration: none;
@@ -264,7 +282,39 @@
             flex-direction: column;
             gap: 2px;
         }
-        
+
+        /* Collapse handle sits between the map and the sidebar; default (desktop/row)
+           look is a slim vertical strip. The mobile media query below re-styles it
+           into a horizontal strip when the layout stacks. */
+        .collapse-handle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            width: 22px;
+            background: #1a1a1a;
+            border-left: 1px solid #3d3d3d;
+            border-right: 1px solid #3d3d3d;
+            color: #94a3b8;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            user-select: none;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .collapse-handle:hover,
+        .collapse-handle:active {
+            background: #222;
+            color: #ccc;
+        }
+
+        /* Works at every screen size */
+        body.sidebar-collapsed #sidebar-container {
+            display: none;
+        }
+
         /* Tab Styles */
         .tab-container {
             display: flex;
@@ -283,6 +333,7 @@
         .tab-btn {
             flex: 1;
             padding: 10px 12px;
+            min-height: 40px;
             background: #2d2d2d;
             border: 1px solid #3d3d3d;
             color: #999;
@@ -291,6 +342,11 @@
             font-size: 13px;
             font-weight: 500;
             transition: all 0.2s ease;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .tab-btn .tab-icon {
+            margin-right: 6px;
         }
         
         .tab-btn:hover {
@@ -419,7 +475,8 @@
         }
         
         button {
-            padding: 8px 12px;
+            padding: 9px 12px;
+            min-height: 40px;
             border: none;
             border-radius: 4px;
             cursor: pointer;
@@ -427,43 +484,61 @@
             font-weight: 500;
             transition: all 0.2s;
             margin-bottom: 6px;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
         }
-        
+
         button:hover {
             transform: translateY(-1px);
             box-shadow: 0 2px 8px rgba(0,0,0,0.3);
         }
-        
+
         .btn-primary {
             background: #4CAF50;
             color: white;
         }
-        
+
         .btn-primary:hover {
             background: #45a049;
         }
-        
+
         .btn-primary:disabled {
             background: #666;
             cursor: not-allowed;
         }
-        
+
         .btn-danger {
             background: #f44336;
             color: white;
         }
-        
+
         .btn-danger:hover {
             background: #da190b;
         }
-        
+
         .btn-warning {
             background: #FF9800;
             color: white;
         }
-        
+
         .btn-warning:hover {
             background: #e68900;
+        }
+
+        .btn-secondary {
+            background: #555;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #666;
+        }
+
+        #control-panel .btn-danger {
+            min-height: 52px;
+            font-size: 15px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
         }
         
         .form-group {
@@ -481,14 +556,19 @@
         input[type="number"],
         select {
             width: 100%;
-            padding: 6px;
+            padding: 8px;
+            min-height: 36px;
             border: 1px solid #4d4d4d;
             border-radius: 4px;
             background: #3d3d3d;
             color: #e0e0e0;
             font-size: 12px;
         }
-        
+
+        input[type="range"] {
+            width: 100%;
+        }
+
         input:focus,
         select:focus {
             outline: none;
@@ -550,6 +630,7 @@
         .scroll-area {
             overflow-y: auto;
             flex: 1;
+            padding-bottom: env(safe-area-inset-bottom);
         }
         
         /* Scrollbar styling */
@@ -568,6 +649,149 @@
         
         ::-webkit-scrollbar-thumb:hover {
             background: #5d5d5d;
+        }
+
+        /* ============================================================
+           Responsive layout — tablets & phones
+           ============================================================ */
+        @media (max-width: 900px) {
+            .container {
+                flex-direction: column;
+            }
+
+            #map-panel {
+                flex: none;
+                --map-h: clamp(220px, 40dvh, 420px);
+                height: var(--map-h);
+            }
+
+            #sidebar-container {
+                flex: 1;
+                min-height: 0;
+            }
+
+            .collapse-handle {
+                width: 100%;
+                gap: 6px;
+                padding: 7px;
+                border-left: none;
+                border-right: none;
+                border-top: 1px solid #3d3d3d;
+                border-bottom: 1px solid #3d3d3d;
+                font-size: 12px;
+            }
+
+            body.sidebar-collapsed #map-panel {
+                flex: 1;
+                height: auto;
+            }
+
+            .panel-header {
+                padding: 10px 12px;
+                font-size: 14px;
+            }
+
+            /* Tab bar becomes an icon-over-label strip, like a mobile app */
+            .tab-buttons {
+                padding: 6px;
+                gap: 4px;
+            }
+
+            .tab-btn {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 2px;
+                padding: 8px 4px;
+                font-size: 10px;
+                line-height: 1.2;
+            }
+
+            .tab-btn .tab-icon {
+                margin-right: 0;
+                font-size: 18px;
+            }
+
+            .tab-btn .tab-label {
+                white-space: normal;
+                text-align: center;
+            }
+
+            /* Prevent iOS Safari from zooming in on input focus */
+            input[type="text"],
+            input[type="number"],
+            select {
+                font-size: 16px;
+            }
+
+            .button-group button {
+                min-width: 70px;
+            }
+
+            .telemetry-overlay {
+                top: 8px;
+                left: 8px;
+                right: 8px;
+                max-width: none;
+                max-height: calc(var(--map-h, 40dvh) - 16px);
+                padding: 10px;
+                font-size: 12px;
+            }
+
+            #admin-log-content {
+                height: min(200px, 32dvh);
+            }
+        }
+
+        @media (max-width: 480px) {
+            #topbar {
+                height: 44px;
+            }
+
+            #topbar .app-title {
+                max-width: 40vw;
+            }
+
+            .panel-content {
+                padding: 10px;
+            }
+
+            .command-section {
+                padding: 8px;
+            }
+
+            .telemetry-overlay {
+                font-size: 11px;
+            }
+
+            .telemetry-header {
+                font-size: 13px;
+            }
+        }
+
+        /* Comfortable, larger tap targets on touch devices regardless of width */
+        @media (hover: none) and (pointer: coarse) {
+            button {
+                min-height: 44px;
+            }
+
+            .robot-item {
+                padding: 12px;
+            }
+
+            input[type="text"],
+            input[type="number"],
+            select {
+                min-height: 40px;
+            }
+        }
+
+        /* Wider tap target for the vertical collapse handle on touch tablets (row layout) */
+        @media (hover: none) and (pointer: coarse) and (min-width: 901px) {
+            .collapse-handle {
+                width: 32px;
+            }
         }
     </style>
 </head>
@@ -643,22 +867,25 @@
                 </div>
             </div>
         </div>
-        
+
+        <!-- Collapse handle — mobile only; toggles the sidebar to give the map full screen -->
+        <div id="sidebar-collapse-handle" class="collapse-handle" onclick="toggleSidebarCollapse()">▾ Hide Panel</div>
+
         <!-- Sidebar with Tabbed Interface -->
         <div id="sidebar-container">
             <!-- Tab Buttons -->
             <div class="tab-buttons">
                 <button class="tab-btn active" data-tab="robots-tab" onclick="switchTab('robots-tab')">
-                    🤖 Robots
+                    <span class="tab-icon">🤖</span><span class="tab-label">Robots</span>
                 </button>
                 <button class="tab-btn" data-tab="control-tab" onclick="switchTab('control-tab')">
-                    🎮 Commands
+                    <span class="tab-icon">🎮</span><span class="tab-label">Commands</span>
                 </button>
                 <button class="tab-btn" data-tab="mission-tab" onclick="switchTab('mission-tab')">
-                    📋 Mission Plan
+                    <span class="tab-icon">📋</span><span class="tab-label">Mission Plan</span>
                 </button>
                 <button class="tab-btn" data-tab="coverage-tab" onclick="switchTab('coverage-tab')">
-                    🧭 Coverage
+                    <span class="tab-icon">🧭</span><span class="tab-label">Coverage</span>
                 </button>
             </div>
             
@@ -1307,6 +1534,34 @@
             }).join('');
 
             container.scrollTop = container.scrollHeight;
+        }
+
+        function toggleSidebarCollapse() {
+            const collapsed = document.body.classList.toggle('sidebar-collapsed');
+            updateCollapseHandleLabel(collapsed);
+            // Map container size just changed — Google Maps needs a nudge to redraw/recenter
+            setTimeout(refreshMapSize, 60);
+        }
+
+        function updateCollapseHandleLabel(collapsed) {
+            const handle = document.getElementById('sidebar-collapse-handle');
+            if (!handle) return;
+            // Layout stacks (map on top, sidebar below) at the same breakpoint as the CSS
+            const stacked = window.matchMedia('(max-width: 900px)').matches;
+            if (stacked) {
+                handle.textContent = collapsed ? '▴ Show Panel' : '▾ Hide Panel';
+            } else {
+                // Plain arrow glyph only (no rotated text) so direction always reads correctly.
+                handle.textContent = collapsed ? '◀' : '▶';
+                handle.title = collapsed ? 'Show panel' : 'Hide panel';
+            }
+        }
+
+        function refreshMapSize() {
+            if (!mapInitialized || !map) return;
+            const center = map.getCenter();
+            google.maps.event.trigger(map, 'resize');
+            if (center) map.setCenter(center);
         }
 
         function toggleServerLog() {
@@ -4292,6 +4547,12 @@ body{background:#111;color:#eee;font-family:'Segoe UI',sans-serif;}
     background:rgba(15,15,15,0.9);border:1px solid #444;border-radius:4px;
     padding:6px 10px;font-size:12px;color:#aaa;
 }
+@media (max-width:600px){
+    #info-panel{top:8px;left:8px;min-width:0;max-width:62vw;max-height:45vh;overflow-y:auto;padding:10px;font-size:12px;}
+    #ctrl-bar{bottom:8px;left:8px;right:8px;transform:none;flex-wrap:wrap;justify-content:center;}
+    .ctrl-btn{padding:8px 12px;}
+    #zoom-display{top:8px;bottom:auto;right:8px;}
+}
 </style>
 </head>
 <body>
@@ -4415,6 +4676,17 @@ document.getElementById('stats').innerHTML=\`
             updateCoverageWaypointSelector();
             setCoverageWaypointLimitRange(3, 1000, 1000);
             updateCoverageGeometryDisplay();
+            updateCollapseHandleLabel(document.body.classList.contains('sidebar-collapsed'));
+        });
+
+        // Keep the map and collapse-handle label correct across orientation changes and resizes
+        let _resizeDebounce = null;
+        window.addEventListener('resize', () => {
+            clearTimeout(_resizeDebounce);
+            _resizeDebounce = setTimeout(() => {
+                refreshMapSize();
+                updateCollapseHandleLabel(document.body.classList.contains('sidebar-collapsed'));
+            }, 150);
         });
     </script>
 </body>
