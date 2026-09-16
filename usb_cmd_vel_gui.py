@@ -106,6 +106,18 @@ class UsbCmdVelGui:
 
         ttk.Button(func, text="Send FUNC", command=self.send_func).grid(row=1, column=0, columnspan=6, sticky="we", **pad)
 
+        gpio_test = ttk.LabelFrame(func, text="GPIO Quick Test (FUNC_0 / OUTPUT_A_PIN)")
+        gpio_test.grid(row=2, column=0, columnspan=6, sticky="we", padx=8, pady=(0, 6))
+
+        ttk.Button(
+            gpio_test, text="FUNC_0 ON", command=lambda: self._send_line("FUNC_0 ON")
+        ).grid(row=0, column=0, sticky="we", padx=6, pady=6)
+        ttk.Button(
+            gpio_test, text="FUNC_0 OFF", command=lambda: self._send_line("FUNC_0 OFF")
+        ).grid(row=0, column=1, sticky="we", padx=6, pady=6)
+        gpio_test.columnconfigure(0, weight=1)
+        gpio_test.columnconfigure(1, weight=1)
+
         ping = ttk.LabelFrame(self.root, text="CAN_PING (diagnostic)")
         ping.pack(fill="x", padx=10, pady=(0, 10))
 

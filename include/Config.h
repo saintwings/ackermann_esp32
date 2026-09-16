@@ -90,11 +90,14 @@
 #define PS2_DAT GPIO_NUM_13
 #define PS2_CLK GPIO_NUM_11
 
-// Mission output channels A-D (dummy GPIO — replace with real relay pins when wired)
-#define OUTPUT_A_PIN 35
-#define OUTPUT_B_PIN 36
-#define OUTPUT_C_PIN 37
-#define OUTPUT_D_PIN 38
+// Mission output channels A-D (relay/GPIO pins).
+// Avoids: 1,2 (CAN), 4-7 (BNO085 SPI), 8 (NeoPixel), 9-10 (GPS UART), 11-14 (PS2),
+// 15-16 (BNO085 INT/RST), 17-18 (SIM UART), 19-20 (USB D-/D+), 0/3/45/46 (strapping),
+// 26-37 (flash/octal PSRAM).
+#define OUTPUT_A_PIN 21
+#define OUTPUT_B_PIN 38
+#define OUTPUT_C_PIN 39
+#define OUTPUT_D_PIN 40
 #define OUTPUT_COUNT 4
 
 // ── USB serial FUNC_<n> actuator mapping ────────────────────────────────────
@@ -208,7 +211,7 @@
 // 1 = WiFi primary, SIM fallback
 // 2 = SIM only (WiFi disabled)
 // 3 = WiFi only (no SIM)
-#define NET_MODE 2  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
+#define NET_MODE 0  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
 
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL
