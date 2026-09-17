@@ -1914,10 +1914,10 @@ void setup() {
 // ==========================================
 static void controlTask(void* /*pvParameters*/) {
   unsigned long last_control_time = millis();
-  bool func1_combo_prev = false;
-  unsigned long func1_combo_last_trigger_ms = 0;
-  bool func1_combo_neg_prev = false;
-  unsigned long func1_combo_neg_last_trigger_ms = 0;
+  bool func0_on_combo_prev = false;
+  unsigned long func0_on_combo_last_trigger_ms = 0;
+  bool func0_off_combo_prev = false;
+  unsigned long func0_off_combo_last_trigger_ms = 0;
   for (;;) {
     if (millis() - last_control_time >= 20) {
       unsigned long now = millis();
@@ -1960,26 +1960,34 @@ static void controlTask(void* /*pvParameters*/) {
           applyModeInit(robot_mode);
         }
 
-        // R1 + L1 held together triggers FUNC_1 +45 REL_DEG once per press; R1 + L2 triggers
-        // -45 REL_DEG, so the two combos jog the actuator in opposite directions. Both are
-        // edge-detected so holding a combo doesn't repeatedly re-trigger it every control
+        // R1 + L1 / R1 + L2 drive whichever FUNC is selected by JOYSTICK_COMBO_FUNC_TARGET
+        // in Config.h (0 = FUNC_0 GPIO ON/OFF, 1 = FUNC_1 CAN +/-45 REL_DEG jog). Both combos
+        // are edge-detected so holding one doesn't repeatedly re-trigger it every control
         // cycle, plus a minimum gap between triggers so PS2 button-read bounce/noise across
         // a couple of 20ms polls can't be mistaken for a release-and-re-press and double-fire
         // the move.
 
-        bool func1_combo_enable = ps2x.Button(PSB_R1) && ps2x.Button(PSB_L1);
-        if (func1_combo_enable && !func1_combo_prev && (now - func1_combo_last_trigger_ms) > 500) {
+        bool func0_on_combo_enable = ps2x.Button(PSB_R1) && ps2x.Button(PSB_L1);
+        if (func0_on_combo_enable && !func0_on_combo_prev && (now - func0_on_combo_last_trigger_ms) > 500) {
+#if JOYSTICK_COMBO_FUNC_TARGET == 0
+          setFuncGpio(0, true);
+#else
           triggerFunc(1, 45.0f, "REL_DEG");
-          func1_combo_last_trigger_ms = now;
+#endif
+          func0_on_combo_last_trigger_ms = now;
         }
-        func1_combo_prev = func1_combo_enable;
+        func0_on_combo_prev = func0_on_combo_enable;
 
-        bool func1_combo_neg_enable = ps2x.Button(PSB_R1) && ps2x.Button(PSB_L2);
-        if (func1_combo_neg_enable && !func1_combo_neg_prev && (now - func1_combo_neg_last_trigger_ms) > 500) {
+        bool func0_off_combo_enable = ps2x.Button(PSB_R1) && ps2x.Button(PSB_L2);
+        if (func0_off_combo_enable && !func0_off_combo_prev && (now - func0_off_combo_last_trigger_ms) > 500) {
+#if JOYSTICK_COMBO_FUNC_TARGET == 0
+          setFuncGpio(0, false);
+#else
           triggerFunc(1, -45.0f, "REL_DEG");
-          func1_combo_neg_last_trigger_ms = now;
+#endif
+          func0_off_combo_last_trigger_ms = now;
         }
-        func1_combo_neg_prev = func1_combo_neg_enable;
+        func0_off_combo_prev = func0_off_combo_enable;
 
         
 

@@ -126,6 +126,11 @@
 #define FUNC_1_TYPE FUNC_TYPE_ODRIVE
 #define FUNC_1_ID   3   // ODrive CAN node id 3
 
+// R1+L1 / R1+L2 joystick combo target:
+//   0 = FUNC_0 GPIO — R1+L1 triggers ON, R1+L2 triggers OFF
+//   1 = FUNC_1 CAN  — R1+L1 jogs +45 REL_DEG, R1+L2 jogs -45 REL_DEG
+#define JOYSTICK_COMBO_FUNC_TARGET 0
+
 // How long a DEG-type actuator holds at the target position before it auto-returns to 0.
 #define FUNC_DEG_HOLD_MS 1000UL
 
