@@ -71,6 +71,7 @@ SensorCommsContext sensor_comms{
 
 static void controlTask(void* pvParameters);
 static void commsTask(void* pvParameters);
+static void serialCmdTask(void* pvParameters);
 static float estimateHeadingDeg();
 static void handleUsbSerialControl();
 
@@ -1903,7 +1904,20 @@ void setup() {
     nullptr,
     0);
 
+  // USB serial commands get their own task on the control core so they are never
+  // stuck behind blocking LTE/AT-command calls in CommsTask. Priority is below
+  // ControlTask so a slow command (e.g. CAN_PING) can't stall the drive loop.
+  xTaskCreatePinnedToCore(
+    serialCmdTask,
+    "SerialCmdTask",
+    6144,
+    nullptr,
+    2,
+    nullptr,
+    1);
+
   Serial.println("[RTOS] ControlTask pinned to Core 1");
+  Serial.println("[RTOS] SerialCmdTask pinned to Core 1");
   Serial.println("[RTOS] CommsTask pinned to Core 0");
   
   Serial.println("Setup Complete! Ready to Drive.");
@@ -2062,8 +2076,6 @@ static void commsTask(void* /*pvParameters*/) {
 #endif
 #endif // NET_MODE != 0
 
-    handleUsbSerialControl();
-
 #if NET_MODE != 0 && NTRIP_ENABLE
     SensorComms::connectNtripIfNeeded(sensor_comms);
 #endif
@@ -2080,6 +2092,13 @@ static void commsTask(void* /*pvParameters*/) {
 #endif
     logSensorsAt1Hz();
     updateStatusLeds();
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+
+static void serialCmdTask(void* /*pvParameters*/) {
+  for (;;) {
+    handleUsbSerialControl();
     vTaskDelay(pdMS_TO_TICKS(2));
   }
 }
