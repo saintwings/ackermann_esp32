@@ -243,6 +243,27 @@
         .telemetry-group {
             margin-bottom: 10px;
         }
+
+        /* Minimized overlay: only the header row stays visible so the map is unobstructed */
+        .telemetry-overlay.minimized > :not(.telemetry-header) {
+            display: none !important;
+        }
+
+        .telemetry-overlay.minimized .telemetry-header {
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        .telemetry-toggle-btn {
+            padding: 4px 8px;
+            font-size: 11px;
+            background: #3d3d3d;
+            border: none;
+            border-radius: 3px;
+            color: #e0e0e0;
+            cursor: pointer;
+        }
         
         .telemetry-group-title {
             font-size: 11px;
@@ -739,6 +760,13 @@
                 font-size: 12px;
             }
 
+            /* Minimized: shrink to a small chip in the corner instead of spanning the map */
+            .telemetry-overlay.minimized {
+                right: auto;
+                max-width: calc(100% - 16px);
+                padding: 6px 8px;
+            }
+
             #admin-log-content {
                 height: min(200px, 32dvh);
             }
@@ -817,6 +845,7 @@
                             <div id="telemetry-color-indicator" style="width: 16px; height: 16px; border-radius: 3px; background: #666; border: 2px solid white;"></div>
                             <div id="telemetry-robot-name" style="flex: 1;">--</div>
                             <button onclick="clearRobotPath()" style="padding: 4px 8px; font-size: 11px; background: #4CAF50; border: none; border-radius: 3px; color: white; cursor: pointer; white-space: nowrap;" title="Clear this robot's path trail">🔄 Clear Path</button>
+                            <button id="telemetry-toggle-btn" class="telemetry-toggle-btn" onclick="toggleTelemetryOverlay()" title="Minimize telemetry">▾</button>
                         </div>
                         
                         <!-- Mission Status Display -->
@@ -1555,6 +1584,14 @@
                 handle.textContent = collapsed ? '◀' : '▶';
                 handle.title = collapsed ? 'Show panel' : 'Hide panel';
             }
+        }
+
+        function toggleTelemetryOverlay(force) {
+            const overlay = document.getElementById('telemetry-overlay');
+            const btn = document.getElementById('telemetry-toggle-btn');
+            const minimized = overlay.classList.toggle('minimized', force);
+            btn.textContent = minimized ? '▸' : '▾';
+            btn.title = minimized ? 'Expand telemetry' : 'Minimize telemetry';
         }
 
         function refreshMapSize() {
@@ -4677,6 +4714,8 @@ document.getElementById('stats').innerHTML=\`
             setCoverageWaypointLimitRange(3, 1000, 1000);
             updateCoverageGeometryDisplay();
             updateCollapseHandleLabel(document.body.classList.contains('sidebar-collapsed'));
+            // On phones the telemetry overlay covers most of the map — start it minimized
+            if (window.matchMedia('(max-width: 900px)').matches) toggleTelemetryOverlay(true);
         });
 
         // Keep the map and collapse-handle label correct across orientation changes and resizes

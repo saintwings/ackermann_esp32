@@ -19,8 +19,8 @@
 #define WIFI_STATIC_SUBNET  "255.255.255.0"
 
 // SoftAP fallbacks
-#define WIFI_AP_SSID     "AckermannESP32"
-#define WIFI_AP_PASSWORD "ackermann123"
+#define WIFI_AP_SSID     "ladybug"
+#define WIFI_AP_PASSWORD "ladybug001"
 
 // TCP server port for line-based protocol
 #define WIFI_SERVER_PORT 7777
@@ -194,6 +194,22 @@
 // Positive = rotate heading clockwise. Range: any value, normalised to 0-360.
 #define HEADING_OFFSET_DEG 40.0f
 
+// ── Mission auto zero-turn ───────────────────────────────────────────────────
+// During GotoWaypoint / CoveragePath tasks, switch to zero-turn (rotate in place)
+// when |heading error| to the target exceeds ENTER_DEG, and switch back to normal
+// Ackermann mode once it has rotated to within EXIT_DEG (hysteresis: EXIT < ENTER).
+// Set ENABLE to 0 to always stay in normal mode during missions.
+#define MISSION_AUTO_ZERO_TURN_ENABLE 1
+#define MISSION_ZERO_TURN_ENTER_DEG 45.0f
+#define MISSION_ZERO_TURN_EXIT_DEG 10.0f
+// Wheel speed used while rotating in place (m/s).
+#define MISSION_ZERO_TURN_SPEED_MPS 0.15f
+// Drive is held at 0 for this long after each mode switch so the steering can
+// reach its new angle before the wheels move.
+#define MISSION_ZERO_TURN_SETTLE_MS 300UL
+// Set to -1 if the robot rotates away from the target instead of toward it.
+#define MISSION_ZERO_TURN_DIRECTION_SIGN 1
+
 // ── SIMCOM A7670X (CAT1-A7670X-V1.02 board) ─────────────────────────────────
 // Uses ESP32-S3 UART2.  Board pins: VCC=5V rail, GND, TXD→GPIO18, RXD←GPIO17,
 // EN→GPIO21 (HIGH=on), CTS=leave open, VDD=leave open.
@@ -216,7 +232,7 @@
 // 1 = WiFi primary, SIM fallback
 // 2 = SIM only (WiFi disabled)
 // 3 = WiFi only (no SIM)
-#define NET_MODE 0  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
+#define NET_MODE 2  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
 
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL

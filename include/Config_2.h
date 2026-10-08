@@ -12,15 +12,15 @@
 
 // Static IP configuration
 //****** */
-#define WIFI_STATIC_IP      "192.168.1.41"
+#define WIFI_STATIC_IP      "192.168.1.42"
 //#define WIFI_STATIC_IP      "192.168.1.140"
 
 #define WIFI_STATIC_GATEWAY "192.168.1.1"
 #define WIFI_STATIC_SUBNET  "255.255.255.0"
 
 // SoftAP fallbacks
-#define WIFI_AP_SSID     "AckermannESP32"
-#define WIFI_AP_PASSWORD "ackermann123"
+#define WIFI_AP_SSID     "leafsheep"
+#define WIFI_AP_PASSWORD "leafsheep001"
 
 // TCP server port for line-based protocol
 #define WIFI_SERVER_PORT 7777
@@ -52,8 +52,8 @@
 #define SIM_CONTROL_ENABLE  (SERVER_MODE == 2 ? 1 : 0)
 
 // Robot identity for control_server.py registration
-#define ROBOT_ID "esp32-02"
-#define ROBOT_NAME "Robot2"
+#define ROBOT_ID "leafsheep_001"
+#define ROBOT_NAME "leafsheep"
 #define ROBOT_TYPE "ackermann"
 
 // ZED-F9P UART settings (UART1)
@@ -90,11 +90,14 @@
 #define PS2_DAT GPIO_NUM_13
 #define PS2_CLK GPIO_NUM_11
 
-// Mission output channels A-D (dummy GPIO — replace with real relay pins when wired)
-#define OUTPUT_A_PIN 35
-#define OUTPUT_B_PIN 36
-#define OUTPUT_C_PIN 37
-#define OUTPUT_D_PIN 38
+// Mission output channels A-D (relay/GPIO pins).
+// Avoids: 1,2 (CAN), 4-7 (BNO085 SPI), 8 (NeoPixel), 9-10 (GPS UART), 11-14 (PS2),
+// 15-16 (BNO085 INT/RST), 17-18 (SIM UART), 19-20 (USB D-/D+), 0/3/45/46 (strapping),
+// 26-37 (flash/octal PSRAM).
+#define OUTPUT_A_PIN 21
+#define OUTPUT_B_PIN 38
+#define OUTPUT_C_PIN 39
+#define OUTPUT_D_PIN 40
 #define OUTPUT_COUNT 4
 
 // ── USB serial FUNC_<n> actuator mapping ────────────────────────────────────
@@ -119,8 +122,9 @@
 #define FUNC_0_TYPE FUNC_TYPE_GPIO
 #define FUNC_0_ID   0   // OUTPUT_A_PIN
 
-#define FUNC_1_TYPE FUNC_TYPE_GIM8108
-#define FUNC_1_ID   3   // GIM8108 CAN id 3
+
+#define FUNC_1_TYPE FUNC_TYPE_ODRIVE
+#define FUNC_1_ID   3   // ODrive CAN node id 3
 
 // R1+L1 / R1+L2 joystick combo target:
 //   0 = FUNC_0 GPIO — R1+L1 triggers ON, R1+L2 triggers OFF
@@ -190,6 +194,22 @@
 // Positive = rotate heading clockwise. Range: any value, normalised to 0-360.
 #define HEADING_OFFSET_DEG 40.0f
 
+// ── Mission auto zero-turn ───────────────────────────────────────────────────
+// During GotoWaypoint / CoveragePath tasks, switch to zero-turn (rotate in place)
+// when |heading error| to the target exceeds ENTER_DEG, and switch back to normal
+// Ackermann mode once it has rotated to within EXIT_DEG (hysteresis: EXIT < ENTER).
+// Set ENABLE to 0 to always stay in normal mode during missions.
+#define MISSION_AUTO_ZERO_TURN_ENABLE 1
+#define MISSION_ZERO_TURN_ENTER_DEG 45.0f
+#define MISSION_ZERO_TURN_EXIT_DEG 10.0f
+// Wheel speed used while rotating in place (m/s).
+#define MISSION_ZERO_TURN_SPEED_MPS 0.15f
+// Drive is held at 0 for this long after each mode switch so the steering can
+// reach its new angle before the wheels move.
+#define MISSION_ZERO_TURN_SETTLE_MS 300UL
+// Set to -1 if the robot rotates away from the target instead of toward it.
+#define MISSION_ZERO_TURN_DIRECTION_SIGN 1
+
 // ── SIMCOM A7670X (CAT1-A7670X-V1.02 board) ─────────────────────────────────
 // Uses ESP32-S3 UART2.  Board pins: VCC=5V rail, GND, TXD→GPIO18, RXD←GPIO17,
 // EN→GPIO21 (HIGH=on), CTS=leave open, VDD=leave open.
@@ -212,7 +232,7 @@
 // 1 = WiFi primary, SIM fallback
 // 2 = SIM only (WiFi disabled)
 // 3 = WiFi only (no SIM)
-#define NET_MODE 0  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
+#define NET_MODE 3  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
 
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL

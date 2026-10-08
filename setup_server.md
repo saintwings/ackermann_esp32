@@ -63,9 +63,14 @@ Cloudflare dashboard → **saintwings.xyz** → **Network** → **WebSockets** �
 From dev machine:
 ```bash
 rsync -av --exclude='.pio' --exclude='__pycache__' --exclude='venv' \
+  --exclude='users.db' --exclude='.secret_key' --exclude='logs/' \
   /home/saintwings/ackermann_esp32/ \
   linaro@<TINKER_BOARD_IP>:~/robot_server/
 ```
+
+> The extra excludes keep the server's runtime data — user accounts (`users.db`),
+> login session secret (`.secret_key`) and robot logs (`logs/`) — from ever being
+> overwritten by copies on the dev machine.
 
 ### 2.2 Create venv and install dependencies
 
@@ -351,21 +356,97 @@ The topbar in the Mission Planner shows an **⚙ Admin** link for admin users.
 Robot telemetry, robot list, and commands are all filtered per user on the
 server side. A user cannot send commands to a robot they are not assigned to.
 
+### Robot logs & replay
+
+`https://app.saintwings.xyz/admin/logs` (admin only — also linked as
+**📼 Robot Logs & Replay** in the Admin Panel header)
+
+The server records every robot automatically (`robot_logger.py`), one folder per robot,
+one file pair per day:
+
+```
+~/robot_server/logs/<robot_id>/
+  telemetry_YYYYMMDD.jsonl   one JSON line per telemetry sample (UTC timestamp + full payload)
+  comm_YYYYMMDD.log          CONNECT / DISCONNECT / TIMEOUT / CMD / CMD_ACK events
+```
+
+On the replay page:
+
+1. Pick **Robot** and **Day** (optionally a **From / To** window in local time) → **Load**
+2. The map shows the full GPS track (grey) and the replayed part (yellow); the robot
+   marker rotates with the logged heading
+3. Player: play / pause, step, scrub slider, speed 1×–300×, **skip gaps** (jumps over
+   periods the robot was offline), **follow** (keeps robot centered)
+   - Keyboard: `Space` play/pause, `←` / `→` step, `Shift+←` / `Shift+→` step 50
+4. Speed timeline under the map: offline gaps shaded red, comm events as ticks —
+   click anywhere to jump there
+5. **Communication Events** list — click an event to jump the replay to that moment
+6. Right panel shows every field of the current sample
+7. **⬇ telemetry.jsonl / comm.log** links download the raw files
+
+A load returns at most 20 000 samples, evenly downsampled (the page says so when it
+happens). At the default `ROBOT_TELEMETRY_INTERVAL_MS 500` (2 Hz) that's ~2.7 hours of
+driving — for longer sessions narrow the From / To window to replay at full resolution.
+
+Admin log API (session login required, admin only):
+
+| Endpoint | Returns |
+|----------|---------|
+| `GET /api/admin/logs` | robots → available days with file sizes |
+| `GET /api/admin/logs/<robot_id>/<YYYYMMDD>/telemetry?start=&end=&max=` | samples (`start`/`end` = ISO UTC, e.g. `2026-10-08T03:00:00Z`) |
+| `GET /api/admin/logs/<robot_id>/<YYYYMMDD>/comm` | parsed comm events |
+| `GET /api/admin/logs/<robot_id>/<YYYYMMDD>/<telemetry\|comm>/download` | raw file |
+
 ---
 
 ## Part 7 — Daily Operations
 
 ### Sync code from dev machine to Tinker Board
 
+Full sync (always keep the excludes — see 2.1):
+
 ```bash
 rsync -av --exclude='.pio' --exclude='__pycache__' --exclude='venv' \
+  --exclude='users.db' --exclude='.secret_key' --exclude='logs/' \
   /home/saintwings/ackermann_esp32/ \
   linaro@<TINKER_BOARD_IP>:~/robot_server/
 
 ssh linaro@<TINKER_BOARD_IP> "sudo systemctl restart robot-server"
 ```
 
-### View logs
+Or copy only the files that changed, e.g. after the admin logs/replay update:
+
+```bash
+cd /home/saintwings/ackermann_esp32
+rsync -av auth.py robot_logger.py linaro@<TINKER_BOARD_IP>:~/robot_server/
+rsync -av templates/ linaro@<TINKER_BOARD_IP>:~/robot_server/templates/
+
+ssh linaro@<TINKER_BOARD_IP> "sudo systemctl restart robot-server && sudo systemctl status robot-server --no-pager"
+```
+
+After updating, check:
+1. `sudo journalctl -u robot-server -n 30` — no import errors / tracebacks
+2. Open the web UI and log in — Mission Planner loads
+3. If admin pages changed: `/admin` → **📼 Robot Logs & Replay** → Load a day
+
+Pure server updates (Python / HTML) don't require reflashing the robots.
+
+### Robot log storage
+
+```bash
+du -sh ~/robot_server/logs/*                 # disk used per robot
+
+# Back up logs to the dev machine (run on dev machine)
+rsync -av linaro@<TINKER_BOARD_IP>:~/robot_server/logs/ ~/robot_logs_backup/
+
+# Delete log files older than 60 days
+find ~/robot_server/logs -type f -mtime +60 -delete
+```
+
+Rough size: ~300–400 bytes per telemetry sample → ~2.5 MB per robot per connected hour
+at 2 Hz (`ROBOT_TELEMETRY_INTERVAL_MS 500`). Logs are only written while a robot is connected.
+
+### View service logs (journalctl)
 
 ```bash
 sudo journalctl -u robot-server -f     # control server live log
@@ -404,6 +485,7 @@ cloudflared tunnel info robot-server
 | `https://app.saintwings.xyz/login` | Login page |
 | `https://app.saintwings.xyz/signup` | Register new user |
 | `https://app.saintwings.xyz/admin` | Admin panel (admin only) |
+| `https://app.saintwings.xyz/admin/logs` | Robot logs & replay (admin only) |
 | `wss://robot.saintwings.xyz` | WebSocket (robots + web clients) |
 | `ws://192.168.1.152:8765` | WebSocket when on local WiFi |
 | `http://192.168.1.152:5000` | Web UI when on local network |
@@ -432,9 +514,13 @@ control_server.py
 coverage_path_service.py
 coverage_path_planning.py
 auth.py
+robot_logger.py
 templates/
 mission_planner_v2.html
 ```
+
+Created automatically at runtime (don't copy between machines): `users.db`,
+`.secret_key`, `logs/`.
 
 ---
 

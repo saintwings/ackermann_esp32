@@ -10,15 +10,20 @@ Tables
 Install deps:  pip install flask-login
 """
 
+import json
 import os
+import re
 import secrets
 import sqlite3
 import time
 
-from flask import Blueprint, render_template, request, redirect, url_for, jsonify
+from flask import (Blueprint, render_template, request, redirect, url_for, jsonify,
+                   send_from_directory, abort)
 from flask_login import (LoginManager, UserMixin,
                          login_user, logout_user, login_required, current_user)
 from werkzeug.security import generate_password_hash, check_password_hash
+
+from robot_logger import LOGS_DIR
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _HERE           = os.path.dirname(os.path.abspath(__file__))
@@ -268,6 +273,14 @@ def admin():
     return render_template('admin.html')
 
 
+@auth_bp.route('/admin/logs')
+@login_required
+def admin_logs():
+    if not current_user.is_admin:
+        return redirect('/')
+    return render_template('admin_logs.html')
+
+
 # ── Auth API (called by JS) ───────────────────────────────────────────────────
 @auth_bp.route('/api/auth/ws-token')
 @login_required
@@ -345,3 +358,120 @@ def api_set_admin():
     with _db() as conn:
         conn.execute('UPDATE users SET is_admin = ? WHERE id = ?', (value, user_id))
     return jsonify({'ok': True})
+
+
+# ── Admin log viewer / replay API ─────────────────────────────────────────────
+_ROBOT_ID_RE    = re.compile(r'^[A-Za-z0-9_.-]+$')
+_DATE_RE        = re.compile(r'^\d{8}$')
+_LOG_FILE_RE    = re.compile(r'^(telemetry|comm)_(\d{8})\.(?:jsonl|log)$')
+_LOG_KINDS      = {'telemetry': 'jsonl', 'comm': 'log'}
+_TS_SLICE       = slice(7, 31)   # '{"ts":"' + 24-char ISO timestamp (RobotLogger format)
+REPLAY_MAX_ROWS = 20000          # telemetry rows returned per request (downsampled above this)
+
+
+def _log_path(robot_id: str, date: str, kind: str) -> str:
+    """Validated absolute path of one log file; 404s on bad input or missing file."""
+    if (kind not in _LOG_KINDS or not _ROBOT_ID_RE.match(robot_id)
+            or robot_id in ('.', '..') or not _DATE_RE.match(date)):
+        abort(404)
+    path = os.path.join(LOGS_DIR, robot_id, f'{kind}_{date}.{_LOG_KINDS[kind]}')
+    if not os.path.isfile(path):
+        abort(404)
+    return path
+
+
+@auth_bp.route('/api/admin/logs')
+@login_required
+def api_admin_logs():
+    """{robot_id: [{date, telemetry_bytes, comm_bytes}, ...newest first]}"""
+    err = _require_admin()
+    if err:
+        return err
+    result = {}
+    if os.path.isdir(LOGS_DIR):
+        for robot_id in sorted(os.listdir(LOGS_DIR)):
+            rdir = os.path.join(LOGS_DIR, robot_id)
+            if not os.path.isdir(rdir) or not _ROBOT_ID_RE.match(robot_id):
+                continue
+            days = {}
+            for name in os.listdir(rdir):
+                m = _LOG_FILE_RE.match(name)
+                if m:
+                    day = days.setdefault(m.group(2), {'date': m.group(2),
+                                                       'telemetry_bytes': 0, 'comm_bytes': 0})
+                    day[f'{m.group(1)}_bytes'] = os.path.getsize(os.path.join(rdir, name))
+            if days:
+                result[robot_id] = sorted(days.values(), key=lambda d: d['date'], reverse=True)
+    return jsonify(result)
+
+
+@auth_bp.route('/api/admin/logs/<robot_id>/<date>/telemetry')
+@login_required
+def api_admin_log_telemetry(robot_id, date):
+    """
+    Telemetry samples for one robot/day, oldest first.
+    Query: start, end  — optional ISO-8601 UTC bounds (e.g. 2026-10-08T03:00:00Z)
+           max         — row cap (default REPLAY_MAX_ROWS); evenly downsampled above it
+    """
+    err = _require_admin()
+    if err:
+        return err
+    path  = _log_path(robot_id, date, 'telemetry')
+    start = request.args.get('start', '')
+    end   = request.args.get('end', '')
+    try:
+        max_rows = max(1, min(int(request.args.get('max', REPLAY_MAX_ROWS)), 200000))
+    except ValueError:
+        max_rows = REPLAY_MAX_ROWS
+
+    # Filter on the raw timestamp slice so only kept rows pay for json.loads
+    lines = []
+    with open(path, 'r') as fh:
+        for line in fh:
+            ts = line[_TS_SLICE]
+            if (start and ts < start) or (end and ts > end):
+                continue
+            lines.append(line)
+
+    total = len(lines)
+    if total > max_rows:
+        step  = total / max_rows
+        lines = [lines[int(i * step)] for i in range(max_rows)]
+
+    rows = []
+    for line in lines:
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue   # partial line from a crash / still being written
+    return jsonify({'robot_id': robot_id, 'date': date, 'total': total,
+                    'returned': len(rows), 'rows': rows})
+
+
+@auth_bp.route('/api/admin/logs/<robot_id>/<date>/comm')
+@login_required
+def api_admin_log_comm(robot_id, date):
+    """Communication events for one robot/day as [{ts, event, detail}]."""
+    err = _require_admin()
+    if err:
+        return err
+    path   = _log_path(robot_id, date, 'comm')
+    events = []
+    with open(path, 'r') as fh:
+        for line in fh:
+            m = re.match(r'^\[([^\]]+)\] (\S+)(?:  (.*))?$', line.rstrip('\n'))
+            if m:
+                events.append({'ts': m.group(1), 'event': m.group(2), 'detail': m.group(3) or ''})
+    return jsonify({'robot_id': robot_id, 'date': date, 'events': events})
+
+
+@auth_bp.route('/api/admin/logs/<robot_id>/<date>/<kind>/download')
+@login_required
+def api_admin_log_download(robot_id, date, kind):
+    err = _require_admin()
+    if err:
+        return err
+    path = _log_path(robot_id, date, kind)
+    return send_from_directory(os.path.dirname(path), os.path.basename(path),
+                               as_attachment=True,
+                               download_name=f'{robot_id}_{os.path.basename(path)}')
