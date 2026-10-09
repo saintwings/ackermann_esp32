@@ -624,12 +624,41 @@ static_assert(MISSION_ZERO_TURN_EXIT_DEG < MISSION_ZERO_TURN_ENTER_DEG,
 // True while the mission executor itself put the robot in zero-turn mode, so it only
 // ever reverts a mode it set (a manual MODE ZERO_TURN is left alone).
 static bool mission_auto_zero_turn = false;
+// Set once a mode switch is decided: the drive ramps down to 0 in the current mode
+// first, then the switch happens. Latched so the decision can't flip back mid-ramp.
+static bool mission_mode_switch_pending = false;
 static unsigned long mission_mode_switch_ms = 0;
 
+// Slew-limited mission drive speed (m/s), ramped by slewMissionSpeed().
+static float mission_speed_cmd_mps = 0.0f;
+static unsigned long mission_speed_cmd_ms = 0;
+
+static void resetMissionSpeedSlew() {
+  mission_speed_cmd_mps = 0.0f;
+  mission_speed_cmd_ms = 0;
+}
+
+static float slewMissionSpeed(float target_mps, unsigned long now) {
+  // Cap dt so a stalled comms loop can't turn into a single big speed jump.
+  const float dt_s = (mission_speed_cmd_ms == 0) ? 0.0f : min(0.1f, (now - mission_speed_cmd_ms) * 0.001f);
+  mission_speed_cmd_ms = now;
+  const float max_step = MISSION_SPEED_SLEW_MPS2 * dt_s;
+  mission_speed_cmd_mps += clampf(target_mps - mission_speed_cmd_mps, -max_step, max_step);
+  return mission_speed_cmd_mps;
+}
+
+static bool missionModeSettling(unsigned long now) {
+  return (now - mission_mode_switch_ms) < MISSION_MODE_SWITCH_SETTLE_MS;
+}
+
+// Switches immediately. The smooth path (ramp down -> switch -> settle -> ramp up) is
+// driven from updateMissionExecutor(); direct calls are for forced reverts when the
+// mission stops driving anyway (pause/end/Wait/Spiral).
 // Mode is changed directly rather than via applyModeInit() (which blocks for 200ms);
-// the control task re-applies steering for robot_mode every cycle, and the caller holds
-// the drive at 0 for MISSION_ZERO_TURN_SETTLE_MS while the steering moves.
+// the control task re-applies steering for robot_mode every cycle, and the drive is
+// held at 0 for MISSION_MODE_SWITCH_SETTLE_MS while the steering moves.
 static void setMissionAutoZeroTurn(bool on) {
+  mission_mode_switch_pending = false;
   if (on == mission_auto_zero_turn) return;
   if (!on && robot_mode != RobotMode::ZeroTurn) {
     mission_auto_zero_turn = false;
@@ -637,6 +666,7 @@ static void setMissionAutoZeroTurn(bool on) {
   }
   mission_auto_zero_turn = on;
   mission_mode_switch_ms = millis();
+  resetMissionSpeedSlew();
   control_targets.linear_mps = 0.0f;
   control_targets.angle_deg = 0.0f;
   robot_mode = on ? RobotMode::ZeroTurn : RobotMode::Normal;
@@ -651,6 +681,7 @@ static void updateMissionExecutor() {
     mission_debug_valid = false;
     invalid_sensor_since_ms = 0;
     setMissionAutoZeroTurn(false);
+    resetMissionSpeedSlew();
     if (mission_ctx.state != MissionState::Idle && mission_ctx.state != MissionState::Cancelled && mission_ctx.state != MissionState::Completed && mission_ctx.state != MissionState::Failed && mission_ctx.state != MissionState::EStop) {
       setMissionState(MissionState::Idle);
     }
@@ -670,6 +701,7 @@ static void updateMissionExecutor() {
   if (mission_ctx.state == MissionState::Paused) {
     mission_debug_valid = false;
     setMissionAutoZeroTurn(false);
+    resetMissionSpeedSlew();
     resetMissionCommandTargets();
     return;
   }
@@ -756,6 +788,7 @@ static void updateMissionExecutor() {
   if (task.type == MissionTaskType::Wait) {
     mission_debug_valid = false;
     setMissionAutoZeroTurn(false);
+    resetMissionSpeedSlew();
     control_targets.linear_mps = 0.0f;
     control_targets.angle_deg = 0.0f;
     control_targets.remote_move_expire_ms = now + 150;
@@ -770,6 +803,16 @@ static void updateMissionExecutor() {
     mission_debug_valid = false;
     // Spiral steers with angle_deg, which zero-turn mode ignores.
     setMissionAutoZeroTurn(false);
+    resetMissionSpeedSlew();
+    if (missionModeSettling(now)) {
+      // Steering is still returning from zero-turn; hold still and start the
+      // (time-based) spiral only once it has settled.
+      control_targets.linear_mps = 0.0f;
+      control_targets.angle_deg  = 0.0f;
+      control_targets.remote_move_expire_ms = now + 150;
+      mission_task_started_ms = now;
+      return;
+    }
     float elapsed_s  = static_cast<float>(now - mission_task_started_ms) * 0.001f;
     float avg_radius  = (task.spiral_radius_start + task.spiral_radius_end) * 0.5f;
     float total_angle = task.spiral_loops * 2.0f * static_cast<float>(M_PI);
@@ -925,46 +968,49 @@ static void updateMissionExecutor() {
   float current_heading_deg = estimateHeadingDeg();
   float heading_error_deg = -1 * normalizeAngleDeg(desired_heading_deg - current_heading_deg);
 
+  const bool mode_settling = missionModeSettling(now);
 #if MISSION_AUTO_ZERO_TURN_ENABLE
-  const float abs_heading_error_deg = fabsf(heading_error_deg);
-  if (!mission_auto_zero_turn && robot_mode == RobotMode::Normal &&
-      abs_heading_error_deg > MISSION_ZERO_TURN_ENTER_DEG) {
-    setMissionAutoZeroTurn(true);
-  } else if (mission_auto_zero_turn && abs_heading_error_deg < MISSION_ZERO_TURN_EXIT_DEG) {
-    setMissionAutoZeroTurn(false);
+  // Decide a switch only once the previous one has settled, then latch it until the
+  // ramp-down completes.
+  if (!mode_settling && !mission_mode_switch_pending) {
+    const float abs_heading_error_deg = fabsf(heading_error_deg);
+    if (!mission_auto_zero_turn && robot_mode == RobotMode::Normal &&
+        abs_heading_error_deg > MISSION_ZERO_TURN_ENTER_DEG) {
+      mission_mode_switch_pending = true;
+    } else if (mission_auto_zero_turn && abs_heading_error_deg < MISSION_ZERO_TURN_EXIT_DEG) {
+      mission_mode_switch_pending = true;
+    }
   }
 #endif
-  const bool mode_settling = (now - mission_mode_switch_ms) < MISSION_ZERO_TURN_SETTLE_MS;
 
+  float target_speed_mps = 0.0f;
+  float angle_cmd_deg = 0.0f;
   if (mission_auto_zero_turn) {
     // Zero-turn drive: +linear_mps spins clockwise (heading increasing). A positive
     // heading_error_deg means the target is counter-clockwise, so rotate the other way.
     const float rotate_dir = (heading_error_deg > 0.0f ? -1.0f : 1.0f) * MISSION_ZERO_TURN_DIRECTION_SIGN;
-    const float rotate_mps = mode_settling ? 0.0f : rotate_dir * clampf(MISSION_ZERO_TURN_SPEED_MPS, 0.0f, MAX_LINEAR_MPS);
-
-    mission_debug_valid = true;
-    mission_debug_coverage = (active_waypoint_task->type == MissionTaskType::CoveragePath);
-    mission_debug_task_index = static_cast<int>(mission_task_cursor);
-    mission_debug_target_waypoint = target_waypoint_index;
-    mission_debug_coverage_current = mission_coverage_current_index;
-    mission_debug_coverage_end = active_waypoint_task->waypoint_index_end;
-    mission_debug_dist_m = dist_m;
-    mission_debug_heading_error_deg = heading_error_deg;
-    mission_debug_speed_cmd_mps = rotate_mps;
-
-    control_targets.linear_mps = rotate_mps;
-    control_targets.angle_deg = 0.0f;
-    control_targets.remote_move_expire_ms = now + 150;
-    return;
+    target_speed_mps = rotate_dir * clampf(MISSION_ZERO_TURN_SPEED_MPS, 0.0f, MAX_LINEAR_MPS);
+  } else {
+    target_speed_mps = clampf(active_waypoint_task->speed_mps, 0.05f, MAX_LINEAR_MPS);
+    if (fabsf(heading_error_deg) > 70.0f) {
+      target_speed_mps *= 0.5f;
+      const float crawl_speed_floor = min(MISSION_HEADING_SLOWDOWN_CRAWL_MPS, clampf(active_waypoint_task->speed_mps, 0.05f, MAX_LINEAR_MPS));
+      target_speed_mps = max(target_speed_mps, crawl_speed_floor);
+    }
+    angle_cmd_deg = clampf(heading_error_deg * 0.7f, -MAX_STEER_DEG, MAX_STEER_DEG);
   }
 
-  float speed_cmd = clampf(active_waypoint_task->speed_mps, 0.05f, MAX_LINEAR_MPS);
-  if (mode_settling) {
+  // Hold still while the steering mechanism moves; ramp down before a pending switch.
+  if (mode_settling || mission_mode_switch_pending) {
+    target_speed_mps = 0.0f;
+  }
+  float speed_cmd = slewMissionSpeed(target_speed_mps, now);
+
+  if (mission_mode_switch_pending && fabsf(speed_cmd) < 0.005f) {
+    // Stopped: switch mode now; the settle hold + ramp-up take over from here.
+    setMissionAutoZeroTurn(!mission_auto_zero_turn);
     speed_cmd = 0.0f;
-  } else if (fabsf(heading_error_deg) > 70.0f) {
-    speed_cmd *= 0.5f;
-    const float crawl_speed_floor = min(MISSION_HEADING_SLOWDOWN_CRAWL_MPS, clampf(active_waypoint_task->speed_mps, 0.05f, MAX_LINEAR_MPS));
-    speed_cmd = max(speed_cmd, crawl_speed_floor);
+    angle_cmd_deg = 0.0f;
   }
 
   mission_debug_valid = true;
@@ -978,7 +1024,7 @@ static void updateMissionExecutor() {
   mission_debug_speed_cmd_mps = speed_cmd;
 
   control_targets.linear_mps = speed_cmd;
-  control_targets.angle_deg = clampf(heading_error_deg * 0.7f, -MAX_STEER_DEG, MAX_STEER_DEG);
+  control_targets.angle_deg = angle_cmd_deg;
   control_targets.remote_move_expire_ms = now + 150;
 }
 

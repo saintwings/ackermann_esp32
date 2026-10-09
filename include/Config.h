@@ -204,9 +204,15 @@
 #define MISSION_ZERO_TURN_EXIT_DEG 10.0f
 // Wheel speed used while rotating in place (m/s).
 #define MISSION_ZERO_TURN_SPEED_MPS 0.15f
-// Drive is held at 0 for this long after each mode switch so the steering can
-// reach its new angle before the wheels move.
-#define MISSION_ZERO_TURN_SETTLE_MS 300UL
+// Smooth mode transition (both directions):
+//   1. ramp the drive speed down to 0 in the current mode (MISSION_SPEED_SLEW_MPS2)
+//   2. switch mode, hold the drive at 0 for MISSION_MODE_SWITCH_SETTLE_MS while the
+//      steering mechanism moves to its new angle
+//   3. ramp the drive speed back up in the new mode
+#define MISSION_MODE_SWITCH_SETTLE_MS 3000UL
+// Max change of mission drive speed (m/s per second). Also smooths normal mission
+// starts/stops of driving between waypoints.
+#define MISSION_SPEED_SLEW_MPS2 0.3f
 // Set to -1 if the robot rotates away from the target instead of toward it.
 #define MISSION_ZERO_TURN_DIRECTION_SIGN 1
 
