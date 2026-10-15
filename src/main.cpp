@@ -1949,6 +1949,9 @@ void setup() {
   }
 
   net_manager.begin();   // starts WiFi; activates SIM fallback automatically if WiFi absent
+  // Default 256 B RX buffer fills in ~67 ms at 38400 baud; the GPS is polled from the
+  // same loop as WebSocket/NTRIP/SIM work, which can stall longer than that and drop bytes.
+  gps_uart.setRxBufferSize(2048);  // must be called before begin()
   gps_uart.begin(GPS_UART_BAUD, SERIAL_8N1, GPS_UART_RX_PIN, GPS_UART_TX_PIN);
   Serial.print("[GPS] UART started on RX=");
   Serial.print(GPS_UART_RX_PIN);

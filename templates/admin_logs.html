@@ -4,8 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Robot Logs — Admin</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // Google Maps bootstrap loader (same key as mission_planner_v2.html)
+    (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.googleapis.com/maps/api/js?`+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})({
+      key: "AIzaSyA21u1FcRnpyDpn8lECbJi2vnpWpseYDac",
+      v: "weekly"
+    });
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -135,8 +140,6 @@
     .kv td:last-child { text-align: right; font-variant-numeric: tabular-nums; word-break: break-all; }
     .kv tr.group td { color: #94a3b8; font-weight: 600; padding-top: 10px; }
 
-    .robot-icon { transition: transform 0.05s linear; }
-
     #toast {
       position: fixed;
       bottom: 24px; right: 24px;
@@ -186,6 +189,11 @@
         <button id="btn-load" onclick="loadLog()">Load</button>
         <span id="load-info" class="muted"></span>
       </div>
+      <label title="Hide samples with impossible GPS fields (fix_quality outside 1–8, lat/lon 0, bad sats/HDOP) or position jumps faster than 15 m/s — usually corrupted NMEA sentences"
+             style="display:flex; align-items:center; gap:6px; margin-top:12px; color:#cbd5e1">
+        <input type="checkbox" id="chk-gps-filter" checked style="width:auto"> Filter GPS glitches
+      </label>
+      <div id="gps-filter-info" class="muted" style="margin-top:4px"></div>
       <div class="downloads" id="downloads" style="margin-top:10px"></div>
     </div>
 
@@ -250,33 +258,86 @@
   let lastFrame = 0;
 
   // ── Map ────────────────────────────────────────────────────────────────
-  const map = L.map('map', { zoomControl: true }).setView([13.75, 100.5], 5);
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    { maxZoom: 22, maxNativeZoom: 19, attribution: 'Esri World Imagery' }).addTo(map);
+  let map = null, fullTrack = null, doneTrack = null, robotMarker = null;
+  let trackPts = [];              // [{lat, lng}] of every row with a GPS fix
 
-  const fullTrack = L.polyline([], { color: '#64748b', weight: 3, opacity: 0.8 }).addTo(map);
-  const doneTrack = L.polyline([], { color: '#facc15', weight: 4 }).addTo(map);
-  const robotIcon = L.divIcon({
-    className: '',
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
-    html: `<svg class="robot-icon" width="28" height="28" viewBox="0 0 28 28">
-             <circle cx="14" cy="14" r="11" fill="#3b82f6" stroke="#fff" stroke-width="2"/>
-             <path d="M14 5 L19 17 L14 14 L9 17 Z" fill="#fff"/>
-           </svg>`
+  // Navigation-arrow symbol; rotation = heading (deg, clockwise from north)
+  function robotSymbol(heading) {
+    return {
+      path: 'M 0,-12 L 8,8 L 0,3 L -8,8 Z',
+      fillColor: '#3b82f6',
+      fillOpacity: 1,
+      strokeColor: '#fff',
+      strokeWeight: 2,
+      scale: 1.1,
+      rotation: heading,
+    };
+  }
+
+  async function initMap() {
+    const { Map } = await google.maps.importLibrary('maps');
+    await google.maps.importLibrary('marker');
+    map = new Map(document.getElementById('map'), {
+      center: { lat: 13.75, lng: 100.5 },
+      zoom: 5,
+      mapTypeId: 'hybrid',
+      mapTypeControl: true,
+      mapTypeControlOptions: {
+        style: google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
+        position: google.maps.ControlPosition.TOP_RIGHT,
+        mapTypeIds: ['roadmap', 'satellite', 'hybrid', 'terrain'],
+      },
+      streetViewControl: false,
+      fullscreenControl: true,
+      tilt: 0,
+    });
+    fullTrack = new google.maps.Polyline({ map, strokeColor: '#64748b', strokeWeight: 3, strokeOpacity: 0.8 });
+    doneTrack = new google.maps.Polyline({ map, strokeColor: '#facc15', strokeWeight: 4, zIndex: 1 });
+    robotMarker = new google.maps.Marker({ clickable: false, zIndex: 1000, icon: robotSymbol(0) });
+  }
+
+  const mapReady = initMap().catch(e => {
+    console.error('Google Maps failed to load:', e);
+    toast('Google Maps failed to load — replay will run without the map');
   });
-  const robotMarker = L.marker([0, 0], { icon: robotIcon, interactive: false });
+
+  // True when ll lies inside the visible map shrunk by `inset` (fraction) on each side
+  function inInnerBounds(ll, inset) {
+    const b = map.getBounds();
+    if (!b) return true;
+    const ne = b.getNorthEast(), sw = b.getSouthWest();
+    const dLat = (ne.lat() - sw.lat()) * inset, dLng = (ne.lng() - sw.lng()) * inset;
+    return ll.lat > sw.lat() + dLat && ll.lat < ne.lat() - dLat
+        && ll.lng > sw.lng() + dLng && ll.lng < ne.lng() - dLng;
+  }
 
   // Index of the last row with a usable GPS fix at or before each row (−1 if none)
   let fixIdx = [];
   // Map from row index -> position in the track polyline (for the "done" portion)
   let trackPos = [];
+  // Per row: why the GPS glitch filter dropped its fix ('' = kept / not filtered)
+  let rejectReason = [];
+  const MAX_GPS_SPEED = 15;       // m/s; faster apparent motion between fixes is a glitch
 
   function hasFix(p) {
     const g = (p && p.gps) || {};
     return g.valid && Number.isFinite(g.latitude) && Number.isFinite(g.longitude)
         && Math.abs(g.latitude) <= 90 && Math.abs(g.longitude) <= 180
         && !(g.latitude === 0 && g.longitude === 0);
+  }
+
+  // Fields that can't come from a real GGA fix — the signature of a spliced/corrupted sentence
+  function gpsFieldIssue(g) {
+    if (!Number.isInteger(g.fix_quality) || g.fix_quality < 1 || g.fix_quality > 8) return `fix_quality ${g.fix_quality}`;
+    if (!(g.satellites > 0 && g.satellites <= 64)) return `satellites ${g.satellites}`;
+    if (!(g.hdop > 0 && g.hdop < 50)) return `hdop ${g.hdop}`;
+    if (g.latitude === 0 || g.longitude === 0) return 'lat/lon is 0';
+    return '';
+  }
+
+  function distM(a, b) {
+    const kx = 111320 * Math.cos(a.lat * Math.PI / 180);
+    return Math.hypot((b.lat - a.lat) * 111320, (b.lng - a.lng) * kx);
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -379,6 +440,7 @@
     if (!robotId || !date) return;
 
     pause();
+    await mapReady;
     const btn = document.getElementById('btn-load');
     const info = document.getElementById('load-info');
     btn.disabled = true;
@@ -424,27 +486,53 @@
     drawChart();
   }
 
-  function buildTrack() {
-    const pts = [];
+  function buildTrack(fit = true) {
+    const filter = document.getElementById('chk-gps-filter').checked;
+    trackPts = [];
     fixIdx = new Array(rows.length);
     trackPos = new Array(rows.length);
-    let last = -1;
+    rejectReason = new Array(rows.length).fill('');
+    let last = -1, glitches = 0, lastAcc = null, jumpRun = 0;
     rows.forEach((r, i) => {
-      if (hasFix(r.payload)) {
-        pts.push([r.payload.gps.latitude, r.payload.gps.longitude]);
+      let ok = hasFix(r.payload);
+      if (ok && filter) {
+        const g = r.payload.gps;
+        let why = gpsFieldIssue(g);
+        if (!why && lastAcc) {
+          const d = distM(lastAcc, { lat: g.latitude, lng: g.longitude });
+          const dt = Math.max(0.5, (times[i] - lastAcc.t) / 1000);
+          // After 5 rejected jumps in a row, trust the new position (robot really moved)
+          if (d > 5 && d / dt > MAX_GPS_SPEED && jumpRun < 5) { why = `jump ${d.toFixed(0)} m`; jumpRun++; }
+        }
+        if (why) { ok = false; rejectReason[i] = why; glitches++; }
+      }
+      if (ok) {
+        const p = { lat: r.payload.gps.latitude, lng: r.payload.gps.longitude };
+        trackPts.push(p);
+        lastAcc = { ...p, t: times[i] };
+        jumpRun = 0;
         last = i;
       }
       fixIdx[i] = last;
-      trackPos[i] = pts.length;
+      trackPos[i] = trackPts.length;
     });
-    fullTrack.setLatLngs(pts);
-    doneTrack.setLatLngs([]);
-    if (pts.length) {
-      map.fitBounds(fullTrack.getBounds(), { padding: [30, 30], maxZoom: 20 });
-      robotMarker.addTo(map);
+    document.getElementById('gps-filter-info').textContent = !filter || !rows.length ? ''
+      : glitches ? `${glitches} GPS glitch${glitches > 1 ? 'es' : ''} hidden` : 'No GPS glitches found';
+    if (rows.length && !trackPts.length) toast('No valid GPS fix in this range — map track unavailable');
+    if (!map) return;
+    fullTrack.setPath(trackPts);
+    doneTrack.setPath([]);
+    if (trackPts.length) {
+      if (fit) {
+        const bounds = new google.maps.LatLngBounds();
+        trackPts.forEach(p => bounds.extend(p));
+        map.fitBounds(bounds, 30);
+        // fitBounds has no maxZoom option; cap it so a tiny track doesn't zoom past imagery
+        google.maps.event.addListenerOnce(map, 'idle', () => { if (map.getZoom() > 20) map.setZoom(20); });
+      }
+      robotMarker.setMap(map);
     } else {
-      robotMarker.remove();
-      if (rows.length) toast('No valid GPS fix in this range — map track unavailable');
+      robotMarker.setMap(null);
     }
   }
 
@@ -491,16 +579,15 @@
     document.getElementById('sample-idx').textContent = `#${cur + 1} / ${rows.length}`;
 
     const f = fixIdx[cur];
-    if (f >= 0) {
+    if (map && f >= 0) {
       const g = rows[f].payload.gps;
-      const ll = [g.latitude, g.longitude];
-      robotMarker.setLatLng(ll);
+      const ll = { lat: g.latitude, lng: g.longitude };
       const heading = Number((rows[cur].payload.status || {}).heading) || 0;
-      const svg = robotMarker.getElement() && robotMarker.getElement().querySelector('svg');
-      if (svg) svg.style.transform = `rotate(${heading}deg)`;
-      doneTrack.setLatLngs(fullTrack.getLatLngs().slice(0, trackPos[cur]));
-      if (document.getElementById('chk-follow').checked && !map.getBounds().pad(-0.2).contains(ll)) {
-        map.panTo(ll, { animate: false });
+      robotMarker.setPosition(ll);
+      robotMarker.setIcon(robotSymbol(heading));
+      doneTrack.setPath(trackPts.slice(0, trackPos[cur]));
+      if (document.getElementById('chk-follow').checked && !inInnerBounds(ll, 0.2)) {
+        map.setCenter(ll);
       }
     }
     renderSample(rows[cur]);
@@ -543,6 +630,12 @@
     requestAnimationFrame(tick);
   }
 
+  document.getElementById('chk-gps-filter').addEventListener('change', () => {
+    if (!rows.length) return;
+    buildTrack(false);
+    seek(cur, true);
+  });
+
   document.getElementById('scrub').addEventListener('input', e => seek(Number(e.target.value), true));
 
   document.addEventListener('keydown', e => {
@@ -567,6 +660,7 @@
       tr.insertCell().textContent = v;
     };
     addRow('time', new Date(row.ts).toLocaleString([], { hour12: false }));
+    if (rejectReason[cur]) addRow('⚠ GPS filtered', rejectReason[cur], 'group');
     const walk = (obj, prefix) => {
       Object.entries(obj || {}).forEach(([k, v]) => {
         if (v && typeof v === 'object' && !Array.isArray(v)) {

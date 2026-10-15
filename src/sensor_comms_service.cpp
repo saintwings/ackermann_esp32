@@ -49,8 +49,24 @@ double parseNmeaCoord(const String& value, const String& hemisphere) {
   return decimal;
 }
 
+// XOR of every char between '$' and '*' must match the two hex digits after '*'.
+// Rejects sentences spliced together when UART bytes are dropped (RX overflow),
+// which otherwise parse into shifted fields (fix_quality=66, lat/lon=0, ...).
+bool nmeaChecksumOk(const String& line) {
+  int star = line.lastIndexOf('*');
+  if (star < 1 || star + 3 > static_cast<int>(line.length())) return false;
+  uint8_t sum = 0;
+  for (int i = 1; i < star; ++i) sum ^= static_cast<uint8_t>(line[i]);
+  String hex = line.substring(star + 1, star + 3);
+  char* end_ptr = nullptr;
+  long expected = std::strtol(hex.c_str(), &end_ptr, 16);
+  if (end_ptr != hex.c_str() + 2) return false;
+  return sum == static_cast<uint8_t>(expected);
+}
+
 bool parseGgaLine(const String& line, GpsFix& out) {
   if (!(line.startsWith("$GNGGA") || line.startsWith("$GPGGA"))) return false;
+  if (!nmeaChecksumOk(line)) return false;  // keep the previous fix; stale timeout covers long outages
 
   String fields[15];
   int field_count = 0;
@@ -64,6 +80,7 @@ bool parseGgaLine(const String& line, GpsFix& out) {
   if (field_count < 10) return false;
 
   int fix_quality = fields[6].toInt();
+  if (fix_quality < 0 || fix_quality > 8) return false;  // GGA quality is 0..8
   out.has_gga = true;
   out.fix_quality = fix_quality;
   out.satellites = fields[7].toInt();
