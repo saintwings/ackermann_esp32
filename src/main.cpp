@@ -632,10 +632,13 @@ static unsigned long mission_mode_switch_ms = 0;
 // Slew-limited mission drive speed (m/s), ramped by slewMissionSpeed().
 static float mission_speed_cmd_mps = 0.0f;
 static unsigned long mission_speed_cmd_ms = 0;
+// Last normal-mode steering angle sent by the mission (held during a ramp-down into zero-turn).
+static float mission_last_angle_cmd_deg = 0.0f;
 
 static void resetMissionSpeedSlew() {
   mission_speed_cmd_mps = 0.0f;
   mission_speed_cmd_ms = 0;
+  mission_last_angle_cmd_deg = 0.0f;
 }
 
 static float slewMissionSpeed(float target_mps, unsigned long now) {
@@ -970,9 +973,10 @@ static void updateMissionExecutor() {
 
   const bool mode_settling = missionModeSettling(now);
 #if MISSION_AUTO_ZERO_TURN_ENABLE
-  // Decide a switch only once the previous one has settled, then latch it until the
-  // ramp-down completes.
-  if (!mode_settling && !mission_mode_switch_pending) {
+  // Decide every tick (also while settling, so a new waypoint at a sharp angle is caught
+  // right away instead of being steered toward first), then latch it until the
+  // ramp-down completes. The switch itself still only happens once stopped.
+  if (!mission_mode_switch_pending) {
     const float abs_heading_error_deg = fabsf(heading_error_deg);
     if (!mission_auto_zero_turn && robot_mode == RobotMode::Normal &&
         abs_heading_error_deg > MISSION_ZERO_TURN_ENTER_DEG) {
@@ -997,7 +1001,13 @@ static void updateMissionExecutor() {
       const float crawl_speed_floor = min(MISSION_HEADING_SLOWDOWN_CRAWL_MPS, clampf(active_waypoint_task->speed_mps, 0.05f, MAX_LINEAR_MPS));
       target_speed_mps = max(target_speed_mps, crawl_speed_floor);
     }
-    angle_cmd_deg = clampf(heading_error_deg * 0.7f, -MAX_STEER_DEG, MAX_STEER_DEG);
+    if (mission_mode_switch_pending) {
+      // About to enter zero-turn: don't steer toward the large new error while ramping
+      // down, just hold the angle the robot was already driving with.
+      angle_cmd_deg = mission_last_angle_cmd_deg;
+    } else {
+      angle_cmd_deg = clampf(heading_error_deg * 0.7f, -MAX_STEER_DEG, MAX_STEER_DEG);
+    }
   }
 
   // Hold still while the steering mechanism moves; ramp down before a pending switch.
@@ -1012,6 +1022,7 @@ static void updateMissionExecutor() {
     speed_cmd = 0.0f;
     angle_cmd_deg = 0.0f;
   }
+  mission_last_angle_cmd_deg = angle_cmd_deg;
 
   mission_debug_valid = true;
   mission_debug_coverage = (active_waypoint_task->type == MissionTaskType::CoveragePath);

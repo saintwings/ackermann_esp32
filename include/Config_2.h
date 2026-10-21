@@ -188,11 +188,11 @@
 
 // Robot motion limits
 #define MAX_LINEAR_SPEED_MS 0.5f       // Maximum forward/reverse speed (m/s)
-#define MAX_STEERING_ANGLE_DEG 35.0f   // Maximum steering angle (degrees)
+#define MAX_STEERING_ANGLE_DEG 45.0f   // Maximum steering angle (degrees)
 
 // Heading offset (degrees) added after IMU yaw computation.
 // Positive = rotate heading clockwise. Range: any value, normalised to 0-360.
-#define HEADING_OFFSET_DEG 40.0f
+#define HEADING_OFFSET_DEG 0.0f
 
 // ── Mission auto zero-turn ───────────────────────────────────────────────────
 // During GotoWaypoint / CoveragePath tasks, switch to zero-turn (rotate in place)
@@ -209,7 +209,7 @@
 //   2. switch mode, hold the drive at 0 for MISSION_MODE_SWITCH_SETTLE_MS while the
 //      steering mechanism moves to its new angle
 //   3. ramp the drive speed back up in the new mode
-#define MISSION_MODE_SWITCH_SETTLE_MS 3000UL
+#define MISSION_MODE_SWITCH_SETTLE_MS 1500UL
 // Max change of mission drive speed (m/s per second). Also smooths normal mission
 // starts/stops of driving between waypoints.
 #define MISSION_SPEED_SLEW_MPS2 0.3f
