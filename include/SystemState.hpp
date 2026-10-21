@@ -14,6 +14,10 @@ struct GpsFix {
   String last_gga{};
   unsigned long last_update_ms{0};
   unsigned long last_rx_ms{0};
+  // Diagnostics (reset by the 1 Hz logger): GGA sentences accepted / rejected
+  // by checksum. Rejects mean bytes were dropped (GPS UART RX overflow).
+  uint32_t gga_ok_count{0};
+  uint32_t gga_bad_count{0};
 };
 
 struct ImuState {

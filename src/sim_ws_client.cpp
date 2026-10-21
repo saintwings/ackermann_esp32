@@ -8,22 +8,70 @@ static const char*   kWsKey   = "dGhlIHNhbXBsZSBub25jZQ==";
 // SSL mux index used for our WebSocket connection.
 // Mux 0 is owned by TinyGSM (NTRIP plain TCP); mux 1 is ours.
 static constexpr uint8_t kMux = 1;
+#define SIM_WS_MUX_STR "1"  // must match kMux — used to build URC prefixes
+
+// URCs for our mux. Remote close is reported as +IPCLOSE (not +CIPCLOSE, which
+// is only the response to our own AT+CIPCLOSE).
+static const char* kUrcData    = "+CIPRXGET: 1," SIM_WS_MUX_STR;
+static const char* kUrcIpClose = "+IPCLOSE: " SIM_WS_MUX_STR ",";
+
+// Probe the modem for data this often even without a URC. The URC can be
+// swallowed by TinyGSM (NTRIP on mux 0) when it reads the shared UART, so this
+// bounds worst-case receive latency. AT+CIPRXGET=2 is a local modem query, cheap.
+static constexpr unsigned long kProbeIntervalMs = 250;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 SimWsClient::SimWsClient(Stream& simSerial) : _stream(simSerial) {}
 
-// ── Internal helper ───────────────────────────────────────────────────────────
+// ── Internal helpers ──────────────────────────────────────────────────────────
 
+// Record URCs that concern our socket so they are not lost when another
+// reader consumes them.
+void SimWsClient::scanUrc(const String& line) {
+  if (line.startsWith(kUrcData)) {
+    _dataPending = true;
+  } else if (line.startsWith(kUrcIpClose)) {
+    Serial.printf("[SIM_WS] %s\n", line.c_str());
+    _peerClosed = true;
+  }
+}
+
+// Consume whatever is sitting in the UART (URCs between commands) so the next
+// command starts on a clean stream and stale "ERROR"/"OK" lines don't confuse it.
+void SimWsClient::drainUrcs() {
+  while (_stream.available()) {
+    char c = (char)_stream.read();
+    if (c == '\n') {
+      _urcLine.trim();
+      if (_urcLine.length() > 0) scanUrc(_urcLine);
+      _urcLine = "";
+    } else if (c != '\r') {
+      if (_urcLine.length() < 128) _urcLine += c;
+    }
+  }
+}
+
+// Wait for 'expected' anywhere in the stream (works for '>' prompts with no
+// newline). Returns false early on a bare "ERROR" line.
 bool SimWsClient::waitStr(const char* expected, uint32_t timeoutMs) {
   String acc;
-  unsigned long deadline = millis() + timeoutMs;
-  while (millis() < deadline) {
+  String line;
+  unsigned long start = millis();
+  while (millis() - start < timeoutMs) {
     while (_stream.available()) {
       char c = (char)_stream.read();
       acc += c;
       if (acc.indexOf(expected) >= 0) return true;
       if (acc.length() > 256) acc = acc.substring(acc.length() - 128);
+      if (c == '\n') {
+        line.trim();
+        if (line == "ERROR") return false;
+        scanUrc(line);
+        line = "";
+      } else if (c != '\r') {
+        line += c;
+      }
     }
     delay(1);
   }
@@ -32,19 +80,25 @@ bool SimWsClient::waitStr(const char* expected, uint32_t timeoutMs) {
 
 // ── SSL TCP layer — uses AT+CIPOPEN "SSL" (CIPOPEN stack, mux kMux) ───────────
 
-// Read and log every line from the modem until 'needle' is found or timeout.
-// Returns true if needle was found. Always prints every non-empty line received.
-bool SimWsClient::waitLine(const char* needle, uint32_t timeoutMs, const char* logTag) {
+// Read lines from the modem until one contains 'needle' or timeout.
+// Returns true if needle was found (line copied to lineOut if given); false on
+// timeout or a bare "ERROR" line. Logs every line when logTag is non-null.
+bool SimWsClient::waitLine(const char* needle, uint32_t timeoutMs, const char* logTag, String* lineOut) {
   String line;
-  unsigned long deadline = millis() + timeoutMs;
-  while (millis() < deadline) {
+  unsigned long start = millis();
+  while (millis() - start < timeoutMs) {
     while (_stream.available()) {
       char c = (char)_stream.read();
       if (c == '\n') {
         line.trim();
         if (line.length() > 0) {
-          Serial.printf("[SIM_WS] %s: %s\n", logTag, line.c_str());
-          if (line.indexOf(needle) >= 0) return true;
+          if (logTag) Serial.printf("[SIM_WS] %s: %s\n", logTag, line.c_str());
+          if (line.indexOf(needle) >= 0) {
+            if (lineOut) *lineOut = line;
+            return true;
+          }
+          if (line == "ERROR") return false;
+          scanUrc(line);
         }
         line = "";
       } else if (c != '\r') {
@@ -108,22 +162,37 @@ bool SimWsClient::sslOpen(const char* host, uint16_t port) {
 }
 
 bool SimWsClient::cipSend(const uint8_t* data, size_t len) {
+  drainUrcs();
+
   char cmd[32];
   snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%u,%u\r\n", kMux, (unsigned)len);
   _stream.print(cmd);
 
-  if (!waitStr(">", 3000)) return false;
+  if (!waitStr(">", 3000)) return false;  // ERROR → socket gone, fail fast
 
   _stream.write(data, len);
   _stream.flush();
 
-  // Wait for send confirmation: +CIPSEND: mux,req,actual
+  // Wait for send confirmation: +CIPSEND: mux,req,cnf
+  // cnf < req (modem buffer full) or -1 (link down) means the WebSocket byte
+  // stream is now broken — the caller must reconnect.
   char cipsend[16];
   snprintf(cipsend, sizeof(cipsend), "+CIPSEND: %u,", kMux);
-  return waitStr(cipsend, 5000);
+  String line;
+  if (!waitLine(cipsend, 5000, nullptr, &line)) return false;
+  int cnf = line.substring(line.lastIndexOf(',') + 1).toInt();
+  if (cnf != (int)len) {
+    Serial.printf("[SIM_WS] Short send %d/%u\n", cnf, (unsigned)len);
+    return false;
+  }
+  return true;
 }
 
+// Returns bytes read (>0), 0 when the modem has no data, or -1 when the byte
+// stream is corrupted (short read) and the connection must be dropped.
 int SimWsClient::cipRecv(uint8_t* buf, size_t maxLen, uint32_t timeoutMs) {
+  drainUrcs();
+
   size_t ask = (maxLen < 1460) ? maxLen : 1460;
 
   char cmd[32];
@@ -133,43 +202,49 @@ int SimWsClient::cipRecv(uint8_t* buf, size_t maxLen, uint32_t timeoutMs) {
   // Response (line-based, binary-safe):
   //   "+CIPRXGET: 2,<mux>,<actual_len>,<remain>\r\n" + <actual_len bytes> + "\r\nOK\r\n"
   //   "+CIPRXGET: 2,<mux>,0,0\r\n" + "\r\nOK\r\n"   (no data)
+  //   "+IP ERROR: No data\r\n\r\nERROR\r\n"         (no data, some firmwares)
   //   "ERROR\r\n"                                    (mux not open / bad state)
   String line;
-  unsigned long deadline = millis() + timeoutMs;
+  unsigned long start = millis();
   char prefix[24];
   snprintf(prefix, sizeof(prefix), "+CIPRXGET: 2,%u,", kMux);
 
-  while (millis() < deadline) {
+  while (millis() - start < timeoutMs) {
     while (_stream.available()) {
       char c = (char)_stream.read();
       if (c == '\n') {
         line.trim();
-        if (line.indexOf("ERROR") >= 0) return 0;
+        if (line == "ERROR") return 0;
+        if (line.startsWith("+IP ERROR")) {
+          waitLine("ERROR", 50, nullptr);  // consume the trailing ERROR if any
+          return 0;
+        }
 
         if (line.startsWith(prefix)) {
           String rest     = line.substring(strlen(prefix));  // "actual,remain"
           int    comma    = rest.indexOf(',');
           int    dataLen  = (comma > 0) ? rest.substring(0, comma).toInt() : rest.toInt();
           if (dataLen <= 0) { waitStr("OK", 500); return 0; }
+          if ((size_t)dataLen > ask) {
+            Serial.printf("[SIM_WS] CIPRXGET overrun %d > %u\n", dataLen, (unsigned)ask);
+            return -1;
+          }
 
-          size_t toRead       = (size_t)dataLen < maxLen ? (size_t)dataLen : maxLen;
           size_t got          = 0;
-          unsigned long dDl   = millis() + 3000;
-          while (got < toRead && millis() < dDl) {
+          unsigned long dStart = millis();
+          while (got < (size_t)dataLen && millis() - dStart < 3000) {
             if (_stream.available()) buf[got++] = (uint8_t)_stream.read();
             else delay(1);
           }
-          int excess = dataLen - (int)maxLen;
-          if (excess > 0) {
-            unsigned long eDl = millis() + 2000;
-            while (excess-- > 0 && millis() < eDl) {
-              while (!_stream.available() && millis() < eDl) delay(1);
-              if (_stream.available()) _stream.read();
-            }
+          if (got < (size_t)dataLen) {
+            Serial.printf("[SIM_WS] Short read %u/%d — stream lost\n", (unsigned)got, dataLen);
+            return -1;
           }
           waitStr("OK", 1000);
+          _lastRxMs = millis();
           return (int)got;
         }
+        scanUrc(line);
         line = "";
       } else if (c != '\r') {
         line += c;
@@ -209,6 +284,7 @@ bool SimWsClient::wsHandshake(const char* host, const char* path) {
   while (millis() < deadline) {
     delay(200);
     int n = cipRecv(chunk, sizeof(chunk), 1500);
+    if (n < 0) return false;
     if (n > 0) {
       for (int i = 0; i < n; i++) hdrs += (char)chunk[i];
     }
@@ -268,39 +344,38 @@ bool SimWsClient::sendWsFrame(uint8_t opcode, const uint8_t* payload, size_t pay
     _connected = false;
     return false;
   }
-
-  // Drain any incoming data that arrived while cipSend() was blocking.
-  // waitStr() consumes bytes including +CIPRXGET URCs, but the modem still
-  // buffers the data — an explicit AT+CIPRXGET=2 call retrieves it.
-  if (_rxLen < kRxBufSize) {
-    int n = cipRecv(_rxBuf + _rxLen, kRxBufSize - _rxLen, 300);
-    if (n > 0) {
-      Serial.printf("[SIM_WS] Drained %d bytes after send\n", n);
-      _rxLen += (size_t)n;
-    }
-  }
+  // Incoming data that arrived during the send is flagged by scanUrc()
+  // (_dataPending) and fetched on the next poll().
   return ok;
 }
 
+// Returns the opcode of one complete frame, -1 if more bytes are needed, or
+// -2 if the buffer does not start with a valid frame (stream desynced).
 int SimWsClient::parseWsFrame(String& payloadOut) {
   if (_rxLen < 2) return -1;
 
-  uint8_t opcode = _rxBuf[0] & 0x0F;
+  uint8_t b0     = _rxBuf[0];
+  uint8_t opcode = b0 & 0x0F;
   uint8_t b1     = _rxBuf[1];
   bool    masked = (b1 & 0x80) != 0;
   size_t  plen   = b1 & 0x7F;
   size_t  hlen   = 2;
+
+  bool validOp = opcode == 0x00 || opcode == 0x01 || opcode == 0x02 ||
+                 opcode == 0x08 || opcode == 0x09 || opcode == 0x0A;
+  if ((b0 & 0x70) != 0 || !validOp) return -2;  // RSV bits set / unknown opcode
 
   if (plen == 126) {
     if (_rxLen < 4) return -1;
     plen = ((uint16_t)_rxBuf[2] << 8) | _rxBuf[3];
     hlen = 4;
   } else if (plen == 127) {
-    return -1;
+    return -2;  // >64 KB frames are never sent by our server
   }
   if (masked) hlen += 4;
 
   size_t total = hlen + plen;
+  if (total > kRxBufSize) return -2;
   if (_rxLen < total) return -1;
 
   const uint8_t* maskPtr = masked ? &_rxBuf[hlen - 4] : nullptr;
@@ -318,11 +393,12 @@ int SimWsClient::parseWsFrame(String& payloadOut) {
 
   if (opcode == 0x01 || opcode == 0x00) {
     String frame;
+    frame.reserve(plen);
     for (size_t i = 0; i < plen; i++) {
       frame += (char)(maskPtr ? (data[i] ^ maskPtr[i & 3]) : data[i]);
     }
     Serial.printf("[SIM_WS] text: %.80s\n", frame.c_str());
-    payloadOut += frame;
+    payloadOut = frame;
   } else if (opcode == 0x09) {           // ping → pong
     sendWsFrame(0x0A, data, plen);
   }
@@ -332,11 +408,33 @@ int SimWsClient::parseWsFrame(String& payloadOut) {
   return (int)opcode;
 }
 
+// Parse buffered frames until one text message is extracted.
+// Returns 1 = text in textOut, 0 = need more bytes, -1 = connection unusable.
+int SimWsClient::nextTextFrame(String& textOut) {
+  while (_rxLen > 0) {
+    int opcode = parseWsFrame(textOut);
+    if (opcode == -1) return 0;
+    if (opcode == -2) {
+      Serial.printf("[SIM_WS] Bad frame header 0x%02X — stream desynced\n", _rxBuf[0]);
+      return -1;
+    }
+    if (opcode == 0x08) {
+      Serial.println("[SIM_WS] WS close frame received");
+      return -1;
+    }
+    if (opcode == 0x01 || opcode == 0x00) return 1;
+  }
+  return 0;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 bool SimWsClient::connect(const char* host, uint16_t port, const char* path) {
   disconnect();
-  _rxLen = 0;
+  _rxLen       = 0;
+  _dataPending = false;
+  _peerClosed  = false;
+  _urcLine     = "";
 
   sslStart();  // configure SSL / manual-receive mode; errors non-fatal
 
@@ -347,7 +445,7 @@ bool SimWsClient::connect(const char* host, uint16_t port, const char* path) {
   }
   Serial.printf("[SIM_WS] SSL open OK → %s:%u\n", host, port);
 
-  if (!wsHandshake(host, path)) {
+  if (!wsHandshake(host, path) || _peerClosed) {
     Serial.println("[SIM_WS] WebSocket handshake failed");
     disconnect();
     return false;
@@ -360,6 +458,7 @@ bool SimWsClient::connect(const char* host, uint16_t port, const char* path) {
 
   _connected   = true;
   _lastProbeMs = millis();
+  _lastRxMs    = millis();
   Serial.println("[SIM_WS] WebSocket connected via SIM");
   return true;
 }
@@ -368,10 +467,14 @@ void SimWsClient::disconnect() {
   // Always send AT+CIPCLOSE regardless of internal state.
   // If the channel is already closed the modem returns ERROR — harmless.
   // This guarantees a clean slate before any reconnect attempt.
+  // Wait for the "+CIPCLOSE: <mux>,<err>" result (it follows OK) so it can't
+  // leak into the next command's response.
   char cmd[32];
   snprintf(cmd, sizeof(cmd), "AT+CIPCLOSE=%u\r\n", kMux);
   _stream.print(cmd);
-  waitStr("OK", 2000);
+  char closeRsp[16];
+  snprintf(closeRsp, sizeof(closeRsp), "+CIPCLOSE: %u,", kMux);
+  waitLine(closeRsp, 2000, nullptr);
   _sslStarted = false;
   _connected  = false;
   _rxLen      = 0;
@@ -391,62 +494,45 @@ void SimWsClient::sendPing() {
 bool SimWsClient::poll(String& textOut) {
   if (!_connected) return false;
 
-  // --- Read any bytes already in the serial buffer (URCs, etc.) ---
-  String urcBuf;
-  while (_stream.available()) {
-    char c = (char)_stream.read();
-    urcBuf += c;
+  // --- Deliver a message already buffered from a previous fetch ---
+  int r = nextTextFrame(textOut);
+  if (r != 0) {
+    if (r < 0) _connected = false;
+    return r > 0;
   }
 
-  // +CIPRXGET: 1,<mux>  →  data available (no length in URC)
-  char ciprxUrc[20];
-  snprintf(ciprxUrc, sizeof(ciprxUrc), "+CIPRXGET: 1,%u", kMux);
-
-  bool fetchNow = urcBuf.indexOf(ciprxUrc) >= 0;
-
-  // +CIPCLOSE: <mux>  →  connection dropped by server
-  char closeUrc[20];
-  snprintf(closeUrc, sizeof(closeUrc), "+CIPCLOSE: %u", kMux);
-  if (urcBuf.indexOf(closeUrc) >= 0) {
-    Serial.println("[SIM_WS] CIPCLOSE URC: TCP closed by modem");
+  // --- Pick up URCs that arrived since the last command ---
+  drainUrcs();
+  if (_peerClosed) {
+    Serial.println("[SIM_WS] TCP closed by server");
     _connected = false;
     return false;
   }
 
-  // Periodic probe every 1 s in case we missed a URC
+  // Fetch on data URC, or periodically in case the URC was missed
   unsigned long now = millis();
-  if (!fetchNow && (now - _lastProbeMs >= 1000)) {
-    fetchNow     = true;
-    _lastProbeMs = now;
-  }
+  bool fetchNow = _dataPending || (now - _lastProbeMs >= kProbeIntervalMs);
 
   // --- Fetch data ---
   // Loop to drain all modem-buffered chunks in one poll() call.
   // Each cipRecv gets up to 1460 bytes; large frames (e.g. mission JSON ~11 KB)
-  // need multiple consecutive reads.  500 ms timeout: returns fast when data is
-  // available, stops looping quickly once the modem buffer is empty.
+  // need multiple consecutive reads.  Returns immediately once the modem
+  // reports no data.
   if (fetchNow) {
+    _dataPending = false;
     _lastProbeMs = now;
     for (;;) {
       size_t space = kRxBufSize - _rxLen;
       if (space == 0) break;
       int n = cipRecv(_rxBuf + _rxLen, space, 500);
-      if (n <= 0) break;
+      if (n < 0) { _connected = false; return false; }
+      if (n == 0) break;
       _rxLen += (size_t)n;
     }
   }
 
-  // --- Parse WebSocket frames ---
-  bool gotText = false;
-  while (_rxLen > 0) {
-    int opcode = parseWsFrame(textOut);
-    if (opcode < 0) break;
-    if (opcode == 0x08) {
-      Serial.println("[SIM_WS] WS close frame received");
-      _connected = false;
-      return false;
-    }
-    if (opcode == 0x01 || opcode == 0x00) gotText = true;
-  }
-  return gotText;
+  // --- Parse WebSocket frames (one text message per call) ---
+  r = nextTextFrame(textOut);
+  if (r < 0) _connected = false;
+  return r > 0;
 }

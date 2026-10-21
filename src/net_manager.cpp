@@ -139,6 +139,9 @@ void NetManager::simTick() {
 
     // ── IDLE: first time entering SIM mode ───────────────────────────────────
     case SimState::IDLE:
+      // Default 256 B RX ring overflows during 1460 B CIPRXGET bursts while
+      // the comms task is busy, corrupting the WebSocket stream.
+      _simSerial.setRxBufferSize(4096);
       _simSerial.begin(SIM_UART_BAUD, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
       simPowerOn();
       _simState   = SimState::POWERING_ON;

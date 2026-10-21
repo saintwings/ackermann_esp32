@@ -238,14 +238,14 @@
 // 1 = WiFi primary, SIM fallback
 // 2 = SIM only (WiFi disabled)
 // 3 = WiFi only (no SIM)
-#define NET_MODE 3  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
+#define NET_MODE 2  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
 
 #define NET_WIFI_FAIL_TIMEOUT_MS     15000UL
 #define NET_WIFI_RECOVER_TIMEOUT_MS  30000UL
 
 // Debug log groups (1 = enabled, 0 = disabled)
-#define DEBUG_LOG_SENSOR_1HZ 0
-#define DEBUG_LOG_SENSOR_COMMS 0
+#define DEBUG_LOG_SENSOR_1HZ 1
+#define DEBUG_LOG_SENSOR_COMMS 1
 #define DEBUG_LOG_MISSION 0
 #define DEBUG_LOG_SAFETY 0
 #define DEBUG_LOG_ROBOT_CLIENT 0

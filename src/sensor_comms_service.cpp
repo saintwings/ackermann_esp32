@@ -66,7 +66,11 @@ bool nmeaChecksumOk(const String& line) {
 
 bool parseGgaLine(const String& line, GpsFix& out) {
   if (!(line.startsWith("$GNGGA") || line.startsWith("$GPGGA"))) return false;
-  if (!nmeaChecksumOk(line)) return false;  // keep the previous fix; stale timeout covers long outages
+  if (!nmeaChecksumOk(line)) {  // keep the previous fix; stale timeout covers long outages
+    ++out.gga_bad_count;
+    return false;
+  }
+  ++out.gga_ok_count;
 
   String fields[15];
   int field_count = 0;
@@ -262,7 +266,11 @@ void connectNtripIfNeeded(SensorCommsContext& ctx) {
 }
 
 void updateGpsAndNtrip(SensorCommsContext& ctx) {
-  for (int i = 0; i < 128 && ctx.gps_uart.available(); ++i) {
+  // Drain everything waiting. The comms task can block for hundreds of ms on
+  // SIM modem AT round-trips; reading only a small slice per tick lets the
+  // F9P stream (~4 KB/s at 38400) overflow the RX buffer and corrupt GGA.
+  // Bounded so a babbling UART can't starve the rest of the loop.
+  for (int i = 0; i < 4096 && ctx.gps_uart.available(); ++i) {
     char c = static_cast<char>(ctx.gps_uart.read());
     ctx.gps_fix.last_rx_ms = millis();
     if (c == '\r') continue;
@@ -284,6 +292,8 @@ void updateGpsAndNtrip(SensorCommsContext& ctx) {
       ctx.last_ntrip_gga_send_ms = millis();
     }
 
+    // One read per tick: on SIM each TinyGsmClient available()/read() can cost
+    // an AT+CIPRXGET round-trip, so looping here stalls the comms task for seconds.
     int avail = ctx.ntrip_client->available();
     if (avail > 0) {
       uint8_t rtcm_buf[256];

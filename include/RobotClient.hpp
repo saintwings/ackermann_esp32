@@ -101,4 +101,5 @@ class RobotClient {
   unsigned long _lastReconnectMs{0};
   unsigned long _lastPingMs{0};
   bool          _simConnected{false};
+  uint8_t       _simFailCount{0};
 };

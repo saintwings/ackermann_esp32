@@ -123,6 +123,19 @@ static void logSensorsAt1Hz() {
   Serial.print("disabled");
 #endif
 
+  // Comms loop health + GPS parse health since the previous line.
+  Serial.printf(" | [COMMS] max_dt=%lums overruns=%lu cycles=%lu | [GGA] ok=%lu bad=%lu",
+                (unsigned long)loop_stats.max_comms_dt_ms,
+                (unsigned long)loop_stats.comms_overrun_count,
+                (unsigned long)loop_stats.comms_cycle_count,
+                (unsigned long)gps_fix.gga_ok_count,
+                (unsigned long)gps_fix.gga_bad_count);
+  loop_stats.max_comms_dt_ms = 0;
+  loop_stats.comms_overrun_count = 0;
+  loop_stats.comms_cycle_count = 0;
+  gps_fix.gga_ok_count = 0;
+  gps_fix.gga_bad_count = 0;
+
   // Serial.print(" | [IMU] ");
   // if (imu_state.valid) {
   //   Serial.print("ax=");

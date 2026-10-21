@@ -31,12 +31,17 @@ class SimWsClient {
   // Send a UTF-8 text payload as a masked WebSocket text frame.
   bool sendText(const String& text);
 
-  // Check for an incoming text frame. Returns true and fills textOut if one
-  // is available. Non-blocking when no data is waiting.
+  // Check for an incoming text frame. Returns true and fills textOut with
+  // exactly ONE text message if available; further buffered messages are
+  // returned by subsequent calls. Non-blocking when no data is waiting.
   bool poll(String& textOut);
 
   // Send a WebSocket ping frame (keep-alive).
   void sendPing();
+
+  // millis() of the last byte received from the server (pong, ping, text...).
+  // Used by the caller as a dead-link watchdog.
+  unsigned long lastRxMs() const { return _lastRxMs; }
 
  private:
   bool sslStart();  // configure SSL context (CSSLCFG) + CIPRXGET=1
@@ -48,12 +53,18 @@ class SimWsClient {
 
   bool sendWsFrame(uint8_t opcode, const uint8_t* payload, size_t payloadLen);
   int  parseWsFrame(String& payloadOut);
+  int  nextTextFrame(String& textOut);
   bool waitStr(const char* expected, uint32_t timeoutMs);
-  bool waitLine(const char* needle, uint32_t timeoutMs, const char* logTag);
+  bool waitLine(const char* needle, uint32_t timeoutMs, const char* logTag, String* lineOut = nullptr);
+  void scanUrc(const String& line);
+  void drainUrcs();
 
   Stream& _stream;
   bool    _connected   = false;
   bool    _sslStarted  = false;
+  bool    _dataPending = false;  // "+CIPRXGET: 1,<mux>" URC seen
+  bool    _peerClosed  = false;  // "+IPCLOSE: <mux>," URC seen
+  String  _urcLine;              // partial URC line carried between poll() calls
 
   // Buffer must fit the largest single WebSocket frame we expect to receive.
   // A 200-waypoint coverage mission JSON is ~11 KB after WS framing.
@@ -63,4 +74,5 @@ class SimWsClient {
 
   unsigned long _lastProbeMs = 0;  // for periodic poll-when-no-URC
   unsigned long _pingSentMs  = 0;  // millis() when last ping was sent
+  unsigned long _lastRxMs    = 0;  // millis() of last received payload bytes
 };

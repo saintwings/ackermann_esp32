@@ -22,6 +22,13 @@ constexpr uint8_t MSG_MISSION_UPLOAD_BATCH   = 41;
 constexpr uint8_t MSG_MISSION_UPLOAD_EXECUTE = 42;
 constexpr uint8_t MSG_HEARTBEAT = 99;
 
+// SIM link: the server pings every 20 s and we ping every 15 s, so silence for
+// this long means the TCP link is dead even if the modem still reports it open.
+constexpr unsigned long SIM_WS_RX_TIMEOUT_MS = 45000;
+// After this many consecutive SIM WS connect failures, let NetManager re-check
+// GPRS (the PDP context may have dropped underneath us).
+constexpr uint8_t SIM_WS_FAILS_BEFORE_GPRS_CHECK = 3;
+
 template <typename T>
 static void assignIfPresent(T& out, JsonVariantConst value) {
   if (!value.isNull()) {
@@ -85,11 +92,16 @@ void RobotClient::beginSimWs() {
   _net->setSkipGprsCheck(true);  // own the serial during WS operations
   if (_simWs->connect(CONTROL_SERVER_HOST, SIM_CONTROL_SERVER_PORT, CONTROL_SERVER_PATH)) {
     _simConnected  = true;
+    _simFailCount  = 0;
     _lastPingMs    = millis();
     sendRegister();
   } else {
     _simConnected = false;
-    Serial.println("[RC] SIM WebSocket connect failed — will retry");
+    if (_simFailCount < 255) ++_simFailCount;
+    Serial.printf("[RC] SIM WebSocket connect failed (%u) — will retry\n", _simFailCount);
+    if (_simFailCount >= SIM_WS_FAILS_BEFORE_GPRS_CHECK) {
+      _net->setSkipGprsCheck(false);  // allow NetManager to detect a dropped PDP
+    }
   }
 }
 
@@ -137,10 +149,17 @@ void RobotClient::update() {
     _simWs->sendPing();
   }
 
-  // Poll for incoming frames
+  // Poll for incoming frames (one message per tick — matches the single
+  // pending-command slot consumed by handleRobotClientCommand()).
   String rx;
   if (_simWs->poll(rx)) {
     handleTextMessage(rx);
+  }
+
+  // Dead-link watchdog: nothing (not even a pong) heard from the server
+  if (_simWs->connected() && millis() - _simWs->lastRxMs() > SIM_WS_RX_TIMEOUT_MS) {
+    Serial.println("[RC] SIM WebSocket silent too long — reconnecting");
+    _simWs->disconnect();
   }
 
   // Detect connection drop reported by poll()
