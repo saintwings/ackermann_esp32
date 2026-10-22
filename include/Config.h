@@ -60,6 +60,16 @@
 #define GPS_UART_BAUD 38400
 #define GPS_UART_RX_PIN 9
 #define GPS_UART_TX_PIN 10
+// ZED-F9P output config sent at every boot (RAM only): GGA+GST on, GSV/GSA/GLL/VTG/RMC off.
+// Frees the 38400 link so every epoch's GGA gets through.
+#define GPS_UBX_CONFIG_ENABLE 1
+// Measurement period in ms (100 = 10 Hz). 0 = leave the receiver's current rate.
+#define GPS_NAV_RATE_MS 0
+// Mission GPS accuracy gate (GST horizontal 1-sigma error). Above the limit a running
+// mission stops and holds in place, resumes when accuracy recovers, and fails after
+// the timeout.
+#define MISSION_GPS_MAX_HERR_M 0.10f
+#define MISSION_GPS_HOLD_TIMEOUT_MS 60000UL
 
 // Echo GPS data to USB Serial as JSON, same fields as the "gps" object sent
 // to the web UI in robot telemetry (valid/latitude/longitude/altitude/hdop/

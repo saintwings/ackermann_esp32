@@ -51,6 +51,7 @@ struct RobotTelemetry {
   float gps_hdop{0.0f};
   int gps_fix_quality{0};
   int gps_satellites{0};
+  float gps_h_err_m{-1.0f};  // GST horizontal 1-sigma error; -1 = unknown
 
   bool imu_valid{false};
   float imu_ax{0.0f}, imu_ay{0.0f}, imu_az{0.0f};

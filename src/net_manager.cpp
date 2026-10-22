@@ -143,6 +143,10 @@ void NetManager::simTick() {
       // the comms task is busy, corrupting the WebSocket stream.
       _simSerial.setRxBufferSize(4096);
       _simSerial.begin(SIM_UART_BAUD, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
+      // Stream::parseInt()/readBytesUntil() busy-wait (no yield) for this timeout.
+      // TinyGSM's AT+CIPCLOSE? check parses 10 ints; with the 1000 ms default a
+      // missing reply spun CommsTask ~10 s, starving IDLE0 -> task watchdog reboot.
+      _simSerial.setTimeout(100);
       simPowerOn();
       _simState   = SimState::POWERING_ON;
       _simStateMs = now;

@@ -26,8 +26,15 @@ struct SensorCommsContext {
 };
 
 namespace SensorComms {
+// Configure the ZED-F9P NMEA output over the GPS UART (RAM layer, every boot):
+// GGA + GST on, GSV/GSA/GLL/VTG/RMC off. Returns true if the receiver ACKed.
+bool configureGnssOutput(SensorCommsContext& ctx);
 void initBno085(SensorCommsContext& ctx);
 void updateImu(SensorCommsContext& ctx);
 void connectNtripIfNeeded(SensorCommsContext& ctx);
-void updateGpsAndNtrip(SensorCommsContext& ctx);
+// Drain + parse the GPS UART into ctx.gps_fix (NavTask; caller holds the nav lock).
+void readGps(SensorCommsContext& ctx);
+// Send the latest GGA to the VRS caster (1 Hz) and forward one RTCM read to the
+// receiver (CommsTask). latest_gga = "" while the fix is invalid.
+void forwardNtrip(SensorCommsContext& ctx, const String& latest_gga);
 }

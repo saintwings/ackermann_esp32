@@ -14,6 +14,13 @@ struct GpsFix {
   String last_gga{};
   unsigned long last_update_ms{0};
   unsigned long last_rx_ms{0};
+  // From NMEA GST: receiver's 1-sigma position error estimate (metres).
+  bool has_gst{false};
+  float std_lat_m{0.0f};
+  float std_lon_m{0.0f};
+  float std_alt_m{0.0f};
+  float h_err_m{0.0f};  // sqrt(std_lat^2 + std_lon^2)
+  unsigned long last_gst_ms{0};
   // Diagnostics (reset by the 1 Hz logger): GGA sentences accepted / rejected
   // by checksum. Rejects mean bytes were dropped (GPS UART RX overflow).
   uint32_t gga_ok_count{0};
@@ -77,6 +84,8 @@ struct LoopStats {
   unsigned long comms_cycle_count{0};
   unsigned long max_comms_dt_ms{0};
   unsigned long comms_overrun_count{0};
+  unsigned long nav_cycle_count{0};
+  unsigned long max_nav_dt_ms{0};
   unsigned long can_runtime_tx_ok_count{0};
   unsigned long can_runtime_tx_drop_count{0};
   unsigned long safety_stale_imu_count{0};

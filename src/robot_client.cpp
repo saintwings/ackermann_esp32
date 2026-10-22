@@ -221,6 +221,7 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   gps["hdop"] = telemetry.gps_hdop;
   gps["fix_quality"] = telemetry.gps_fix_quality;
   gps["satellites"] = telemetry.gps_satellites;
+  gps["h_err_m"] = telemetry.gps_h_err_m;
 
   JsonObject odometry = payload["odometry"].to<JsonObject>();
   odometry["speed"] = telemetry.speed;

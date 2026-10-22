@@ -1,9 +1,18 @@
 #include "SensorCommsService.hpp"
 
 #include <SPI.h>
+#include <cmath>
 #include <cstdlib>
 
 #include "RobotConfig.h"
+
+// ZED-F9P boot-time configuration (override in Config*.h)
+#ifndef GPS_UBX_CONFIG_ENABLE
+#define GPS_UBX_CONFIG_ENABLE 1
+#endif
+#ifndef GPS_NAV_RATE_MS
+#define GPS_NAV_RATE_MS 0  // 0 = leave the receiver's measurement rate unchanged
+#endif
 
 namespace {
 
@@ -98,6 +107,86 @@ bool parseGgaLine(const String& line, GpsFix& out) {
   }
   out.valid = (fix_quality > 0);
   return out.valid;
+}
+
+// $GNGST,time,rms,smaj,smin,orient,lat_std,lon_std,alt_std*cs
+bool parseGstLine(const String& line, GpsFix& out) {
+  if (!(line.startsWith("$GNGST") || line.startsWith("$GPGST"))) return false;
+  if (!nmeaChecksumOk(line)) {
+    ++out.gga_bad_count;  // same symptom (dropped bytes) — count together
+    return false;
+  }
+  int star = line.lastIndexOf('*');
+  String body = line.substring(0, star);
+  String fields[9];
+  int field_count = 0;
+  int start = 0;
+  for (int i = 0; i <= body.length() && field_count < 9; ++i) {
+    if (i == body.length() || body[i] == ',') {
+      fields[field_count++] = body.substring(start, i);
+      start = i + 1;
+    }
+  }
+  if (field_count < 9 || fields[6].length() == 0 || fields[7].length() == 0) return false;
+  out.std_lat_m = fields[6].toFloat();
+  out.std_lon_m = fields[7].toFloat();
+  out.std_alt_m = fields[8].toFloat();
+  out.h_err_m = sqrtf(out.std_lat_m * out.std_lat_m + out.std_lon_m * out.std_lon_m);
+  out.has_gst = true;
+  out.last_gst_ms = millis();
+  return true;
+}
+
+// ── UBX-CFG-VALSET (u-blox F9 configuration interface) ───────────────────────
+
+// CFG-MSGOUT-NMEA_ID_<msg>_UART1 keys (U1 value = output rate per epoch).
+// The UART2 key is always UART1 key + 1.
+struct NmeaRateKey { uint32_t uart1_key; uint8_t rate; const char* name; };
+constexpr NmeaRateKey kNmeaRates[] = {
+  {0x209100bb, 1, "GGA"},  // position + fix quality: navigation and NTRIP VRS
+  {0x209100d4, 1, "GST"},  // position error estimate
+  {0x209100c5, 0, "GSV"},  // satellites in view — biggest, ~1 KB/epoch
+  {0x209100c0, 0, "GSA"},
+  {0x209100ca, 0, "GLL"},
+  {0x209100b1, 0, "VTG"},
+  {0x209100ac, 0, "RMC"},
+};
+constexpr uint32_t kCfgRateMeasKey = 0x30210001;  // CFG-RATE-MEAS (U2, ms)
+
+size_t ubxBuild(uint8_t cls, uint8_t id, const uint8_t* payload, uint16_t len, uint8_t* out) {
+  out[0] = 0xB5; out[1] = 0x62; out[2] = cls; out[3] = id;
+  out[4] = len & 0xFF; out[5] = len >> 8;
+  memcpy(out + 6, payload, len);
+  uint8_t ck_a = 0, ck_b = 0;
+  for (size_t i = 2; i < 6u + len; ++i) { ck_a += out[i]; ck_b += ck_a; }
+  out[6 + len] = ck_a; out[7 + len] = ck_b;
+  return 8u + len;
+}
+
+// Wait for UBX-ACK-ACK / ACK-NAK for CFG-VALSET (0x06 0x8A), skipping the NMEA
+// stream. Returns 1 = ACK, 0 = NAK, -1 = timeout.
+int ubxWaitAck(HardwareSerial& uart, uint32_t timeout_ms) {
+  // Match: B5 62 05 <01|00> 02 00 06 8A
+  static const uint8_t kPrefix[] = {0xB5, 0x62, 0x05};
+  uint8_t state = 0;
+  uint8_t ack_id = 0;
+  unsigned long start = millis();
+  while (millis() - start < timeout_ms) {
+    if (!uart.available()) { delay(1); continue; }
+    uint8_t b = static_cast<uint8_t>(uart.read());
+    if (state < 3) {
+      state = (b == kPrefix[state]) ? state + 1 : (b == 0xB5 ? 1 : 0);
+    } else if (state == 3) {
+      if (b == 0x01 || b == 0x00) { ack_id = b; state = 4; } else state = 0;
+    } else if (state == 4) { state = (b == 0x02) ? 5 : 0;
+    } else if (state == 5) { state = (b == 0x00) ? 6 : 0;
+    } else if (state == 6) { state = (b == 0x06) ? 7 : 0;
+    } else if (state == 7) {
+      if (b == 0x8A) return ack_id == 0x01 ? 1 : 0;
+      state = 0;
+    }
+  }
+  return -1;
 }
 
 }  // namespace
@@ -265,29 +354,81 @@ void connectNtripIfNeeded(SensorCommsContext& ctx) {
 #endif
 }
 
-void updateGpsAndNtrip(SensorCommsContext& ctx) {
-  // Drain everything waiting. The comms task can block for hundreds of ms on
-  // SIM modem AT round-trips; reading only a small slice per tick lets the
-  // F9P stream (~4 KB/s at 38400) overflow the RX buffer and corrupt GGA.
-  // Bounded so a babbling UART can't starve the rest of the loop.
+bool configureGnssOutput(SensorCommsContext& ctx) {
+#if !GPS_UBX_CONFIG_ENABLE
+  (void)ctx;
+  return false;
+#else
+  // Payload: version=0, layers=RAM (0x01), reserved x2, then key/value pairs.
+  // Applied to UART1 and UART2 since either may be the one wired to the ESP32.
+  uint8_t payload[4 + 2 * (sizeof(kNmeaRates) / sizeof(kNmeaRates[0])) * 5 + 6];
+  size_t n = 0;
+  payload[n++] = 0x00;
+  payload[n++] = 0x01;
+  payload[n++] = 0x00;
+  payload[n++] = 0x00;
+  for (const NmeaRateKey& k : kNmeaRates) {
+    for (uint32_t key : {k.uart1_key, k.uart1_key + 1}) {
+      memcpy(payload + n, &key, 4);  // little-endian on ESP32
+      n += 4;
+      payload[n++] = k.rate;
+    }
+  }
+#if GPS_NAV_RATE_MS > 0
+  uint32_t rate_key = kCfgRateMeasKey;
+  uint16_t rate_ms = GPS_NAV_RATE_MS;
+  memcpy(payload + n, &rate_key, 4);
+  n += 4;
+  memcpy(payload + n, &rate_ms, 2);
+  n += 2;
+#endif
+
+  uint8_t frame[8 + sizeof(payload)];
+  size_t frame_len = ubxBuild(0x06, 0x8A, payload, static_cast<uint16_t>(n), frame);
+
+  // The F9P may still be booting if it powered up with the ESP32 — retry.
+  for (int attempt = 1; attempt <= 5; ++attempt) {
+    ctx.gps_uart.write(frame, frame_len);
+    ctx.gps_uart.flush();
+    int r = ubxWaitAck(ctx.gps_uart, 600);
+    if (r == 1) {
+      Serial.printf("[GPS] UBX config ACK (GGA+GST on, GSV/GSA/GLL/VTG/RMC off, rate=%d ms)\n",
+                    GPS_NAV_RATE_MS);
+      return true;
+    }
+    Serial.printf("[GPS] UBX config %s (attempt %d)\n", r == 0 ? "NAK" : "no reply", attempt);
+    delay(300);
+  }
+  Serial.println("[GPS] UBX config failed — receiver keeps its stored NMEA settings");
+  return false;
+#endif
+}
+
+void readGps(SensorCommsContext& ctx) {
+  // Drain everything waiting (bounded so a babbling UART can't starve the
+  // caller). Runs in NavTask, which is never blocked by SIM modem AT traffic.
   for (int i = 0; i < 4096 && ctx.gps_uart.available(); ++i) {
     char c = static_cast<char>(ctx.gps_uart.read());
     ctx.gps_fix.last_rx_ms = millis();
     if (c == '\r') continue;
     if (c == '\n') {
       if (ctx.gps_line_buffer.length() > 0) {
-        parseGgaLine(ctx.gps_line_buffer, ctx.gps_fix);
+        if (!parseGgaLine(ctx.gps_line_buffer, ctx.gps_fix)) {
+          parseGstLine(ctx.gps_line_buffer, ctx.gps_fix);
+        }
         ctx.gps_line_buffer = "";
       }
     } else if (ctx.gps_line_buffer.length() < 220) {
       ctx.gps_line_buffer += c;
     }
   }
+}
 
+void forwardNtrip(SensorCommsContext& ctx, const String& latest_gga) {
 #if NTRIP_ENABLE
   if (ctx.ntrip_connected && ctx.ntrip_client && ctx.ntrip_client->connected()) {
-    if (ctx.gps_fix.valid && (millis() - ctx.last_ntrip_gga_send_ms) > 1000 && ctx.gps_fix.last_gga.length() > 0) {
-      ctx.ntrip_client->print(ctx.gps_fix.last_gga);
+    if (latest_gga.length() > 0 && (millis() - ctx.last_ntrip_gga_send_ms) > 1000) {
+      ctx.ntrip_client->print(latest_gga);
       ctx.ntrip_client->print("\r\n");
       ctx.last_ntrip_gga_send_ms = millis();
     }
@@ -308,6 +449,7 @@ void updateGpsAndNtrip(SensorCommsContext& ctx) {
   }
 #else
   (void)ctx;
+  (void)latest_gga;
 #endif
 }
 

@@ -72,6 +72,18 @@ SensorCommsContext sensor_comms{
 static void controlTask(void* pvParameters);
 static void commsTask(void* pvParameters);
 static void serialCmdTask(void* pvParameters);
+static void navTask(void* pvParameters);
+
+// Guards GPS fix, IMU state and mission state shared between NavTask (owner),
+// CommsTask (server commands, telemetry, logging) and SerialCmdTask.
+// Never hold it across a modem/network call — that is what NavTask exists to avoid.
+static SemaphoreHandle_t nav_mutex = nullptr;
+struct NavLock {
+  NavLock() { if (nav_mutex) xSemaphoreTake(nav_mutex, portMAX_DELAY); }
+  ~NavLock() { if (nav_mutex) xSemaphoreGive(nav_mutex); }
+  NavLock(const NavLock&) = delete;
+  NavLock& operator=(const NavLock&) = delete;
+};
 static float estimateHeadingDeg();
 static void handleUsbSerialControl();
 
@@ -90,27 +102,43 @@ static void logSensorsAt1Hz() {
   if (now - last_sensor_log_ms < 1000) return;
   last_sensor_log_ms = now;
 
+  // Snapshot shared state under the nav lock; print without holding it.
+  GpsFix g;
+  unsigned long nav_max_dt_ms = 0;
+  unsigned long nav_cycles = 0;
+  {
+    NavLock lock;
+    g = gps_fix;
+    gps_fix.gga_ok_count = 0;
+    gps_fix.gga_bad_count = 0;
+    nav_max_dt_ms = loop_stats.max_nav_dt_ms;
+    nav_cycles = loop_stats.nav_cycle_count;
+    loop_stats.max_nav_dt_ms = 0;
+    loop_stats.nav_cycle_count = 0;
+  }
+
   Serial.printf("[NET] %s", net_manager.sourceName());
   Serial.print(" | [GPS] ");
-  if (gps_fix.valid) {
+  if (g.valid) {
     Serial.print("fix=");
-    Serial.print(gps_fix.fix_quality);
+    Serial.print(g.fix_quality);
     Serial.print(" sats=");
-    Serial.print(gps_fix.satellites);
+    Serial.print(g.satellites);
     Serial.print(" lat=");
-    Serial.print(gps_fix.latitude, 7);
+    Serial.print(g.latitude, 7);
     Serial.print(" lon=");
-    Serial.print(gps_fix.longitude, 7);
+    Serial.print(g.longitude, 7);
     Serial.print(" hdop=");
-    Serial.print(gps_fix.hdop, 2);
-  } else if (gps_fix.has_gga) {
+    Serial.print(g.hdop, 2);
+    if (g.has_gst) Serial.printf(" herr=%.3fm", g.h_err_m);
+  } else if (g.has_gga) {
     Serial.print("uart-ok no-fix q=");
-    Serial.print(gps_fix.fix_quality);
+    Serial.print(g.fix_quality);
     Serial.print(" sats=");
-    Serial.print(gps_fix.satellites);
+    Serial.print(g.satellites);
     Serial.print(" hdop=");
-    Serial.print(gps_fix.hdop, 2);
-  } else if ((now - gps_fix.last_rx_ms) < 2000 && gps_fix.last_rx_ms != 0) {
+    Serial.print(g.hdop, 2);
+  } else if ((now - g.last_rx_ms) < 2000 && g.last_rx_ms != 0) {
     Serial.print("uart-rx no-gga-yet");
   } else {
     Serial.print("no-uart-data");
@@ -124,17 +152,17 @@ static void logSensorsAt1Hz() {
 #endif
 
   // Comms loop health + GPS parse health since the previous line.
-  Serial.printf(" | [COMMS] max_dt=%lums overruns=%lu cycles=%lu | [GGA] ok=%lu bad=%lu",
+  Serial.printf(" | [COMMS] max_dt=%lums overruns=%lu cycles=%lu | [NAV] max_dt=%lums cycles=%lu | [GGA] ok=%lu bad=%lu",
                 (unsigned long)loop_stats.max_comms_dt_ms,
                 (unsigned long)loop_stats.comms_overrun_count,
                 (unsigned long)loop_stats.comms_cycle_count,
-                (unsigned long)gps_fix.gga_ok_count,
-                (unsigned long)gps_fix.gga_bad_count);
+                nav_max_dt_ms,
+                nav_cycles,
+                (unsigned long)g.gga_ok_count,
+                (unsigned long)g.gga_bad_count);
   loop_stats.max_comms_dt_ms = 0;
   loop_stats.comms_overrun_count = 0;
   loop_stats.comms_cycle_count = 0;
-  gps_fix.gga_ok_count = 0;
-  gps_fix.gga_bad_count = 0;
 
   // Serial.print(" | [IMU] ");
   // if (imu_state.valid) {
@@ -271,6 +299,7 @@ static constexpr unsigned long IMU_STALE_TIMEOUT_MS = 1500;
 static constexpr unsigned long GPS_STALE_TIMEOUT_MS = 3000;
 static constexpr unsigned long MISSION_SENSOR_GRACE_MS = 2000;
 static constexpr unsigned long COMMS_OVERRUN_MS = 20;
+static constexpr unsigned long NAV_PERIOD_MS = 10;  // NavTask: GPS/IMU/safety/mission
 static constexpr float MISSION_WAYPOINT_REACHED_M = 1.5f;
 static constexpr float MISSION_COVERAGE_WAYPOINT_REACHED_M = 0.5f;
 static constexpr float MISSION_SLOWDOWN_RADIUS_M = 1.0f;
@@ -691,11 +720,24 @@ static void setMissionAutoZeroTurn(bool on) {
 #endif
 }
 
+// GPS good enough to drive: GST horizontal error within MISSION_GPS_MAX_HERR_M.
+// While holding, require 80% of the limit to resume so an error hovering at the
+// limit can't flap between hold and drive. A receiver that never sent GST (UBX
+// config NAK) can't be judged and is allowed.
+static bool gpsAccurateForMission(unsigned long now, bool holding) {
+  if (!gps_fix.has_gst) return true;
+  if (now - gps_fix.last_gst_ms > GPS_STALE_TIMEOUT_MS) return false;
+  const float limit_m = holding ? 0.8f * MISSION_GPS_MAX_HERR_M : MISSION_GPS_MAX_HERR_M;
+  return gps_fix.h_err_m <= limit_m;
+}
+
 static void updateMissionExecutor() {
   static unsigned long invalid_sensor_since_ms = 0;
+  static unsigned long gps_hold_since_ms = 0;
   if (!mission_ctx.active) {
     mission_debug_valid = false;
     invalid_sensor_since_ms = 0;
+    gps_hold_since_ms = 0;
     setMissionAutoZeroTurn(false);
     resetMissionSpeedSlew();
     if (mission_ctx.state != MissionState::Idle && mission_ctx.state != MissionState::Cancelled && mission_ctx.state != MissionState::Completed && mission_ctx.state != MissionState::Failed && mission_ctx.state != MissionState::EStop) {
@@ -724,6 +766,7 @@ static void updateMissionExecutor() {
 
   if (mission_ctx.state != MissionState::Running) {
     mission_debug_valid = false;
+    gps_hold_since_ms = 0;
     return;
   }
 
@@ -733,6 +776,9 @@ static void updateMissionExecutor() {
 
   if (task_needs_gps && (!gps_fix.valid || !imu_state.valid)) {
     mission_debug_valid = false;
+    // Stop at once; don't keep driving the last command through the grace period.
+    resetMissionCommandTargets();
+    resetMissionSpeedSlew();
     if (invalid_sensor_since_ms == 0) {
       invalid_sensor_since_ms = now;
     } else if ((now - invalid_sensor_since_ms) > MISSION_SENSOR_GRACE_MS) {
@@ -749,6 +795,35 @@ static void updateMissionExecutor() {
     return;
   }
   invalid_sensor_since_ms = 0;
+
+  // GPS valid but not accurate enough: hold in place, resume when it recovers,
+  // fail if it stays poor for MISSION_GPS_HOLD_TIMEOUT_MS.
+  if (task_needs_gps && !gpsAccurateForMission(now, gps_hold_since_ms != 0)) {
+    mission_debug_valid = false;
+    resetMissionCommandTargets();
+    resetMissionSpeedSlew();
+    if (gps_hold_since_ms == 0) {
+      gps_hold_since_ms = now;
+      Serial.printf("[MISSION] Holding: GPS error %.3f m > %.2f m\n",
+                    gps_fix.h_err_m, MISSION_GPS_MAX_HERR_M);
+    } else if (now - gps_hold_since_ms > MISSION_GPS_HOLD_TIMEOUT_MS) {
+      ++loop_stats.safety_mission_abort_count;
+      mission_ctx.active = false;
+      mission_ctx.phase = 0;
+      mission_ctx.waypoint_index = -1;
+      resetMissionCommandTargets();
+      setMissionState(MissionState::Failed);
+      Serial.printf("[MISSION] Failed: GPS error above %.2f m for %lu s\n",
+                    MISSION_GPS_MAX_HERR_M, MISSION_GPS_HOLD_TIMEOUT_MS / 1000UL);
+      gps_hold_since_ms = 0;
+    }
+    return;
+  }
+  if (gps_hold_since_ms != 0) {
+    Serial.printf("[MISSION] Resumed: GPS error %.3f m (held %lu ms)\n",
+                  gps_fix.h_err_m, now - gps_hold_since_ms);
+    gps_hold_since_ms = 0;
+  }
 
   if (mission_task_cursor >= mission_task_count) {
     mission_debug_valid = false;
@@ -1638,6 +1713,20 @@ static void handleUsbSerialLine(const String& raw_line) {
   Serial.printf("[USB_SERIAL] Unknown command: %s\n", line.c_str());
 }
 
+// Serial commands change mode, mission and actuator state, so they run under the
+// nav lock — except CAN_PING, a bounded blocking diagnostic that touches none of it.
+static void handleUsbSerialLineLocked(const String& line) {
+  String upper = line;
+  upper.trim();
+  upper.toUpperCase();
+  if (upper.startsWith("CAN_PING")) {
+    handleUsbSerialLine(line);
+    return;
+  }
+  NavLock lock;
+  handleUsbSerialLine(line);
+}
+
 static void handleUsbSerialControl() {
   while (Serial.available() > 0) {
     char c = static_cast<char>(Serial.read());
@@ -1648,7 +1737,7 @@ static void handleUsbSerialControl() {
       if (usb_serial_line_overflow) {
         Serial.println("[USB_SERIAL] Ignored line: too long");
       } else if (usb_serial_line_buffer.length() > 0) {
-        handleUsbSerialLine(usb_serial_line_buffer);
+        handleUsbSerialLineLocked(usb_serial_line_buffer);
       }
       usb_serial_line_buffer = "";
       usb_serial_line_overflow = false;
@@ -1689,166 +1778,181 @@ static void handleRobotClientCommand() {
   if (!robot_client.hasPendingCommand()) return;
 
   RobotCommand command = robot_client.consumeCommand();
-  switch (command.type) {
-    case RobotCommandType::Move:
-      control_targets.linear_mps = command.linear_velocity;
-      control_targets.angle_deg = convertAngularToSteeringDeg(command.linear_velocity, command.angular_velocity, WHEELBASE_M, MAX_STEER_DEG);
-      control_targets.remote_move_expire_ms = millis() + static_cast<unsigned long>(command.duration * 1000.0f);
-      robot_client.sendCommandAck(command, "accepted");
+  // Apply under the nav lock, ack after releasing it: on SIM an ack is a blocking
+  // modem round-trip and must not stall NavTask.
+  const char* ack_status = nullptr;
+  const char* ack_detail = nullptr;
+  {
+    NavLock lock;
+    switch (command.type) {
+      case RobotCommandType::Move:
+        control_targets.linear_mps = command.linear_velocity;
+        control_targets.angle_deg = convertAngularToSteeringDeg(command.linear_velocity, command.angular_velocity, WHEELBASE_M, MAX_STEER_DEG);
+        control_targets.remote_move_expire_ms = millis() + static_cast<unsigned long>(command.duration * 1000.0f);
+        ack_status = "accepted";
 #if DEBUG_LOG_ROBOT_CLIENT
-      Serial.println("[ROBOT_CLIENT] Move command accepted");
+        Serial.println("[ROBOT_CLIENT] Move command accepted");
 #endif
-      break;
-    case RobotCommandType::EmergencyStop:
-      e_stop_active = true;
-      drive_motors.emergencyStop();
-      steering_motors.emergencyStop();
-      mission_ctx.active = false;
-      setMissionState(MissionState::EStop);
-      robot_client.sendCommandAck(command, "accepted");
+        break;
+      case RobotCommandType::EmergencyStop:
+        e_stop_active = true;
+        drive_motors.emergencyStop();
+        steering_motors.emergencyStop();
+        mission_ctx.active = false;
+        setMissionState(MissionState::EStop);
+        ack_status = "accepted";
     #if DEBUG_LOG_ROBOT_CLIENT
-      Serial.println("[ROBOT_CLIENT] Emergency stop accepted");
+        Serial.println("[ROBOT_CLIENT] Emergency stop accepted");
     #endif
-      break;
-    case RobotCommandType::ExecuteMission:
-      if (parseMissionPlan(command.mission_json)) {
+        break;
+      case RobotCommandType::ExecuteMission:
+        if (parseMissionPlan(command.mission_json)) {
+          mission_ctx.active = true;
+          mission_ctx.name = command.mission_name;
+          mission_ctx.phase = 0;
+          mission_ctx.waypoint_index = -1;
+          mission_ctx.started_ms = millis();
+          setMissionState(MissionState::Queued);
+          ack_status = "accepted";
+          ack_detail = "mission plan loaded";
+#if DEBUG_LOG_ROBOT_CLIENT
+          Serial.println("[ROBOT_CLIENT] Mission plan received and queued");
+#endif
+        } else {
+          mission_ctx.active = false;
+          mission_ctx.phase = 0;
+          mission_ctx.waypoint_index = -1;
+          resetMissionCommandTargets();
+          setMissionState(MissionState::Failed);
+          ack_status = "rejected";
+          ack_detail = "invalid mission payload";
+#if DEBUG_LOG_ROBOT_CLIENT
+          Serial.println("[ROBOT_CLIENT] Mission rejected: invalid payload");
+#endif
+        }
+        break;
+      case RobotCommandType::PauseMission:
+        if (mission_ctx.active) {
+          if (mission_ctx.state == MissionState::Paused) {
+            setMissionState(MissionState::Running);
+          } else {
+            setMissionState(MissionState::Paused);
+            resetMissionCommandTargets();
+          }
+          ack_status = "accepted";
+        } else {
+          ack_status = "rejected";
+          ack_detail = "no active mission";
+        }
+        break;
+      case RobotCommandType::CancelMission:
+        mission_ctx.active = false;
+        mission_ctx.name = "";
+        mission_ctx.phase = 0;
+        mission_ctx.waypoint_index = -1;
+        clearMissionPlan();
+        resetMissionCommandTargets();
+        setMissionState(MissionState::Cancelled);
+        ack_status = "accepted";
+        break;
+      case RobotCommandType::Waypoint:
+        loadSingleWaypointMission(command.latitude, command.longitude, command.altitude);
         mission_ctx.active = true;
-        mission_ctx.name = command.mission_name;
+        mission_ctx.name = "single_waypoint";
+        mission_ctx.phase = 0;
+        mission_ctx.waypoint_index = 0;
+        mission_ctx.started_ms = millis();
+        setMissionState(MissionState::Queued);
+        ack_status = "accepted";
+        ack_detail = "single waypoint mission queued";
+        break;
+      case RobotCommandType::CancelTask:
+        mission_ctx.active = false;
+        mission_ctx.name = "";
+        mission_ctx.phase = 0;
+        mission_ctx.waypoint_index = -1;
+        clearMissionPlan();
+        resetMissionCommandTargets();
+        setMissionState(MissionState::Cancelled);
+        ack_status = "accepted";
+        break;
+      case RobotCommandType::MissionUploadStart: {
+        // Parse tasks now; waypoints arrive in subsequent BATCH messages
+        String wrapped = "{\"waypoints\":[],\"tasks\":";
+        wrapped += command.mission_json;
+        wrapped += "}";
+        parseMissionPlan(wrapped);  // clears arrays, fills mission_tasks[]
+        upload_ctx.active           = true;
+        upload_ctx.session_id       = command.upload_session_id;
+        upload_ctx.expected_total   = (size_t)command.upload_total_waypoints;
+        upload_ctx.expected_batches = (size_t)command.upload_total_batches;
+        upload_ctx.received_count   = 0;
+        upload_ctx.received_batches = 0;
+        Serial.printf("[UPLOAD] Start session=%s total=%u batches=%u tasks=%u\n",
+          upload_ctx.session_id.c_str(),
+          (unsigned)upload_ctx.expected_total,
+          (unsigned)upload_ctx.expected_batches,
+          (unsigned)mission_task_count);
+        ack_status = "ok";
+        break;
+      }
+      case RobotCommandType::MissionUploadBatch: {
+        if (!upload_ctx.active || command.upload_session_id != upload_ctx.session_id) {
+          ack_status = "error";
+          ack_detail = "no_active_session";
+          break;
+        }
+        JsonDocument doc;
+        deserializeJson(doc, command.mission_json);
+        JsonArrayConst wps = doc.as<JsonArrayConst>();
+        size_t offset = (size_t)command.upload_offset;
+        for (JsonVariantConst wp_var : wps) {
+          if (offset >= MISSION_MAX_WAYPOINTS) break;
+          JsonObjectConst wp = wp_var.as<JsonObjectConst>();
+          mission_waypoints[offset++] = {wp["lat"] | 0.0, wp["lon"] | 0.0, wp["alt"] | 0.0};
+        }
+        upload_ctx.received_count = offset;
+        upload_ctx.received_batches++;
+        Serial.printf("[UPLOAD] Batch %d: %u/%u wps\n",
+          command.upload_batch_index,
+          (unsigned)upload_ctx.received_count,
+          (unsigned)upload_ctx.expected_total);
+        ack_status = "ok";
+        break;
+      }
+      case RobotCommandType::MissionUploadExecute: {
+        if (!upload_ctx.active || command.upload_session_id != upload_ctx.session_id) {
+          ack_status = "error";
+          ack_detail = "session_mismatch";
+          break;
+        }
+        size_t expected = (size_t)command.upload_total_waypoints;
+        if (upload_ctx.received_count != expected) {
+          Serial.printf("[UPLOAD] Execute failed: got=%u expected=%u\n",
+            (unsigned)upload_ctx.received_count, (unsigned)expected);
+          ack_status = "error";
+          ack_detail = "waypoint_count_mismatch";
+          upload_ctx.active = false;
+          break;
+        }
+        mission_waypoint_count = upload_ctx.received_count;
+        upload_ctx.active = false;
+        mission_ctx.active = true;
+        mission_ctx.name = "";
         mission_ctx.phase = 0;
         mission_ctx.waypoint_index = -1;
         mission_ctx.started_ms = millis();
         setMissionState(MissionState::Queued);
-        robot_client.sendCommandAck(command, "accepted", "mission plan loaded");
-#if DEBUG_LOG_ROBOT_CLIENT
-        Serial.println("[ROBOT_CLIENT] Mission plan received and queued");
-#endif
-      } else {
-        mission_ctx.active = false;
-        mission_ctx.phase = 0;
-        mission_ctx.waypoint_index = -1;
-        resetMissionCommandTargets();
-        setMissionState(MissionState::Failed);
-        robot_client.sendCommandAck(command, "rejected", "invalid mission payload");
-#if DEBUG_LOG_ROBOT_CLIENT
-        Serial.println("[ROBOT_CLIENT] Mission rejected: invalid payload");
-#endif
-      }
-      break;
-    case RobotCommandType::PauseMission:
-      if (mission_ctx.active) {
-        if (mission_ctx.state == MissionState::Paused) {
-          setMissionState(MissionState::Running);
-        } else {
-          setMissionState(MissionState::Paused);
-          resetMissionCommandTargets();
-        }
-        robot_client.sendCommandAck(command, "accepted");
-      } else {
-        robot_client.sendCommandAck(command, "rejected", "no active mission");
-      }
-      break;
-    case RobotCommandType::CancelMission:
-      mission_ctx.active = false;
-      mission_ctx.name = "";
-      mission_ctx.phase = 0;
-      mission_ctx.waypoint_index = -1;
-      clearMissionPlan();
-      resetMissionCommandTargets();
-      setMissionState(MissionState::Cancelled);
-      robot_client.sendCommandAck(command, "accepted");
-      break;
-    case RobotCommandType::Waypoint:
-      loadSingleWaypointMission(command.latitude, command.longitude, command.altitude);
-      mission_ctx.active = true;
-      mission_ctx.name = "single_waypoint";
-      mission_ctx.phase = 0;
-      mission_ctx.waypoint_index = 0;
-      mission_ctx.started_ms = millis();
-      setMissionState(MissionState::Queued);
-      robot_client.sendCommandAck(command, "accepted", "single waypoint mission queued");
-      break;
-    case RobotCommandType::CancelTask:
-      mission_ctx.active = false;
-      mission_ctx.name = "";
-      mission_ctx.phase = 0;
-      mission_ctx.waypoint_index = -1;
-      clearMissionPlan();
-      resetMissionCommandTargets();
-      setMissionState(MissionState::Cancelled);
-      robot_client.sendCommandAck(command, "accepted");
-      break;
-    case RobotCommandType::MissionUploadStart: {
-      // Parse tasks now; waypoints arrive in subsequent BATCH messages
-      String wrapped = "{\"waypoints\":[],\"tasks\":";
-      wrapped += command.mission_json;
-      wrapped += "}";
-      parseMissionPlan(wrapped);  // clears arrays, fills mission_tasks[]
-      upload_ctx.active           = true;
-      upload_ctx.session_id       = command.upload_session_id;
-      upload_ctx.expected_total   = (size_t)command.upload_total_waypoints;
-      upload_ctx.expected_batches = (size_t)command.upload_total_batches;
-      upload_ctx.received_count   = 0;
-      upload_ctx.received_batches = 0;
-      Serial.printf("[UPLOAD] Start session=%s total=%u batches=%u tasks=%u\n",
-        upload_ctx.session_id.c_str(),
-        (unsigned)upload_ctx.expected_total,
-        (unsigned)upload_ctx.expected_batches,
-        (unsigned)mission_task_count);
-      robot_client.sendCommandAck(command, "ok");
-      break;
-    }
-    case RobotCommandType::MissionUploadBatch: {
-      if (!upload_ctx.active || command.upload_session_id != upload_ctx.session_id) {
-        robot_client.sendCommandAck(command, "error", "no_active_session");
+        Serial.printf("[UPLOAD] Execute: %u wps %u tasks — QUEUED\n",
+          (unsigned)mission_waypoint_count, (unsigned)mission_task_count);
+        ack_status = "accepted";
         break;
       }
-      JsonDocument doc;
-      deserializeJson(doc, command.mission_json);
-      JsonArrayConst wps = doc.as<JsonArrayConst>();
-      size_t offset = (size_t)command.upload_offset;
-      for (JsonVariantConst wp_var : wps) {
-        if (offset >= MISSION_MAX_WAYPOINTS) break;
-        JsonObjectConst wp = wp_var.as<JsonObjectConst>();
-        mission_waypoints[offset++] = {wp["lat"] | 0.0, wp["lon"] | 0.0, wp["alt"] | 0.0};
-      }
-      upload_ctx.received_count = offset;
-      upload_ctx.received_batches++;
-      Serial.printf("[UPLOAD] Batch %d: %u/%u wps\n",
-        command.upload_batch_index,
-        (unsigned)upload_ctx.received_count,
-        (unsigned)upload_ctx.expected_total);
-      robot_client.sendCommandAck(command, "ok");
-      break;
-    }
-    case RobotCommandType::MissionUploadExecute: {
-      if (!upload_ctx.active || command.upload_session_id != upload_ctx.session_id) {
-        robot_client.sendCommandAck(command, "error", "session_mismatch");
+      case RobotCommandType::None:
         break;
-      }
-      size_t expected = (size_t)command.upload_total_waypoints;
-      if (upload_ctx.received_count != expected) {
-        Serial.printf("[UPLOAD] Execute failed: got=%u expected=%u\n",
-          (unsigned)upload_ctx.received_count, (unsigned)expected);
-        robot_client.sendCommandAck(command, "error", "waypoint_count_mismatch");
-        upload_ctx.active = false;
-        break;
-      }
-      mission_waypoint_count = upload_ctx.received_count;
-      upload_ctx.active = false;
-      mission_ctx.active = true;
-      mission_ctx.name = "";
-      mission_ctx.phase = 0;
-      mission_ctx.waypoint_index = -1;
-      mission_ctx.started_ms = millis();
-      setMissionState(MissionState::Queued);
-      Serial.printf("[UPLOAD] Execute: %u wps %u tasks — QUEUED\n",
-        (unsigned)mission_waypoint_count, (unsigned)mission_task_count);
-      robot_client.sendCommandAck(command, "accepted");
-      break;
     }
-    case RobotCommandType::None:
-      break;
   }
+  if (ack_status) robot_client.sendCommandAck(command, ack_status, ack_detail);
 }
 
 static void publishRobotTelemetry() {
@@ -1870,17 +1974,51 @@ static void publishRobotTelemetry() {
   last_telemetry_publish_ms = now;
 
   RobotTelemetry telemetry;
-  telemetry.battery_level = 100.0f;
-  telemetry.speed = control_targets.linear_mps;
-  telemetry.heading = estimateHeadingDeg();
+  {
+    // Copy shared state under the nav lock; the send below can block on SIM.
+    NavLock lock;
+    telemetry.battery_level = 100.0f;
+    telemetry.speed = control_targets.linear_mps;
+    telemetry.heading = estimateHeadingDeg();
 
-  telemetry.gps_valid = gps_fix.valid;
-  telemetry.gps_latitude = gps_fix.latitude;
-  telemetry.gps_longitude = gps_fix.longitude;
-  telemetry.gps_altitude = gps_fix.altitude;
-  telemetry.gps_hdop = gps_fix.hdop;
-  telemetry.gps_fix_quality = gps_fix.fix_quality;
-  telemetry.gps_satellites = gps_fix.satellites;
+    telemetry.gps_valid = gps_fix.valid;
+    telemetry.gps_latitude = gps_fix.latitude;
+    telemetry.gps_longitude = gps_fix.longitude;
+    telemetry.gps_altitude = gps_fix.altitude;
+    telemetry.gps_hdop = gps_fix.hdop;
+    telemetry.gps_fix_quality = gps_fix.fix_quality;
+    telemetry.gps_satellites = gps_fix.satellites;
+    // GST arrives every epoch; treat it as unknown if it stopped (e.g. config NAK).
+    telemetry.gps_h_err_m = (gps_fix.has_gst && now - gps_fix.last_gst_ms < GPS_STALE_TIMEOUT_MS)
+                                ? gps_fix.h_err_m : -1.0f;
+
+    telemetry.mission_active = mission_ctx.active && (mission_ctx.state == MissionState::Queued || mission_ctx.state == MissionState::Running || mission_ctx.state == MissionState::Paused);
+    telemetry.mission_name = mission_ctx.name;
+    telemetry.mission_state = missionStateToString(mission_ctx.state);
+    telemetry.mission_waypoint_index = mission_ctx.waypoint_index;
+    telemetry.mission_waypoint_total = static_cast<int>(mission_waypoint_count);
+    telemetry.mission_coverage_active = false;
+    telemetry.mission_coverage_progress_index = -1;
+    telemetry.mission_coverage_total = 0;
+
+    if (mission_ctx.active && mission_task_cursor < mission_task_count) {
+      const MissionTaskPlan& active_task = mission_tasks[mission_task_cursor];
+      if (active_task.type == MissionTaskType::CoveragePath &&
+          active_task.waypoint_index >= 0 &&
+          active_task.waypoint_index_end >= 0) {
+        const int start_idx = active_task.waypoint_index;
+        const int end_idx = active_task.waypoint_index_end;
+        const int step = (end_idx >= start_idx) ? 1 : -1;
+        const int current_idx = (mission_coverage_current_index >= 0) ? mission_coverage_current_index : start_idx;
+        const int progress_idx = (step > 0) ? (current_idx - start_idx) : (start_idx - current_idx);
+        const int total = (step > 0) ? (end_idx - start_idx + 1) : (start_idx - end_idx + 1);
+
+        telemetry.mission_coverage_active = true;
+        telemetry.mission_coverage_progress_index = max(0, min(progress_idx, max(0, total - 1)));
+        telemetry.mission_coverage_total = max(0, total);
+      }
+    }
+  }
 
 #if GPS_SERIAL_OUTPUT_ENABLE
   {
@@ -1900,33 +2038,6 @@ static void publishRobotTelemetry() {
     Serial.println(gps_json);
   }
 #endif
-
-  telemetry.mission_active = mission_ctx.active && (mission_ctx.state == MissionState::Queued || mission_ctx.state == MissionState::Running || mission_ctx.state == MissionState::Paused);
-  telemetry.mission_name = mission_ctx.name;
-  telemetry.mission_state = missionStateToString(mission_ctx.state);
-  telemetry.mission_waypoint_index = mission_ctx.waypoint_index;
-  telemetry.mission_waypoint_total = static_cast<int>(mission_waypoint_count);
-  telemetry.mission_coverage_active = false;
-  telemetry.mission_coverage_progress_index = -1;
-  telemetry.mission_coverage_total = 0;
-
-  if (mission_ctx.active && mission_task_cursor < mission_task_count) {
-    const MissionTaskPlan& active_task = mission_tasks[mission_task_cursor];
-    if (active_task.type == MissionTaskType::CoveragePath &&
-        active_task.waypoint_index >= 0 &&
-        active_task.waypoint_index_end >= 0) {
-      const int start_idx = active_task.waypoint_index;
-      const int end_idx = active_task.waypoint_index_end;
-      const int step = (end_idx >= start_idx) ? 1 : -1;
-      const int current_idx = (mission_coverage_current_index >= 0) ? mission_coverage_current_index : start_idx;
-      const int progress_idx = (step > 0) ? (current_idx - start_idx) : (start_idx - current_idx);
-      const int total = (step > 0) ? (end_idx - start_idx + 1) : (start_idx - end_idx + 1);
-
-      telemetry.mission_coverage_active = true;
-      telemetry.mission_coverage_progress_index = max(0, min(progress_idx, max(0, total - 1)));
-      telemetry.mission_coverage_total = max(0, total);
-    }
-  }
 
   robot_client.sendTelemetry(telemetry);
 }
@@ -1976,11 +2087,15 @@ void setup() {
   // Default 256 B RX buffer fills in ~67 ms at 38400 baud; the GPS is polled from the
   // same loop as WebSocket/NTRIP/SIM work, which can stall longer than that and drop bytes.
   gps_uart.setRxBufferSize(2048);  // must be called before begin()
+  // RTCM is written from CommsTask while NavTask reads; without a TX buffer a 256 B
+  // write blocks ~67 ms at 38400 holding the UART lock, stalling NavTask's reads.
+  gps_uart.setTxBufferSize(1024);
   gps_uart.begin(GPS_UART_BAUD, SERIAL_8N1, GPS_UART_RX_PIN, GPS_UART_TX_PIN);
   Serial.print("[GPS] UART started on RX=");
   Serial.print(GPS_UART_RX_PIN);
   Serial.print(" TX=");
   Serial.println(GPS_UART_TX_PIN);
+  SensorComms::configureGnssOutput(sensor_comms);
   SensorComms::initBno085(sensor_comms);
 #if CONTROL_SERVER_ENABLE
   robot_client.begin(&net_manager);
@@ -2024,6 +2139,8 @@ void setup() {
 
   applyModeInit(robot_mode);
 
+  nav_mutex = xSemaphoreCreateMutex();
+
   xTaskCreatePinnedToCore(
     controlTask,
     "ControlTask",
@@ -2042,6 +2159,16 @@ void setup() {
     nullptr,
     0);
 
+  // Above CommsTask on the same core: preempts its blocking modem waits.
+  xTaskCreatePinnedToCore(
+    navTask,
+    "NavTask",
+    8192,
+    nullptr,
+    3,
+    nullptr,
+    0);
+
   // USB serial commands get their own task on the control core so they are never
   // stuck behind blocking LTE/AT-command calls in CommsTask. Priority is below
   // ControlTask so a slow command (e.g. CAN_PING) can't stall the drive loop.
@@ -2057,6 +2184,7 @@ void setup() {
   Serial.println("[RTOS] ControlTask pinned to Core 1");
   Serial.println("[RTOS] SerialCmdTask pinned to Core 1");
   Serial.println("[RTOS] CommsTask pinned to Core 0");
+  Serial.println("[RTOS] NavTask pinned to Core 0");
   
   Serial.println("Setup Complete! Ready to Drive.");
 }
@@ -2217,20 +2345,49 @@ static void commsTask(void* /*pvParameters*/) {
 #if NET_MODE != 0 && NTRIP_ENABLE
     SensorComms::connectNtripIfNeeded(sensor_comms);
 #endif
-    SensorComms::updateGpsAndNtrip(sensor_comms);
-    SensorComms::updateImu(sensor_comms);
-    updateSafetyGuards();
+    // GPS/IMU reading, safety guards and the mission executor run in NavTask.
+    {
+      // Latest GGA for the VRS caster: snapshot under the lock, send without it.
+      String latest_gga;
+      {
+        NavLock lock;
+        if (gps_fix.valid) latest_gga = gps_fix.last_gga;
+      }
+      SensorComms::forwardNtrip(sensor_comms, latest_gga);
+    }
 #if NET_MODE != 0
     handleRobotClientCommand();
 #endif
-    updateMissionExecutor();
-    updateFuncExecutor();
 #if NET_MODE != 0
     publishRobotTelemetry();
 #endif
     logSensorsAt1Hz();
     updateStatusLeds();
     vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+
+// Sensors, safety guards and the mission executor run here rather than in CommsTask:
+// SIM modem AT round-trips block CommsTask for 100 ms to 2 s, which overflowed the GPS
+// UART and delayed the mission and stale-sensor checks. Higher priority than CommsTask
+// on the same core, so it preempts those waits.
+static void navTask(void* /*pvParameters*/) {
+  unsigned long last_nav_ms = millis();
+  for (;;) {
+    const unsigned long now = millis();
+    const unsigned long dt_ms = now - last_nav_ms;
+    last_nav_ms = now;
+    {
+      NavLock lock;
+      ++loop_stats.nav_cycle_count;
+      if (dt_ms > loop_stats.max_nav_dt_ms) loop_stats.max_nav_dt_ms = dt_ms;
+      SensorComms::readGps(sensor_comms);
+      SensorComms::updateImu(sensor_comms);
+      updateSafetyGuards();
+      updateMissionExecutor();
+      updateFuncExecutor();
+    }
+    vTaskDelay(pdMS_TO_TICKS(NAV_PERIOD_MS));
   }
 }
 
