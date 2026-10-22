@@ -300,8 +300,13 @@ static constexpr unsigned long GPS_STALE_TIMEOUT_MS = 3000;
 static constexpr unsigned long MISSION_SENSOR_GRACE_MS = 2000;
 static constexpr unsigned long COMMS_OVERRUN_MS = 20;
 static constexpr unsigned long NAV_PERIOD_MS = 10;  // NavTask: GPS/IMU/safety/mission
-static constexpr float MISSION_WAYPOINT_REACHED_M = 1.5f;
-static constexpr float MISSION_COVERAGE_WAYPOINT_REACHED_M = 0.5f;
+// Waypoint arrival radii (m); override in Config*.h.
+#ifndef MISSION_WAYPOINT_REACHED_M
+#define MISSION_WAYPOINT_REACHED_M 1.5f
+#endif
+#ifndef MISSION_COVERAGE_WAYPOINT_REACHED_M
+#define MISSION_COVERAGE_WAYPOINT_REACHED_M 0.5f
+#endif
 static constexpr float MISSION_SLOWDOWN_RADIUS_M = 1.0f;
 static constexpr float MISSION_HEADING_SLOWDOWN_CRAWL_MPS = 0.12f;
 static constexpr size_t MISSION_MAX_WAYPOINTS = 1000;

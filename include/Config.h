@@ -70,6 +70,10 @@
 // the timeout.
 #define MISSION_GPS_MAX_HERR_M 0.10f
 #define MISSION_GPS_HOLD_TIMEOUT_MS 60000UL
+// Waypoint arrival radius (m): a waypoint counts as reached inside this distance.
+// Coverage-path points use the tighter radius so rows stay straight.
+#define MISSION_WAYPOINT_REACHED_M 1.5f
+#define MISSION_COVERAGE_WAYPOINT_REACHED_M 0.5f
 
 // Echo GPS data to USB Serial as JSON, same fields as the "gps" object sent
 // to the web UI in robot telemetry (valid/latitude/longitude/altitude/hdop/
