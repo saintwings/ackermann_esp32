@@ -736,9 +736,13 @@ static bool gpsAccurateForMission(unsigned long now, bool holding) {
   return gps_fix.h_err_m <= limit_m;
 }
 
+// millis() when the accuracy gate started holding the mission; 0 = not holding.
+// File scope so telemetry can report the hold (mission.holding).
+static unsigned long mission_gps_hold_since_ms = 0;
+
 static void updateMissionExecutor() {
   static unsigned long invalid_sensor_since_ms = 0;
-  static unsigned long gps_hold_since_ms = 0;
+  unsigned long& gps_hold_since_ms = mission_gps_hold_since_ms;
   if (!mission_ctx.active) {
     mission_debug_valid = false;
     invalid_sensor_since_ms = 0;
@@ -2002,6 +2006,8 @@ static void publishRobotTelemetry() {
     telemetry.mission_state = missionStateToString(mission_ctx.state);
     telemetry.mission_waypoint_index = mission_ctx.waypoint_index;
     telemetry.mission_waypoint_total = static_cast<int>(mission_waypoint_count);
+    telemetry.mission_holding = mission_ctx.active && mission_ctx.state == MissionState::Running &&
+                                mission_gps_hold_since_ms != 0;
     telemetry.mission_coverage_active = false;
     telemetry.mission_coverage_progress_index = -1;
     telemetry.mission_coverage_total = 0;

@@ -223,6 +223,12 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   gps["satellites"] = telemetry.gps_satellites;
   gps["h_err_m"] = telemetry.gps_h_err_m;
 
+  // Link health for the web UI. rtt_ms = robot<->server WebSocket ping round
+  // trip (SIM only; -1 when unknown, e.g. on WiFi or before the first pong).
+  JsonObject link = payload["link"].to<JsonObject>();
+  link["source"] = _net ? _net->sourceName() : "None";
+  link["rtt_ms"] = (_net && _net->source() == NetSource::SIM && _simWs) ? _simWs->lastPongRttMs() : -1L;
+
   JsonObject odometry = payload["odometry"].to<JsonObject>();
   odometry["speed"] = telemetry.speed;
 
@@ -232,6 +238,7 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   mission["name"] = telemetry.mission_name;
   mission["waypoint_index"] = telemetry.mission_waypoint_index;
   mission["waypoint_total"] = telemetry.mission_waypoint_total;
+  mission["holding"] = telemetry.mission_holding;
   mission["coverage_active"] = telemetry.mission_coverage_active;
   mission["coverage_progress_index"] = telemetry.mission_coverage_progress_index;
   mission["coverage_total"] = telemetry.mission_coverage_total;

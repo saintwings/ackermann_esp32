@@ -43,6 +43,9 @@ class SimWsClient {
   // Used by the caller as a dead-link watchdog.
   unsigned long lastRxMs() const { return _lastRxMs; }
 
+  // Round trip of the last answered ping (ms), or -1 if none since connect.
+  long lastPongRttMs() const { return _lastPongRttMs; }
+
  private:
   bool sslStart();  // configure SSL context (CSSLCFG) + CIPRXGET=1
   bool sslOpen(const char* host, uint16_t port);
@@ -75,4 +78,5 @@ class SimWsClient {
   unsigned long _lastProbeMs = 0;  // for periodic poll-when-no-URC
   unsigned long _pingSentMs  = 0;  // millis() when last ping was sent
   unsigned long _lastRxMs    = 0;  // millis() of last received payload bytes
+  long          _lastPongRttMs = -1;
 };

@@ -874,6 +874,10 @@
                                 <span class="telemetry-label">Fix Quality</span>
                                 <span class="telemetry-value" id="gps-fix">--</span>
                             </div>
+                            <div class="telemetry-item">
+                                <span class="telemetry-label">GPS Error</span>
+                                <span class="telemetry-value" id="gps-herr">--</span>
+                            </div>
                         </div>
                         
                         <!-- Status Data -->
@@ -1415,6 +1419,9 @@
                 const robot = robots.get(robotId);
                 robot.last_update = message.timestamp;
                 robot.online = true;
+                // Browser receive time: message.timestamp is the robot's millis(), not wall clock.
+                robot.last_seen_ms = Date.now();
+                robot.link = payload.link || null;
                 
                 // Store telemetry including mission status
                 latestTelemetry.set(robotId, {
@@ -1696,12 +1703,41 @@
                         </div>
                         ${robot.battery_level !== undefined ? 
                             `<div class="robot-status">Battery: ${robot.battery_level.toFixed(0)}%</div>` : ''}
+                        <div class="robot-status" id="link-${robotId}">${linkHealthHtml(robot)}</div>
                     </div>
                 `;
             });
             
             container.innerHTML = html;
         }
+
+        // Link health under each robot: telemetry age (green < 3 s, amber < 6 s, red
+        // after; SIM telemetry arrives every 2 s) and the robot<->server ping round
+        // trip the firmware reports in payload.link.rtt_ms (-1 = unknown).
+        function linkHealthHtml(robot) {
+            if (!robot || !robot.last_seen_ms) return '';
+            const ageS = (Date.now() - robot.last_seen_ms) / 1000;
+            const ageColor = ageS < 3 ? '#4CAF50' : ageS < 6 ? '#FFB300' : '#F44336';
+            let html = `<span style="color: ${ageColor};">Updated ${ageS < 1 ? 'just now' : Math.floor(ageS) + ' s ago'}</span>`;
+            const link = robot.link || {};
+            const rtt = Number(link.rtt_ms);
+            if (Number.isFinite(rtt) && rtt >= 0) {
+                const rttColor = rtt < 1000 ? '#aaa' : rtt < 2000 ? '#FFB300' : '#F44336';
+                html += `<span style="color: ${rttColor};"> • RTT ${Math.round(rtt)} ms</span>`;
+            }
+            if (link.source) {
+                html += `<span style="color: #666;"> • ${link.source}</span>`;
+            }
+            return html;
+        }
+
+        function refreshLinkHealth() {
+            robots.forEach((robot, robotId) => {
+                const el = document.getElementById(`link-${robotId}`);
+                if (el) el.innerHTML = linkHealthHtml(robot);
+            });
+        }
+        setInterval(refreshLinkHealth, 1000);
         
         function selectRobot(robotId) {
             console.log('[ROBOT SELECT] Selected robot:', robotId);
@@ -1894,12 +1930,14 @@
                 document.getElementById('gps-alt').textContent = gps.altitude.toFixed(2) + 'm';
                 document.getElementById('gps-hdop').textContent = (gps.hdop || 0).toFixed(2);
                 document.getElementById('gps-fix').textContent = gps.fix_quality || '--';
+                showGpsError(gps);
             } else {
                 document.getElementById('gps-lat').textContent = '--';
                 document.getElementById('gps-lon').textContent = '--';
                 document.getElementById('gps-alt').textContent = '--';
                 document.getElementById('gps-hdop').textContent = telemetry && telemetry.gps && Number.isFinite(Number(telemetry.gps.hdop)) ? Number(telemetry.gps.hdop).toFixed(2) : '--';
                 document.getElementById('gps-fix').textContent = telemetry && telemetry.gps ? (telemetry.gps.fix_quality || 'invalid') : '--';
+                showGpsError(telemetry && telemetry.gps);
             }
             
             // Update Status data (or show placeholder)
@@ -1949,20 +1987,28 @@
                 liveMissionWaypointIndex = nextLiveWaypointIndex;
                 liveMissionState = missionState;
 
-                const accentColor = missionState === 'Paused'
+                const missionHolding = mission.holding === true;
+                const herrM = telemetry.gps ? Number(telemetry.gps.h_err_m) : NaN;
+                const accentColor = missionHolding || missionState === 'Paused'
                     ? '#FFB300'
                     : missionState === 'Completed'
                         ? '#00C853'
                         : missionState === 'Failed' || missionState === 'Cancelled' || missionState === 'EStop'
                             ? '#F44336'
                             : '#4CAF50';
-                const bannerText = missionActive ? 'MISSION RUNNING' : `MISSION ${missionState.toUpperCase()}`;
+                const bannerText = missionHolding
+                    ? 'MISSION HOLDING — WAITING FOR GPS ACCURACY'
+                    : missionActive ? 'MISSION RUNNING' : `MISSION ${missionState.toUpperCase()}`;
 
                 let html = `<div style="background: #1f2b1d; padding: 12px; border-radius: 8px; border-left: 4px solid ${accentColor};">`;
                 html += `<div style="color: ${accentColor}; font-weight: bold; margin-bottom: 8px;">${bannerText}</div>`;
                 html += '<div style="color: #fff; font-size: 13px; margin-bottom: 4px; line-height: 1.5;">';
                 html += `<strong>Mission:</strong> ${mission.name || 'Unknown'}<br>`;
-                html += `<strong>Status:</strong> ${missionState}<br>`;
+                html += `<strong>Status:</strong> ${missionState}${missionHolding ? ' (holding)' : ''}<br>`;
+                if (missionHolding) {
+                    const herrText = Number.isFinite(herrM) && herrM >= 0 ? `${(herrM * 100).toFixed(1)} cm` : 'unknown';
+                    html += `<strong>GPS Error:</strong> ${herrText} (resumes below ${(GPS_HOLD_ERROR_M * 80).toFixed(0)} cm)<br>`;
+                }
                 html += `<strong>Current Waypoint:</strong> ${waypointIndex >= 0 ? waypointIndex : '--'}${currentWaypoint ? ` (${currentWaypoint.name})` : ''}<br>`;
                 if (coverageActive && coverageTotal > 0) {
                     html += `<strong>Coverage Progress:</strong> ${coverageCurrentDisplay || '--'} / ${coverageTotal}<br>`;
@@ -2058,6 +2104,22 @@
             const lat = Number(gps.latitude);
             const lon = Number(gps.longitude);
             return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+        }
+
+        // Robot's GST horizontal 1-sigma error (gps.h_err_m, -1 or absent = unknown).
+        // Red above 10 cm: the firmware holds a running mission at that point.
+        const GPS_HOLD_ERROR_M = 0.10;
+        function showGpsError(gps) {
+            const el = document.getElementById('gps-herr');
+            if (!el) return;
+            const herr = gps ? Number(gps.h_err_m) : NaN;
+            if (!Number.isFinite(herr) || herr < 0) {
+                el.textContent = '--';
+                el.style.color = '';
+                return;
+            }
+            el.textContent = (herr * 100).toFixed(1) + ' cm';
+            el.style.color = herr > GPS_HOLD_ERROR_M ? '#F44336' : '';
         }
 
         function hasUsableGpsFix(gps) {

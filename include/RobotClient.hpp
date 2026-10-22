@@ -64,6 +64,7 @@ struct RobotTelemetry {
   String mission_name{};
   int mission_waypoint_index{-1};
   int mission_waypoint_total{0};
+  bool mission_holding{false};  // running, but stopped by the GPS accuracy gate
   bool mission_coverage_active{false};
   int mission_coverage_progress_index{-1};
   int mission_coverage_total{0};

@@ -384,7 +384,8 @@ int SimWsClient::parseWsFrame(String& payloadOut) {
   // Log every non-text frame opcode for diagnostics
   if (opcode != 0x01 && opcode != 0x00) {
     if (opcode == 0x0A && _pingSentMs > 0) {
-      Serial.printf("[SIM_WS] pong RTT=%lums\n", millis() - _pingSentMs);
+      _lastPongRttMs = static_cast<long>(millis() - _pingSentMs);
+      Serial.printf("[SIM_WS] pong RTT=%ldms\n", _lastPongRttMs);
       _pingSentMs = 0;
     } else {
       Serial.printf("[SIM_WS] ctrl op=0x%02X plen=%u\n", opcode, (unsigned)plen);
@@ -459,6 +460,8 @@ bool SimWsClient::connect(const char* host, uint16_t port, const char* path) {
   _connected   = true;
   _lastProbeMs = millis();
   _lastRxMs    = millis();
+  _lastPongRttMs = -1;
+  _pingSentMs  = 0;
   Serial.println("[SIM_WS] WebSocket connected via SIM");
   return true;
 }
