@@ -4,6 +4,7 @@
 #define TINY_GSM_MODEM_SIM7600
 #endif
 #include <Arduino.h>
+#include "TinyGsmYield.h"  // must precede TinyGsmClient.h
 #include <TinyGsmClient.h>
 
 // SimWsClient — WebSocket over SSL TCP using AT+CIPOPEN "SSL" on the A7670C.

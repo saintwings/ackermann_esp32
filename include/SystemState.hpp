@@ -31,7 +31,10 @@ struct ImuState {
   bool valid{false};
   float ax{0.0f}, ay{0.0f}, az{0.0f};
   float gx{0.0f}, gy{0.0f}, gz{0.0f};
-  float qx{0.0f}, qy{0.0f}, qz{0.0f}, qw{1.0f};
+  float qx{0.0f}, qy{0.0f}, qz{0.0f}, qw{1.0f};      // rotation vector (magnetometer north)
+  float gqx{0.0f}, gqy{0.0f}, gqz{0.0f}, gqw{1.0f};  // game rotation vector (gyro+accel, no mag)
+  bool rv_valid{false};    // a rotation vector report has arrived
+  bool game_valid{false};  // a game rotation vector report has arrived
   unsigned long last_update_ms{0};
 };
 

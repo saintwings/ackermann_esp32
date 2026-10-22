@@ -15,8 +15,8 @@ class UsbCmdVelGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("USB CMD_VEL Sender")
-        self.root.geometry("560x560")
-        self.root.minsize(520, 520)
+        self.root.geometry("600x820")
+        self.root.minsize(560, 700)
 
         self.ser = None
         self.reader_thread = None
@@ -43,6 +43,18 @@ class UsbCmdVelGui:
         self.gps_alt_var = tk.StringVar(value="--")
         self.gps_hdop_var = tk.StringVar(value="--")
         self.gps_updated_var = tk.StringVar(value="never")
+
+        # Continuous CMD_VEL: mimics the companion computer, which must resend faster
+        # than the command timeout to keep control (mission resumes when it stops).
+        self.continuous_var = tk.BooleanVar(value=False)
+        self.period_var = tk.StringVar(value="100")
+        self.continuous_count = 0
+        self.continuous_job = None
+
+        # NAV line from the robot ("NAV ON" enables it, 10 Hz).
+        self.nav_enabled = False
+        self.nav_vars = {k: tk.StringVar(value="--") for k in (
+            "fix", "herr", "heading", "mission", "holding", "override", "wp", "dist_m", "bearing", "speed_cmd", "updated")}
 
         self._build_ui()
         self._refresh_ports()
@@ -88,6 +100,42 @@ class UsbCmdVelGui:
 
         ttk.Button(cmd, text="Send CMD_VEL", command=self.send_cmd_vel).grid(row=1, column=0, columnspan=3, sticky="we", **pad)
         ttk.Button(cmd, text="STOP", command=self.send_stop).grid(row=1, column=3, columnspan=3, sticky="we", **pad)
+
+        ttk.Checkbutton(
+            cmd, text="Send continuously every", variable=self.continuous_var, command=self._toggle_continuous
+        ).grid(row=2, column=0, columnspan=2, sticky="w", **pad)
+        ttk.Entry(cmd, textvariable=self.period_var, width=6).grid(row=2, column=2, sticky="w", **pad)
+        ttk.Label(cmd, text="ms (keep below timeout)").grid(row=2, column=3, columnspan=3, sticky="w", **pad)
+
+        mission = ttk.LabelFrame(self.root, text="Mission / Companion Computer")
+        mission.pack(fill="x", padx=10, pady=(0, 10))
+
+        ttk.Button(mission, text="MISSION_PAUSE", command=lambda: self._send_line("MISSION_PAUSE")).grid(
+            row=0, column=0, sticky="we", **pad)
+        ttk.Button(mission, text="MISSION_RESUME", command=lambda: self._send_line("MISSION_RESUME")).grid(
+            row=0, column=1, sticky="we", **pad)
+        self.nav_btn = ttk.Button(mission, text="NAV ON", command=self._toggle_nav)
+        self.nav_btn.grid(row=0, column=2, sticky="we", **pad)
+        for col in range(3):
+            mission.columnconfigure(col, weight=1)
+
+        # Heading source: magnetometer (MAG) or gyro + GPS course correction (GPS).
+        hdg = ttk.Frame(mission)
+        hdg.grid(row=5, column=0, columnspan=6, sticky="we", padx=4, pady=(4, 2))
+        ttk.Button(hdg, text="HEADING MAG", command=lambda: self._send_line("HEADING MAG")).pack(side="left", expand=True, fill="x", padx=4)
+        ttk.Button(hdg, text="HEADING GPS", command=lambda: self._send_line("HEADING GPS")).pack(side="left", expand=True, fill="x", padx=4)
+        ttk.Button(hdg, text="HEADING?", command=lambda: self._send_line("HEADING?")).pack(side="left", expand=True, fill="x", padx=4)
+
+        nav_fields = [
+            ("Fix", "fix"), ("GPS error", "herr"), ("Heading", "heading"),
+            ("Mission", "mission"), ("Holding", "holding"), ("Override", "override"),
+            ("Waypoint", "wp"), ("Distance", "dist_m"), ("Bearing", "bearing"),
+            ("Speed cmd", "speed_cmd"), ("Last NAV", "updated"),
+        ]
+        for i, (label, key) in enumerate(nav_fields):
+            r, c = 1 + i // 3, (i % 3) * 2
+            ttk.Label(mission, text=label).grid(row=r, column=c, sticky="w", padx=8, pady=2)
+            ttk.Label(mission, textvariable=self.nav_vars[key]).grid(row=r, column=c + 1, sticky="w", padx=8, pady=2)
 
         func = ttk.LabelFrame(self.root, text="FUNC Actuators")
         func.pack(fill="x", padx=10, pady=(0, 10))
@@ -222,6 +270,10 @@ class UsbCmdVelGui:
         self._append_log("Connected")
 
     def _disconnect_serial(self) -> None:
+        self._stop_continuous()
+        self.nav_enabled = False
+        if hasattr(self, "nav_btn"):
+            self.nav_btn.configure(text="NAV ON")
         self.reader_running = False
         if self.ser:
             try:
@@ -255,6 +307,12 @@ class UsbCmdVelGui:
             if not text:
                 continue
 
+            if text.startswith("NAV {"):
+                nav = self._parse_nav_line(text)
+                if nav is not None:
+                    self.root.after(0, lambda n=nav: self._update_nav_display(n))
+                continue
+
             gps_payload = self._parse_gps_line(text)
             if gps_payload is not None:
                 self.root.after(0, lambda g=gps_payload: self._update_gps_display(g))
@@ -273,6 +331,79 @@ class UsbCmdVelGui:
             return None
         return data.get("gps", {})
 
+    @staticmethod
+    def _parse_nav_line(text: str):
+        try:
+            data = json.loads(text[4:])
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _update_nav_display(self, nav: dict) -> None:
+        def fmt(key, spec, suffix=""):
+            v = nav.get(key)
+            return f"{v:{spec}}{suffix}" if isinstance(v, (int, float)) else "--"
+
+        herr = nav.get("herr")
+        self.nav_vars["fix"].set(str(nav.get("fix", "--")))
+        self.nav_vars["herr"].set(f"{herr * 100:.1f} cm" if isinstance(herr, (int, float)) and herr >= 0 else "--")
+        heading = fmt("heading", ".1f", "\u00b0")
+        if "hdg_src" in nav:
+            heading += f" ({nav['hdg_src']}, n={nav.get('hdg_n', 0)})"
+        self.nav_vars["heading"].set(heading)
+        self.nav_vars["mission"].set(str(nav.get("mission", "--")))
+        self.nav_vars["holding"].set(str(nav.get("holding", "--")))
+        self.nav_vars["override"].set(str(nav.get("override", "--")))
+        wp = nav.get("wp", -1)
+        self.nav_vars["wp"].set(str(wp) if isinstance(wp, int) and wp >= 0 else "--")
+        self.nav_vars["dist_m"].set(fmt("dist_m", ".2f", " m"))
+        self.nav_vars["bearing"].set(fmt("bearing", ".1f", "\u00b0"))
+        self.nav_vars["speed_cmd"].set(fmt("speed_cmd", ".2f", " m/s"))
+        self.nav_vars["updated"].set(time.strftime("%H:%M:%S"))
+
+    def _toggle_nav(self) -> None:
+        cmd = "NAV OFF" if self.nav_enabled else "NAV ON"
+        if self._send_line(cmd):
+            self.nav_enabled = not self.nav_enabled
+            self.nav_btn.configure(text="NAV OFF" if self.nav_enabled else "NAV ON")
+
+    def _toggle_continuous(self) -> None:
+        if self.continuous_var.get():
+            if not self.ser or not self.ser.is_open:
+                self.continuous_var.set(False)
+                messagebox.showerror("Not connected", "Connect serial first")
+                return
+            self.continuous_count = 0
+            self._append_log("Continuous CMD_VEL started")
+            self._continuous_tick()
+        else:
+            self._stop_continuous()
+
+    def _stop_continuous(self) -> None:
+        if self.continuous_job is not None:
+            self.root.after_cancel(self.continuous_job)
+            self.continuous_job = None
+        if self.continuous_count:
+            self._append_log(f"Continuous CMD_VEL stopped after {self.continuous_count} commands")
+        self.continuous_count = 0
+        self.continuous_var.set(False)
+
+    def _continuous_tick(self) -> None:
+        self.continuous_job = None
+        if not self.continuous_var.get():
+            return
+        try:
+            period_ms = max(20, int(self.period_var.get().strip()))
+        except ValueError:
+            period_ms = 100
+        # Log only the first command; logging every 100 ms would flood the log.
+        if not self.send_cmd_vel(log=self.continuous_count == 0):
+            self._stop_continuous()
+            return
+        self.continuous_count += 1
+        self.status_var.set(f"Continuous CMD_VEL: {self.continuous_count} sent")
+        self.continuous_job = self.root.after(period_ms, self._continuous_tick)
+
     def _update_gps_display(self, gps: dict) -> None:
         self.gps_valid_var.set(str(gps.get("valid", "--")))
         self.gps_fix_var.set(str(gps.get("fix_quality", "--")))
@@ -283,20 +414,21 @@ class UsbCmdVelGui:
         self.gps_hdop_var.set(f"{gps.get('hdop', 0.0):.2f}" if "hdop" in gps else "--")
         self.gps_updated_var.set(time.strftime("%H:%M:%S"))
 
-    def _send_line(self, line: str) -> bool:
+    def _send_line(self, line: str, log: bool = True) -> bool:
         if not self.ser or not self.ser.is_open:
             messagebox.showerror("Not connected", "Connect serial first")
             return False
         try:
             self.ser.write((line + "\n").encode("utf-8"))
-            self._append_log(f"TX: {line}")
+            if log:
+                self._append_log(f"TX: {line}")
             return True
         except Exception as exc:
             messagebox.showerror("Write failed", str(exc))
             self._append_log(f"Write failed: {exc}")
             return False
 
-    def send_cmd_vel(self) -> None:
+    def send_cmd_vel(self, log: bool = True) -> bool:
         try:
             linear = float(self.linear_var.get().strip())
             angular = float(self.angular_var.get().strip())
@@ -306,10 +438,10 @@ class UsbCmdVelGui:
                 "Invalid input",
                 "Linear and angular must be numbers, timeout must be an integer",
             )
-            return
+            return False
 
         cmd = f"CMD_VEL {linear:.4f} {angular:.4f} {timeout_ms}"
-        self._send_line(cmd)
+        return self._send_line(cmd, log=log)
 
     def send_mode(self) -> None:
         mode = self.mode_var.get().strip()
@@ -318,6 +450,7 @@ class UsbCmdVelGui:
             self._send_line(cmd)
 
     def send_stop(self) -> None:
+        self._stop_continuous()
         self._send_line("STOP")
 
     def send_func(self) -> None:

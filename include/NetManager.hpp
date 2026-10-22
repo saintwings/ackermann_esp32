@@ -8,6 +8,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include "TinyGsmYield.h"  // must precede TinyGsmClient.h
 #include <TinyGsmClient.h>
 
 #include "RobotConfig.h"

@@ -84,11 +84,35 @@ struct NavLock {
   NavLock(const NavLock&) = delete;
   NavLock& operator=(const NavLock&) = delete;
 };
+
+// Heading source (serial "HEADING MAG|GPS"; default HEADING_SOURCE_DEFAULT):
+//   MAG: BNO08x rotation vector, magnetometer north (+ HEADING_OFFSET_DEG).
+//   GPS: game rotation vector (gyro+accel, no magnetometer) + an offset learned from
+//        the GPS course over ground while driving straight on RTK fixed.
+// The GPS offset is learned in both modes, so switching is instant and the log can
+// compare both sources against the GPS course. All fields guarded by nav_mutex.
+enum class HeadingSource : uint8_t { Mag = 0, Gps = 1 };
+static HeadingSource heading_source = HEADING_SOURCE_DEFAULT ? HeadingSource::Gps : HeadingSource::Mag;
+struct HeadingFusion {
+  bool offset_valid = false;   // seeded from the magnetometer, then GPS-corrected
+  float offset_deg = 0.0f;     // compass heading = game yaw + offset
+  uint32_t corrections = 0;    // GPS course samples applied since boot
+  float last_gps_err_deg = 0.0f;  // GPS course - fused heading at the last sample
+  float last_mag_err_deg = 0.0f;  // GPS course - magnetometer heading at the last sample
+  bool anchor_valid = false;
+  double anchor_lat = 0.0, anchor_lon = 0.0;
+  float anchor_game_deg = 0.0f;
+  unsigned long last_gps_update_ms = 0;
+};
+static HeadingFusion heading_fusion;
 static float estimateHeadingDeg();
+static float magHeadingDeg();
 static void handleUsbSerialControl();
 
 static String usb_serial_line_buffer;
 static bool usb_serial_line_overflow = false;
+// NAV line on USB serial for a companion computer; toggled by "NAV ON" / "NAV OFF".
+static bool nav_serial_output = false;
 static constexpr size_t USB_SERIAL_MAX_LINE_LENGTH = 96;
 static constexpr unsigned long USB_CMD_VEL_DEFAULT_TIMEOUT_MS = 250;
 static constexpr unsigned long USB_CMD_VEL_MIN_TIMEOUT_MS = 50;
@@ -104,6 +128,8 @@ static void logSensorsAt1Hz() {
 
   // Snapshot shared state under the nav lock; print without holding it.
   GpsFix g;
+  HeadingFusion hdg;
+  bool hdg_src_gps = false;
   unsigned long nav_max_dt_ms = 0;
   unsigned long nav_cycles = 0;
   {
@@ -115,6 +141,8 @@ static void logSensorsAt1Hz() {
     nav_cycles = loop_stats.nav_cycle_count;
     loop_stats.max_nav_dt_ms = 0;
     loop_stats.nav_cycle_count = 0;
+    hdg_src_gps = heading_source == HeadingSource::Gps;
+    hdg = heading_fusion;
   }
 
   Serial.printf("[NET] %s", net_manager.sourceName());
@@ -160,6 +188,10 @@ static void logSensorsAt1Hz() {
                 nav_cycles,
                 (unsigned long)g.gga_ok_count,
                 (unsigned long)g.gga_bad_count);
+  // Heading: errors are GPS course minus each source at the last straight segment.
+  Serial.printf(" | [HDG] src=%s n=%lu fused_err=%.1f mag_err=%.1f",
+                hdg_src_gps ? "GPS" : "MAG", (unsigned long)hdg.corrections,
+                hdg.last_gps_err_deg, hdg.last_mag_err_deg);
   loop_stats.max_comms_dt_ms = 0;
   loop_stats.comms_overrun_count = 0;
   loop_stats.comms_cycle_count = 0;
@@ -300,12 +332,31 @@ static constexpr unsigned long GPS_STALE_TIMEOUT_MS = 3000;
 static constexpr unsigned long MISSION_SENSOR_GRACE_MS = 2000;
 static constexpr unsigned long COMMS_OVERRUN_MS = 20;
 static constexpr unsigned long NAV_PERIOD_MS = 10;  // NavTask: GPS/IMU/safety/mission
+static constexpr unsigned long NAV_SERIAL_PERIOD_MS = 100;  // NAV line for companion computer
 // Waypoint arrival radii (m); override in Config*.h.
 #ifndef MISSION_WAYPOINT_REACHED_M
 #define MISSION_WAYPOINT_REACHED_M 1.5f
 #endif
 #ifndef MISSION_COVERAGE_WAYPOINT_REACHED_M
 #define MISSION_COVERAGE_WAYPOINT_REACHED_M 0.5f
+#endif
+#ifndef MISSION_LINK_LOSS_HOLD_MS
+#define MISSION_LINK_LOSS_HOLD_MS 30000UL
+#endif
+#ifndef HEADING_SOURCE_DEFAULT
+#define HEADING_SOURCE_DEFAULT 0
+#endif
+#ifndef HEADING_GPS_MIN_BASELINE_M
+#define HEADING_GPS_MIN_BASELINE_M 0.5f
+#endif
+#ifndef HEADING_GPS_MAX_YAW_CHANGE_DEG
+#define HEADING_GPS_MAX_YAW_CHANGE_DEG 3.0f
+#endif
+#ifndef HEADING_GPS_GAIN
+#define HEADING_GPS_GAIN 0.3f
+#endif
+#ifndef HEADING_GPS_MAX_HERR_M
+#define HEADING_GPS_MAX_HERR_M 0.05f
 #endif
 static constexpr float MISSION_SLOWDOWN_RADIUS_M = 1.0f;
 static constexpr float MISSION_HEADING_SLOWDOWN_CRAWL_MPS = 0.12f;
@@ -740,6 +791,33 @@ static bool gpsAccurateForMission(unsigned long now, bool holding) {
 // File scope so telemetry can report the hold (mission.holding).
 static unsigned long mission_gps_hold_since_ms = 0;
 
+// millis() of the last CommsTask tick with the control server connected. Written
+// by CommsTask, read by NavTask (aligned 32-bit, so no lock needed).
+static volatile unsigned long server_link_ok_ms = 0;
+// millis() when the link-loss hold started; 0 = not holding.
+static unsigned long mission_link_hold_since_ms = 0;
+
+// Serial CMD_VEL / STOP override (companion computer, e.g. lidar obstacle avoidance):
+// until this time the mission keeps its state and target but does not drive.
+// 0 = no override. Written by SerialCmdTask, read by NavTask (both under nav lock).
+static unsigned long serial_override_until_ms = 0;
+
+static bool serialOverrideActive(unsigned long now) {
+  return serial_override_until_ms != 0 && static_cast<long>(serial_override_until_ms - now) > 0;
+}
+
+// True when the control server has been unreachable for MISSION_LINK_LOSS_HOLD_MS.
+// Never true without a control server (offline / serial-only builds).
+static bool serverLinkLost(unsigned long now) {
+#if NET_MODE != 0 && CONTROL_SERVER_ENABLE
+  // Signed: CommsTask may stamp server_link_ok_ms just after `now` was read.
+  return static_cast<long>(now - server_link_ok_ms) > static_cast<long>(MISSION_LINK_LOSS_HOLD_MS);
+#else
+  (void)now;
+  return false;
+#endif
+}
+
 static void updateMissionExecutor() {
   static unsigned long invalid_sensor_since_ms = 0;
   unsigned long& gps_hold_since_ms = mission_gps_hold_since_ms;
@@ -747,6 +825,7 @@ static void updateMissionExecutor() {
     mission_debug_valid = false;
     invalid_sensor_since_ms = 0;
     gps_hold_since_ms = 0;
+    mission_link_hold_since_ms = 0;
     setMissionAutoZeroTurn(false);
     resetMissionSpeedSlew();
     if (mission_ctx.state != MissionState::Idle && mission_ctx.state != MissionState::Cancelled && mission_ctx.state != MissionState::Completed && mission_ctx.state != MissionState::Failed && mission_ctx.state != MissionState::EStop) {
@@ -776,7 +855,45 @@ static void updateMissionExecutor() {
   if (mission_ctx.state != MissionState::Running) {
     mission_debug_valid = false;
     gps_hold_since_ms = 0;
+    mission_link_hold_since_ms = 0;
     return;
+  }
+
+  // Serial CMD_VEL/STOP override: drive targets belong to the companion computer until
+  // its commands expire; then the mission resumes toward its current target from
+  // wherever the robot is. Checked before the holds, which would zero the targets.
+  static bool yielding_to_serial = false;
+  if (serialOverrideActive(now)) {
+    mission_debug_valid = false;
+    resetMissionSpeedSlew();
+    if (!yielding_to_serial) {
+      yielding_to_serial = true;
+      Serial.println("[MISSION] Serial override: mission yielding");
+    }
+    return;
+  }
+  if (yielding_to_serial) {
+    yielding_to_serial = false;
+    Serial.println("[MISSION] Serial override ended: mission resuming");
+  }
+
+  // Server unreachable: hold in place so the robot never drives on with no way to
+  // stop it remotely; resume automatically when the link returns.
+  if (serverLinkLost(now)) {
+    mission_debug_valid = false;
+    resetMissionCommandTargets();
+    resetMissionSpeedSlew();
+    if (mission_link_hold_since_ms == 0) {
+      mission_link_hold_since_ms = now;
+      Serial.printf("[MISSION] Holding: no server link for %lu s\n",
+                    MISSION_LINK_LOSS_HOLD_MS / 1000UL);
+    }
+    return;
+  }
+  if (mission_link_hold_since_ms != 0) {
+    Serial.printf("[MISSION] Resumed: server link back (held %lu ms)\n",
+                  now - mission_link_hold_since_ms);
+    mission_link_hold_since_ms = 0;
   }
 
   // Spiral tasks are purely time-based and do not require GPS or IMU
@@ -1594,7 +1711,7 @@ static void handleUsbSerialLine(const String& raw_line) {
   upper.toUpperCase();
 
   if (upper == "HELP" || upper == "?") {
-    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
+    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
     return;
   }
 
@@ -1638,7 +1755,52 @@ static void handleUsbSerialLine(const String& raw_line) {
     control_targets.linear_mps = 0.0f;
     control_targets.angle_deg = 0.0f;
     control_targets.remote_move_expire_ms = millis() + 150;
+    // During a mission STOP must also hold the mission off, or it would drive again
+    // on the next NavTask pass. Repeat STOP (or CMD_VEL 0 0) to keep it stopped.
+    serial_override_until_ms = millis() + USB_CMD_VEL_DEFAULT_TIMEOUT_MS;
     Serial.println("[USB_SERIAL] STOP accepted");
+    return;
+  }
+
+  if (upper == "MISSION_PAUSE") {
+    if (mission_ctx.active && mission_ctx.state == MissionState::Running) {
+      setMissionState(MissionState::Paused);
+      resetMissionCommandTargets();
+      Serial.println("[USB_SERIAL] MISSION_PAUSE accepted");
+    } else {
+      Serial.println("[USB_SERIAL] MISSION_PAUSE rejected: no running mission");
+    }
+    return;
+  }
+
+  if (upper == "MISSION_RESUME") {
+    if (mission_ctx.active && mission_ctx.state == MissionState::Paused) {
+      setMissionState(MissionState::Running);
+      Serial.println("[USB_SERIAL] MISSION_RESUME accepted");
+    } else {
+      Serial.println("[USB_SERIAL] MISSION_RESUME rejected: no paused mission");
+    }
+    return;
+  }
+
+  if (upper == "HEADING MAG" || upper == "HEADING GPS") {
+    heading_source = (upper == "HEADING GPS") ? HeadingSource::Gps : HeadingSource::Mag;
+    Serial.printf("[USB_SERIAL] HEADING source %s\n", heading_source == HeadingSource::Gps ? "GPS" : "MAG");
+    return;
+  }
+
+  if (upper == "HEADING?") {
+    Serial.printf("[USB_SERIAL] heading src=%s heading=%.1f mag=%.1f offset=%.1f corrections=%lu fused_err=%.1f mag_err=%.1f\n",
+                  heading_source == HeadingSource::Gps ? "GPS" : "MAG", estimateHeadingDeg(),
+                  imu_state.valid ? magHeadingDeg() : 0.0f, heading_fusion.offset_deg,
+                  (unsigned long)heading_fusion.corrections, heading_fusion.last_gps_err_deg,
+                  heading_fusion.last_mag_err_deg);
+    return;
+  }
+
+  if (upper == "NAV ON" || upper == "NAV OFF") {
+    nav_serial_output = (upper == "NAV ON");
+    Serial.printf("[USB_SERIAL] NAV output %s\n", nav_serial_output ? "ON" : "OFF");
     return;
   }
 
@@ -1710,8 +1872,11 @@ static void handleUsbSerialLine(const String& raw_line) {
     }
 
     if (missionBlocksManualVelocityControl()) {
-      Serial.println("[USB_SERIAL] CMD_VEL rejected: mission control active");
-      return;
+      // Override the mission instead of rejecting. Never indefinitely: an infinite
+      // command (timeout 0) would stop the mission forever if the sender died.
+      if (timeout_ms == 0) timeout_ms = USB_CMD_VEL_DEFAULT_TIMEOUT_MS;
+      const unsigned long t = max(USB_CMD_VEL_MIN_TIMEOUT_MS, min(timeout_ms, USB_CMD_VEL_MAX_TIMEOUT_MS));
+      serial_override_until_ms = millis() + t;
     }
 
     // change direction form this //
@@ -1764,20 +1929,83 @@ static void handleUsbSerialControl() {
   }
 }
 
-static float estimateHeadingDeg() {
-  if (!imu_state.valid) return 0.0f;
-  float qw = imu_state.qw;
-  float qx = imu_state.qx;
-  float qy = imu_state.qy;
-  float qz = imu_state.qz;
+// Compass-convention yaw (deg, unwrapped) from a BNO08x quaternion.
+static float quatCompassYawDeg(float qw, float qx, float qy, float qz) {
   float siny_cosp = 2.0f * (qw * qz + qx * qy);
   float cosy_cosp = 1.0f - 2.0f * (qy * qy + qz * qz);
   //float yaw_deg = DoubleAckermannSteering::rad2deg(atan2f(siny_cosp, cosy_cosp));
-  float yaw_deg = DoubleAckermannSteering::rad2deg(atan2f(cosy_cosp, siny_cosp));
-  yaw_deg += HEADING_OFFSET_DEG;
-  yaw_deg = fmodf(yaw_deg, 360.0f);
-  if (yaw_deg < 0.0f) yaw_deg += 360.0f;
-  return yaw_deg;
+  return DoubleAckermannSteering::rad2deg(atan2f(cosy_cosp, siny_cosp));
+}
+
+static float wrap360(float deg) {
+  deg = fmodf(deg, 360.0f);
+  return deg < 0.0f ? deg + 360.0f : deg;
+}
+
+static float magHeadingDeg() {
+  return wrap360(quatCompassYawDeg(imu_state.qw, imu_state.qx, imu_state.qy, imu_state.qz) + HEADING_OFFSET_DEG);
+}
+
+static float gameYawDeg() {
+  return quatCompassYawDeg(imu_state.gqw, imu_state.gqx, imu_state.gqy, imu_state.gqz);
+}
+
+static float estimateHeadingDeg() {
+  if (!imu_state.valid) return 0.0f;
+  if (heading_source == HeadingSource::Gps && imu_state.game_valid && heading_fusion.offset_valid) {
+    return wrap360(gameYawDeg() + heading_fusion.offset_deg);
+  }
+  return magHeadingDeg();
+}
+
+// NavTask: learn the game-yaw offset from GPS course over ground. On each new GPS
+// epoch while driving forward in normal mode on RTK fixed (GST error within
+// HEADING_GPS_MAX_HERR_M): once HEADING_GPS_MIN_BASELINE_M has been covered with less
+// than HEADING_GPS_MAX_YAW_CHANGE_DEG of turning, the bearing of that segment is the
+// true heading; nudge the offset toward it by HEADING_GPS_GAIN.
+static void updateHeadingFusion() {
+  HeadingFusion& hf = heading_fusion;
+  if (!imu_state.valid || !imu_state.rv_valid || !imu_state.game_valid) return;
+  const float game_deg = gameYawDeg();
+  if (!hf.offset_valid) {
+    hf.offset_deg = normalizeAngleDeg(magHeadingDeg() - game_deg);
+    hf.offset_valid = true;
+  }
+
+  if (gps_fix.last_update_ms == hf.last_gps_update_ms) return;  // once per GPS epoch
+  hf.last_gps_update_ms = gps_fix.last_update_ms;
+
+  const bool usable = gps_fix.valid && gps_fix.fix_quality == 4 && gps_fix.has_gst &&
+                      gps_fix.h_err_m <= HEADING_GPS_MAX_HERR_M &&
+                      robot_mode == RobotMode::Normal && control_targets.linear_mps > 0.05f;
+  if (!usable) {
+    hf.anchor_valid = false;
+    return;
+  }
+  const bool turned = hf.anchor_valid &&
+                      fabsf(normalizeAngleDeg(game_deg - hf.anchor_game_deg)) > HEADING_GPS_MAX_YAW_CHANGE_DEG;
+  if (!hf.anchor_valid || turned) {
+    hf.anchor_valid = true;
+    hf.anchor_lat = gps_fix.latitude;
+    hf.anchor_lon = gps_fix.longitude;
+    hf.anchor_game_deg = game_deg;
+    return;
+  }
+  if (distanceMeters(hf.anchor_lat, hf.anchor_lon, gps_fix.latitude, gps_fix.longitude) < HEADING_GPS_MIN_BASELINE_M) {
+    return;
+  }
+
+  const float course_deg = bearingDeg(hf.anchor_lat, hf.anchor_lon, gps_fix.latitude, gps_fix.longitude);
+  const float mid_game_deg = hf.anchor_game_deg + 0.5f * normalizeAngleDeg(game_deg - hf.anchor_game_deg);
+  const float err_deg = normalizeAngleDeg(course_deg - (mid_game_deg + hf.offset_deg));
+  hf.offset_deg = normalizeAngleDeg(hf.offset_deg + HEADING_GPS_GAIN * err_deg);
+  hf.last_gps_err_deg = err_deg;
+  hf.last_mag_err_deg = normalizeAngleDeg(course_deg - magHeadingDeg());
+  ++hf.corrections;
+
+  hf.anchor_lat = gps_fix.latitude;
+  hf.anchor_lon = gps_fix.longitude;
+  hf.anchor_game_deg = game_deg;
 }
 
 static void handleRobotClientCommand() {
@@ -2007,7 +2235,7 @@ static void publishRobotTelemetry() {
     telemetry.mission_waypoint_index = mission_ctx.waypoint_index;
     telemetry.mission_waypoint_total = static_cast<int>(mission_waypoint_count);
     telemetry.mission_holding = mission_ctx.active && mission_ctx.state == MissionState::Running &&
-                                mission_gps_hold_since_ms != 0;
+                                (mission_gps_hold_since_ms != 0 || mission_link_hold_since_ms != 0);
     telemetry.mission_coverage_active = false;
     telemetry.mission_coverage_progress_index = -1;
     telemetry.mission_coverage_total = 0;
@@ -2083,7 +2311,7 @@ void setup() {
     delay(10);
   }
   delay(1000);
-  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
+  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
   Serial.println("[USB_SERIAL]   FUNC_<n> ON|OFF drives a GPIO actuator directly; FUNC_<n> <degrees> DEG moves a CAN actuator then returns it to 0");
   Serial.println("[USB_SERIAL]   FUNC_<n> <degrees> REL_DEG moves a CAN actuator relative to its current position and just holds there");
@@ -2350,6 +2578,9 @@ static void commsTask(void* /*pvParameters*/) {
     if (net_manager.isConnected()) {
       robot_client.update();
     }
+    if (net_manager.isConnected() && robot_client.isConnected()) {
+      server_link_ok_ms = millis();
+    }
 #endif
 #endif // NET_MODE != 0
 
@@ -2394,6 +2625,7 @@ static void navTask(void* /*pvParameters*/) {
       if (dt_ms > loop_stats.max_nav_dt_ms) loop_stats.max_nav_dt_ms = dt_ms;
       SensorComms::readGps(sensor_comms);
       SensorComms::updateImu(sensor_comms);
+      updateHeadingFusion();
       updateSafetyGuards();
       updateMissionExecutor();
       updateFuncExecutor();
@@ -2402,9 +2634,64 @@ static void navTask(void* /*pvParameters*/) {
   }
 }
 
+// Machine-readable navigation state for a companion computer (NAV_SERIAL_PERIOD_MS):
+//   NAV {"t":ms,"lat":..,"lon":..,"fix":4,"herr":0.014,"heading":deg,"mission":"running",
+//        "holding":false,"override":false,"wp":2,"target_lat":..,"target_lon":..,
+//        "dist_m":..,"bearing":deg,"speed_cmd":..}
+// herr = -1 when unknown; wp = -1 and target_* / dist / bearing omitted with no target.
+static void publishNavSerial() {
+  static unsigned long last_ms = 0;
+  const unsigned long now = millis();
+  if (!nav_serial_output || now - last_ms < NAV_SERIAL_PERIOD_MS) return;
+  last_ms = now;
+
+  double lat, lon, tlat = 0.0, tlon = 0.0;
+  int fix, wp = -1;
+  float herr, heading, dist = 0.0f, speed_cmd = 0.0f;
+  bool holding, override_active, hdg_gps;
+  uint32_t hdg_n;
+  const char* mission_state;
+  {
+    NavLock lock;
+    lat = gps_fix.latitude;
+    lon = gps_fix.longitude;
+    fix = gps_fix.valid ? gps_fix.fix_quality : 0;
+    herr = (gps_fix.has_gst && now - gps_fix.last_gst_ms < GPS_STALE_TIMEOUT_MS) ? gps_fix.h_err_m : -1.0f;
+    heading = estimateHeadingDeg();
+    mission_state = missionStateToString(mission_ctx.state);
+    holding = mission_ctx.active && (mission_gps_hold_since_ms != 0 || mission_link_hold_since_ms != 0);
+    override_active = serialOverrideActive(now);
+    hdg_gps = heading_source == HeadingSource::Gps;
+    hdg_n = heading_fusion.corrections;
+    if (mission_ctx.active && mission_debug_target_waypoint >= 0 &&
+        static_cast<size_t>(mission_debug_target_waypoint) < mission_waypoint_count) {
+      wp = mission_debug_target_waypoint;
+      tlat = mission_waypoints[wp].lat;
+      tlon = mission_waypoints[wp].lon;
+      dist = mission_debug_dist_m;
+      speed_cmd = mission_debug_speed_cmd_mps;
+    }
+  }
+
+  char buf[320];
+  int n = snprintf(buf, sizeof(buf),
+                   "NAV {\"t\":%lu,\"lat\":%.7f,\"lon\":%.7f,\"fix\":%d,\"herr\":%.3f,\"heading\":%.1f,"
+                   "\"hdg_src\":\"%s\",\"hdg_n\":%lu,"
+                   "\"mission\":\"%s\",\"holding\":%s,\"override\":%s,\"wp\":%d",
+                   now, lat, lon, fix, herr, heading, hdg_gps ? "GPS" : "MAG", (unsigned long)hdg_n,
+                   mission_state, holding ? "true" : "false", override_active ? "true" : "false", wp);
+  if (wp >= 0 && n > 0 && n < static_cast<int>(sizeof(buf))) {
+    n += snprintf(buf + n, sizeof(buf) - n,
+                  ",\"target_lat\":%.7f,\"target_lon\":%.7f,\"dist_m\":%.2f,\"bearing\":%.1f,\"speed_cmd\":%.2f",
+                  tlat, tlon, dist, bearingDeg(lat, lon, tlat, tlon), speed_cmd);
+  }
+  Serial.printf("%s}\n", buf);
+}
+
 static void serialCmdTask(void* /*pvParameters*/) {
   for (;;) {
     handleUsbSerialControl();
+    publishNavSerial();
     vTaskDelay(pdMS_TO_TICKS(2));
   }
 }

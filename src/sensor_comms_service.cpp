@@ -232,6 +232,9 @@ void initBno085(SensorCommsContext& ctx) {
   ctx.bno08x.enableReport(SH2_ACCELEROMETER, 10000);
   ctx.bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, 10000);
   ctx.bno08x.enableReport(SH2_ROTATION_VECTOR, 10000);
+  // Gyro+accel only: immune to motor/frame magnetic fields; drift is corrected
+  // from GPS course in main.cpp when HEADING GPS is selected.
+  ctx.bno08x.enableReport(SH2_GAME_ROTATION_VECTOR, 10000);
   SENSOR_COMMS_LOG_PRINTLN("[IMU] BNO085 ready (SPI)");
 }
 
@@ -260,8 +263,15 @@ void updateImu(SensorCommsContext& ctx) {
       ctx.imu_state.qx = ctx.bno_sensor_value.un.rotationVector.i;
       ctx.imu_state.qy = ctx.bno_sensor_value.un.rotationVector.j;
       ctx.imu_state.qz = ctx.bno_sensor_value.un.rotationVector.k;
+      ctx.imu_state.rv_valid = true;
       ctx.imu_state.valid = true;
       ctx.imu_state.last_update_ms = millis();
+    } else if (ctx.bno_sensor_value.sensorId == SH2_GAME_ROTATION_VECTOR) {
+      ctx.imu_state.gqw = ctx.bno_sensor_value.un.gameRotationVector.real;
+      ctx.imu_state.gqx = ctx.bno_sensor_value.un.gameRotationVector.i;
+      ctx.imu_state.gqy = ctx.bno_sensor_value.un.gameRotationVector.j;
+      ctx.imu_state.gqz = ctx.bno_sensor_value.un.gameRotationVector.k;
+      ctx.imu_state.game_valid = true;
     }
 
     if (digitalRead(BNO085_SPI_INT_PIN) != LOW) {

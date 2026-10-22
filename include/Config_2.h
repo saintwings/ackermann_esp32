@@ -74,6 +74,17 @@
 // Coverage-path points use the tighter radius so rows stay straight.
 #define MISSION_WAYPOINT_REACHED_M 1.5f
 #define MISSION_COVERAGE_WAYPOINT_REACHED_M 0.5f
+// Server link loss: a running mission holds in place after this long without the
+// control server, and resumes automatically when the link returns.
+#define MISSION_LINK_LOSS_HOLD_MS 30000UL
+// Heading source: 0 = BNO08x rotation vector (magnetometer north, as before);
+// 1 = gyro-only game rotation vector corrected by GPS course while driving straight on
+// RTK fixed. Switch at runtime with serial "HEADING MAG" / "HEADING GPS".
+#define HEADING_SOURCE_DEFAULT 0
+#define HEADING_GPS_MIN_BASELINE_M 0.5f      // straight distance per GPS course sample
+#define HEADING_GPS_MAX_YAW_CHANGE_DEG 3.0f  // more turning than this restarts the segment
+#define HEADING_GPS_GAIN 0.3f                // fraction of each course error applied
+#define HEADING_GPS_MAX_HERR_M 0.05f         // GST error limit for using a sample
 
 // Echo GPS data to USB Serial as JSON, same fields as the "gps" object sent
 // to the web UI in robot telemetry (valid/latitude/longitude/altitude/hdop/
