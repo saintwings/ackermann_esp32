@@ -3,10 +3,14 @@
 #include <PS2X_lib.h>
 #include <WiFi.h>
 #include <SPI.h>
+#include <Wire.h>
 #include <Adafruit_BNO08x.h>
 #include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
 #include "DoubleAckermann.hpp"
+#include "Ds3502.hpp"
+#include "LinearActuator.hpp"
+#include "Pcf8574.hpp"
 #include "ControlActuationService.hpp"
 #include "RobotConfig.h"
 #include "ControlInputService.hpp"
@@ -15,6 +19,17 @@
 #include "RobotClient.hpp"
 #include "SensorCommsService.hpp"
 #include "SystemState.hpp"
+
+// Add-on I/O modules default to off when the config doesn't mention them.
+#ifndef DS3502_ENABLE
+#define DS3502_ENABLE 0
+#endif
+#ifndef PCF8574_ENABLE
+#define PCF8574_ENABLE 0
+#endif
+#ifndef ACTUATOR_ENABLE
+#define ACTUATOR_ENABLE 0
+#endif
 
 HardwareSerial gps_uart(1);
 NetManager net_manager;
@@ -36,6 +51,25 @@ bool wifi_connected = false;
 bool imu_ready = false;
 RobotClient robot_client;
 Adafruit_NeoPixel status_leds(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+#if DS3502_ENABLE
+static constexpr uint8_t kDs3502Addresses[DS3502_COUNT] = DS3502_ADDRESSES;
+Ds3502 pots[DS3502_COUNT];
+#endif
+#if PCF8574_ENABLE
+Pcf8574 input_expander;
+// Bit n = digital input n+1 active (after DIGITAL_INPUT_ACTIVE_LOW is applied).
+static uint8_t digital_inputs = 0;
+static uint8_t digital_inputs_raw = 0xFF;
+static bool digital_inputs_ok = false;
+#endif
+#if ACTUATOR_ENABLE
+LinearActuator actuator({
+  ACT_INA_PIN, ACT_INB_PIN, ACT_PWM_PIN, ACT_POS_PIN, ACT_LEDC_CHANNEL, ACT_PWM_FREQ_HZ,
+  ACT_ADC_RETRACTED, ACT_ADC_EXTENDED, ACT_ADC_FAULT_MARGIN, ACT_DIRECTION_SIGN,
+  ACT_DEADBAND_PCT, ACT_SLOW_ZONE_PCT, ACT_MIN_DUTY_PCT, ACT_MAX_DUTY_PCT,
+  ACT_STALL_TIMEOUT_MS, ACT_STALL_MIN_CHANGE_PCT,
+});
+#endif
 
 ControlTargets control_targets;
 MissionContext mission_ctx;
@@ -1702,6 +1736,150 @@ static void handleCanPing(const String& args) {
   }
 }
 
+// POT <ch> <0-100>     — set DS3502 <ch> (1..DS3502_COUNT) wiper in percent
+// POT <ch> RAW <0-127> — set the wiper in raw steps
+// POT?                 — read every wiper back from the chips
+static void handlePotCommand(String args) {
+#if DS3502_ENABLE
+  args.trim();
+  if (args == "?") {
+    for (size_t i = 0; i < DS3502_COUNT; ++i) {
+      const int w = pots[i].present() ? pots[i].readWiper() : -1;
+      if (w < 0) {
+        Serial.printf("[USB_SERIAL] POT %u (0x%02X): %s\n", static_cast<unsigned>(i + 1), kDs3502Addresses[i],
+                      pots[i].present() ? "I2C read error" : "not detected");
+      } else {
+        Serial.printf("[USB_SERIAL] POT %u (0x%02X): wiper=%d/%u (%.1f%%)\n", static_cast<unsigned>(i + 1),
+                      kDs3502Addresses[i], w, Ds3502::kMaxWiper, w * 100.0f / Ds3502::kMaxWiper);
+      }
+    }
+    return;
+  }
+
+  int ch = 0;
+  char mode_buf[8] = {0};
+  char value_buf[16] = {0};
+  int raw = -1;
+  const int parsed = sscanf(args.c_str(), "%d %7s %15s", &ch, mode_buf, value_buf);
+  char* end = nullptr;
+  if (parsed == 2) {
+    const float pct = strtof(mode_buf, &end);
+    if (*end == '\0' && pct >= 0.0f && pct <= 100.0f) raw = lroundf(pct * Ds3502::kMaxWiper / 100.0f);
+  } else if (parsed == 3 && strcmp(mode_buf, "RAW") == 0) {
+    const long n = strtol(value_buf, &end, 10);
+    if (*end == '\0' && n >= 0 && n <= Ds3502::kMaxWiper) raw = static_cast<int>(n);
+  }
+  if (ch < 1 || ch > static_cast<int>(DS3502_COUNT) || raw < 0) {
+    Serial.printf("[USB_SERIAL] Invalid POT. Usage: POT <1-%d> <0-100>, POT <1-%d> RAW <0-127>, POT?\n",
+                  DS3502_COUNT, DS3502_COUNT);
+    return;
+  }
+  Ds3502& pot = pots[ch - 1];
+  if (!pot.present()) {
+    Serial.printf("[USB_SERIAL] POT %d rejected: DS3502 0x%02X not detected on I2C\n", ch, kDs3502Addresses[ch - 1]);
+    return;
+  }
+  if (!pot.setWiper(static_cast<uint8_t>(raw))) {
+    Serial.printf("[USB_SERIAL] POT %d failed: I2C write error\n", ch);
+    return;
+  }
+  Serial.printf("[USB_SERIAL] POT %d set wiper=%d/%u (%.1f%%)\n", ch, raw, Ds3502::kMaxWiper, raw * 100.0f / Ds3502::kMaxWiper);
+#else
+  (void)args;
+  Serial.println("[USB_SERIAL] POT rejected: DS3502_ENABLE is 0");
+#endif
+}
+
+static void handleInputQuery() {
+#if PCF8574_ENABLE
+  if (!digital_inputs_ok) {
+    Serial.printf("[USB_SERIAL] IN: PCF8574 0x%02X %s\n", PCF8574_I2C_ADDR,
+                  input_expander.present() ? "read error" : "not detected");
+    return;
+  }
+  Serial.print("[USB_SERIAL] IN");
+  for (int i = 0; i < DIGITAL_INPUT_COUNT; ++i) {
+    Serial.printf(" %d=%d", i + 1, (digital_inputs >> i) & 1);
+  }
+  Serial.printf(" raw=0x%02X\n", digital_inputs_raw);
+#else
+  Serial.println("[USB_SERIAL] IN rejected: PCF8574_ENABLE is 0");
+#endif
+}
+
+// ACT <0-100>                — move the linear actuator to percent of stroke
+// ACT STOP                   — stop it
+// ACT?                       — position, raw ADC (for calibration), state
+// ACT JOG <-100..100> <ms>   — open-loop drive (+ = extend) for calibration
+static void handleActuatorCommand(String args) {
+#if ACTUATOR_ENABLE
+  args.trim();
+  if (args == "?") {
+    Serial.printf("[USB_SERIAL] ACT pos=%.1f%% raw=%d target=%.1f%% state=%s fault=%s\n",
+                  actuator.positionPct(), actuator.rawAdc(), actuator.targetPct(),
+                  LinearActuator::stateName(actuator.state()), LinearActuator::faultName(actuator.fault()));
+    return;
+  }
+  if (args == "STOP") {
+    actuator.stop();
+    Serial.println("[USB_SERIAL] ACT stopped");
+    return;
+  }
+  if (e_stop_active) {
+    Serial.println("[USB_SERIAL] ACT rejected: e-stop active");
+    return;
+  }
+  char* end = nullptr;
+  if (args.startsWith("JOG")) {
+    float duty = 0.0f;
+    unsigned long ms = 0;
+    String v = args.substring(3);
+    if (sscanf(v.c_str(), "%f %lu", &duty, &ms) != 2 || duty < -100.0f || duty > 100.0f || ms == 0 || ms > 5000) {
+      Serial.println("[USB_SERIAL] Invalid ACT JOG. Usage: ACT JOG <-100..100> <1-5000 ms>");
+      return;
+    }
+    actuator.jog(duty, ms);
+    Serial.printf("[USB_SERIAL] ACT jog %+.0f%% for %lu ms\n", duty, ms);
+    return;
+  }
+  const float pct = strtof(args.c_str(), &end);
+  if (args.length() == 0 || *end != '\0' || pct < 0.0f || pct > 100.0f) {
+    Serial.println("[USB_SERIAL] Invalid ACT. Usage: ACT <0-100>, ACT STOP, ACT?, ACT JOG <-100..100> <ms>");
+    return;
+  }
+  actuator.setTarget(pct);
+  Serial.printf("[USB_SERIAL] ACT moving to %.1f%% (now %.1f%%)\n", pct, actuator.positionPct());
+#else
+  (void)args;
+  Serial.println("[USB_SERIAL] ACT rejected: ACTUATOR_ENABLE is 0");
+#endif
+}
+
+// Polls the PCF8574 inputs and runs the actuator position loop (NavTask, nav lock held).
+static void updateIoDevices(unsigned long now) {
+#if PCF8574_ENABLE
+  static unsigned long last_input_poll_ms = 0;
+  if (input_expander.present() && now - last_input_poll_ms >= DIGITAL_INPUT_POLL_MS) {
+    last_input_poll_ms = now;
+    uint8_t levels = 0;
+    digital_inputs_ok = input_expander.read(levels);
+    if (digital_inputs_ok) {
+      digital_inputs_raw = levels;
+      const uint8_t mask = static_cast<uint8_t>((1u << DIGITAL_INPUT_COUNT) - 1);
+      digital_inputs = (DIGITAL_INPUT_ACTIVE_LOW ? ~levels : levels) & mask;
+    }
+  }
+#endif
+#if ACTUATOR_ENABLE
+  if (e_stop_active && (actuator.state() == LinearActuator::State::Moving ||
+                        actuator.state() == LinearActuator::State::Jogging)) {
+    actuator.stop();
+    Serial.println("[ACT] stopped by e-stop");
+  }
+  actuator.update(now);
+#endif
+}
+
 static void handleUsbSerialLine(const String& raw_line) {
   String line = raw_line;
   line.trim();
@@ -1711,7 +1889,7 @@ static void handleUsbSerialLine(const String& raw_line) {
   upper.toUpperCase();
 
   if (upper == "HELP" || upper == "?") {
-    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
+    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, CAN_PING <node_id> [timeout_ms]");
     return;
   }
 
@@ -1748,6 +1926,21 @@ static void handleUsbSerialLine(const String& raw_line) {
     unit.toUpperCase();
 
     triggerFunc(idx, value, unit);
+    return;
+  }
+
+  if (upper == "POT" || upper.startsWith("POT ") || upper == "POT?") {
+    handlePotCommand(upper.substring(3));
+    return;
+  }
+
+  if (upper == "IN?") {
+    handleInputQuery();
+    return;
+  }
+
+  if (upper == "ACT" || upper.startsWith("ACT ") || upper == "ACT?") {
+    handleActuatorCommand(upper.substring(3));
     return;
   }
 
@@ -2236,6 +2429,25 @@ static void publishRobotTelemetry() {
     telemetry.mission_waypoint_total = static_cast<int>(mission_waypoint_count);
     telemetry.mission_holding = mission_ctx.active && mission_ctx.state == MissionState::Running &&
                                 (mission_gps_hold_since_ms != 0 || mission_link_hold_since_ms != 0);
+#if DS3502_ENABLE
+    telemetry.pot_count = min(static_cast<int>(DS3502_COUNT), RobotTelemetry::kMaxPots);
+    for (int i = 0; i < telemetry.pot_count; ++i) {
+      telemetry.pot_present[i] = pots[i].present();
+      telemetry.pot_wiper[i] = pots[i].wiper();
+    }
+#endif
+#if PCF8574_ENABLE
+    telemetry.input_count = DIGITAL_INPUT_COUNT;
+    telemetry.inputs_ok = digital_inputs_ok;
+    telemetry.inputs = digital_inputs;
+#endif
+#if ACTUATOR_ENABLE
+    telemetry.actuator_enabled = true;
+    telemetry.actuator_position_pct = actuator.positionPct();
+    telemetry.actuator_target_pct = actuator.targetPct();
+    telemetry.actuator_state = LinearActuator::stateName(actuator.state());
+    telemetry.actuator_fault = LinearActuator::faultName(actuator.fault());
+#endif
     telemetry.mission_coverage_active = false;
     telemetry.mission_coverage_progress_index = -1;
     telemetry.mission_coverage_total = 0;
@@ -2311,7 +2523,7 @@ void setup() {
     delay(10);
   }
   delay(1000);
-  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, CAN_PING <node_id> [timeout_ms]");
+  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, CAN_PING <node_id> [timeout_ms]");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
   Serial.println("[USB_SERIAL]   FUNC_<n> ON|OFF drives a GPIO actuator directly; FUNC_<n> <degrees> DEG moves a CAN actuator then returns it to 0");
   Serial.println("[USB_SERIAL]   FUNC_<n> <degrees> REL_DEG moves a CAN actuator relative to its current position and just holds there");
@@ -2321,6 +2533,37 @@ void setup() {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, LOW);
   }
+
+#if ACTUATOR_ENABLE
+  // Early, so the H-bridge inputs are driven LOW (motor off) before anything slow runs.
+  actuator.begin();
+  Serial.printf("[ACT] VNH2SP30 INA=%d INB=%d PWM=%d, feedback GPIO%d raw=%d (%.1f%%)\n",
+                ACT_INA_PIN, ACT_INB_PIN, ACT_PWM_PIN, ACT_POS_PIN, actuator.rawAdc(), actuator.positionPct());
+#endif
+
+#if DS3502_ENABLE || PCF8574_ENABLE
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ_HZ);
+#endif
+#if DS3502_ENABLE
+  {
+    const uint8_t boot_wiper = static_cast<uint8_t>(lroundf(clampf(DS3502_BOOT_PERCENT, 0.0f, 100.0f) * Ds3502::kMaxWiper / 100.0f));
+    for (size_t i = 0; i < DS3502_COUNT; ++i) {
+      if (pots[i].begin(kDs3502Addresses[i])) {
+        pots[i].setWiper(boot_wiper);
+        Serial.printf("[DS3502] POT %u found at 0x%02X, wiper=%u\n", static_cast<unsigned>(i + 1), kDs3502Addresses[i], pots[i].wiper());
+      } else {
+        Serial.printf("[DS3502] POT %u not found at 0x%02X — check wiring / A0 A1 straps\n", static_cast<unsigned>(i + 1), kDs3502Addresses[i]);
+      }
+    }
+  }
+#endif
+#if PCF8574_ENABLE
+  if (input_expander.begin(PCF8574_I2C_ADDR)) {
+    Serial.printf("[PCF8574] found at 0x%02X, %d inputs\n", PCF8574_I2C_ADDR, DIGITAL_INPUT_COUNT);
+  } else {
+    Serial.printf("[PCF8574] not found at 0x%02X — check wiring / address (PCF8574A = 0x38)\n", PCF8574_I2C_ADDR);
+  }
+#endif
 
   net_manager.begin();   // starts WiFi; activates SIM fallback automatically if WiFi absent
   // Default 256 B RX buffer fills in ~67 ms at 38400 baud; the GPS is polled from the
@@ -2629,6 +2872,7 @@ static void navTask(void* /*pvParameters*/) {
       updateSafetyGuards();
       updateMissionExecutor();
       updateFuncExecutor();
+      updateIoDevices(now);
     }
     vTaskDelay(pdMS_TO_TICKS(NAV_PERIOD_MS));
   }

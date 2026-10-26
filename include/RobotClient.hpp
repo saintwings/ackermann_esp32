@@ -68,6 +68,24 @@ struct RobotTelemetry {
   bool mission_coverage_active{false};
   int mission_coverage_progress_index{-1};
   int mission_coverage_total{0};
+
+  // DS3502 digital pots
+  static constexpr int kMaxPots = 4;
+  int pot_count{0};
+  bool pot_present[kMaxPots]{};
+  int pot_wiper[kMaxPots]{};  // 0..127
+
+  // PCF8574 digital inputs; bit n = input n+1 active
+  int input_count{0};
+  bool inputs_ok{false};
+  uint8_t inputs{0};
+
+  // Linear actuator
+  bool actuator_enabled{false};
+  float actuator_position_pct{0.0f};
+  float actuator_target_pct{0.0f};
+  const char* actuator_state{"idle"};
+  const char* actuator_fault{"none"};
 };
 
 class RobotClient {

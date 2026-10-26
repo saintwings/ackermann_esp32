@@ -118,7 +118,7 @@
 // Mission output channels A-D (relay/GPIO pins).
 // Avoids: 1,2 (CAN), 4-7 (BNO085 SPI), 8 (NeoPixel), 9-10 (GPS UART), 11-14 (PS2),
 // 15-16 (BNO085 INT/RST), 17-18 (SIM UART), 19-20 (USB D-/D+), 0/3/45/46 (strapping),
-// 26-37 (flash/octal PSRAM).
+// 26-37 (flash/octal PSRAM), 41-42 (I2C), 3/44/47/48 (linear actuator).
 #define OUTPUT_A_PIN 21
 #define OUTPUT_B_PIN 38
 #define OUTPUT_C_PIN 39
@@ -172,6 +172,57 @@
 //   GIM8108: has no position readback here, so it uses a fixed busy window instead —
 //            how long (ms) a REL_DEG move is assumed to take before another is allowed.
 #define FUNC_REL_DEG_GIM_BUSY_MS 500UL
+
+// ── Add-on I/O modules: 1 = enabled, 0 = disabled ───────────────────────────
+// A disabled module is left out of the build: no init, no serial commands
+// (they reply "... rejected: <NAME>_ENABLE is 0"), no telemetry fields.
+// The I2C bus only starts when DS3502 or PCF8574 is enabled.
+#define DS3502_ENABLE   1   // 3 x DS3502 digital pots (I2C)
+#define PCF8574_ENABLE  1   // PCF8574 digital inputs (I2C)
+#define ACTUATOR_ENABLE 1   // linear actuator: VNH2SP30 + feedback pot (GPIO 3/44/47/48)
+
+// ── I2C bus ─────────────────────────────────────────────────────────────────
+#define I2C_SDA_PIN 41
+#define I2C_SCL_PIN 42
+#define I2C_FREQ_HZ 400000
+
+// ── DS3502 digital potentiometers (I2C, 10 kOhm, wiper 0..127) ──────────────
+// USB serial: POT <ch> <0-100> (percent), POT <ch> RAW <0-127>, POT?
+// Address 0x28 + A1/A0 straps: A1=GND A0=GND 0x28, GND/VCC 0x29, VCC/GND 0x2A.
+#define DS3502_COUNT 3
+#define DS3502_ADDRESSES {0x28, 0x29, 0x2A}
+// Wiper set at boot, in percent. Until then each chip holds its EEPROM value (0x40 = ~50%).
+#define DS3502_BOOT_PERCENT 0.0f
+
+// ── PCF8574 digital inputs (I2C) ────────────────────────────────────────────
+// Inputs 1..N on P0..P(N-1). Wire each input to pull the pin to GND when active
+// (3.3 V logic only — use optocouplers for 12/24 V signals). USB serial: IN?
+#define PCF8574_I2C_ADDR 0x20   // PCF8574A: 0x38
+#define DIGITAL_INPUT_COUNT 4
+#define DIGITAL_INPUT_ACTIVE_LOW 1
+#define DIGITAL_INPUT_POLL_MS 20
+
+// ── Linear actuator (VNH2SP30 H-bridge + feedback pot) ──────────────────────
+// USB serial: ACT <0-100> (percent of stroke), ACT STOP, ACT?, ACT JOG <-100..100> <ms>
+// Calibration: ACT JOG -60 3000 to retract fully, ACT? → copy raw to ACT_ADC_RETRACTED;
+// ACT JOG 60 3000 to extend fully, ACT? → copy raw to ACT_ADC_EXTENDED.
+// If ACT JOG 60 retracts instead of extends, set ACT_DIRECTION_SIGN to -1.
+#define ACT_INA_PIN 48
+#define ACT_INB_PIN 44
+#define ACT_PWM_PIN 47
+#define ACT_POS_PIN 3            // ADC1_CH2; max ~3.1 V — divide a 5 V pot down
+#define ACT_LEDC_CHANNEL 0
+#define ACT_PWM_FREQ_HZ 20000
+#define ACT_ADC_RETRACTED 200    // raw ADC (0..4095) at full retract — calibrate
+#define ACT_ADC_EXTENDED 3900    // raw ADC at full extend — calibrate
+#define ACT_ADC_FAULT_MARGIN 200 // readings further outside the range = broken wire
+#define ACT_DIRECTION_SIGN 1
+#define ACT_DEADBAND_PCT 1.0f    // stop within this distance of the target
+#define ACT_SLOW_ZONE_PCT 10.0f  // slow down inside this distance
+#define ACT_MIN_DUTY_PCT 35.0f   // lowest duty that still moves the actuator
+#define ACT_MAX_DUTY_PCT 100.0f
+#define ACT_STALL_TIMEOUT_MS 1000UL
+#define ACT_STALL_MIN_CHANGE_PCT 0.5f
 
 // WS2812B NeoPixel Status LEDs (8 LEDs)
 #define NEOPIXEL_PIN 8

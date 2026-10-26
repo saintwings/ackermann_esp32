@@ -2,6 +2,7 @@
 """Simple GUI to send CMD_VEL commands over USB serial to the ESP32 robot."""
 
 import json
+import re
 import threading
 import time
 import tkinter as tk
@@ -15,8 +16,8 @@ class UsbCmdVelGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("USB CMD_VEL Sender")
-        self.root.geometry("600x820")
-        self.root.minsize(560, 700)
+        self.root.geometry("1080x820")
+        self.root.minsize(980, 700)
 
         self.ser = None
         self.reader_thread = None
@@ -56,13 +57,36 @@ class UsbCmdVelGui:
         self.nav_vars = {k: tk.StringVar(value="--") for k in (
             "fix", "herr", "heading", "mission", "holding", "override", "wp", "dist_m", "bearing", "speed_cmd", "updated")}
 
+        # I/O panel: DS3502 pots, PCF8574 inputs, linear actuator.
+        self.pot_count = 3
+        self.input_count = 4
+        self.pot_vars = [tk.DoubleVar(value=0.0) for _ in range(self.pot_count)]
+        self.pot_readback_vars = [tk.StringVar(value="--") for _ in range(self.pot_count)]
+        self.input_labels = []
+        self.inputs_status_var = tk.StringVar(value="--")
+        self.act_target_var = tk.DoubleVar(value=50.0)
+        self.act_jog_duty_var = tk.StringVar(value="60")
+        self.act_jog_ms_var = tk.StringVar(value="1000")
+        self.act_vars = {k: tk.StringVar(value="--") for k in ("pos", "raw", "target", "state", "fault")}
+        self.act_pos_value = tk.DoubleVar(value=0.0)
+        self.io_live_var = tk.BooleanVar(value=False)
+        self.io_period_var = tk.StringVar(value="200")
+        self.io_live_job = None
+        self.io_live_active = False  # read by the serial thread; Tk vars are main-thread only
+
         self._build_ui()
         self._refresh_ports()
 
     def _build_ui(self) -> None:
         pad = {"padx": 8, "pady": 6}
 
-        top = ttk.LabelFrame(self.root, text="Serial Connection")
+        left = ttk.Frame(self.root)
+        left.pack(side="left", fill="both", expand=True)
+        right = ttk.Frame(self.root)
+        right.pack(side="right", fill="y")
+        self._build_io_panel(right)
+
+        top = ttk.LabelFrame(left, text="Serial Connection")
         top.pack(fill="x", padx=10, pady=10)
 
         ttk.Label(top, text="Port").grid(row=0, column=0, sticky="w", **pad)
@@ -77,7 +101,7 @@ class UsbCmdVelGui:
         self.connect_btn = ttk.Button(top, text="Connect", command=self._toggle_connection)
         self.connect_btn.grid(row=0, column=5, **pad)
 
-        mode = ttk.LabelFrame(self.root, text="Robot Mode")
+        mode = ttk.LabelFrame(left, text="Robot Mode")
         mode.pack(fill="x", padx=10, pady=(0, 6))
 
         ttk.Label(mode, text="Mode").grid(row=0, column=0, sticky="w", **pad)
@@ -86,7 +110,7 @@ class UsbCmdVelGui:
 
         ttk.Button(mode, text="Set Mode", command=self.send_mode).grid(row=0, column=2, **pad)
 
-        cmd = ttk.LabelFrame(self.root, text="CMD_VEL")
+        cmd = ttk.LabelFrame(left, text="CMD_VEL")
         cmd.pack(fill="x", padx=10, pady=(0, 10))
 
         ttk.Label(cmd, text="Linear (m/s)").grid(row=0, column=0, sticky="w", **pad)
@@ -107,7 +131,7 @@ class UsbCmdVelGui:
         ttk.Entry(cmd, textvariable=self.period_var, width=6).grid(row=2, column=2, sticky="w", **pad)
         ttk.Label(cmd, text="ms (keep below timeout)").grid(row=2, column=3, columnspan=3, sticky="w", **pad)
 
-        mission = ttk.LabelFrame(self.root, text="Mission / Companion Computer")
+        mission = ttk.LabelFrame(left, text="Mission / Companion Computer")
         mission.pack(fill="x", padx=10, pady=(0, 10))
 
         ttk.Button(mission, text="MISSION_PAUSE", command=lambda: self._send_line("MISSION_PAUSE")).grid(
@@ -137,7 +161,7 @@ class UsbCmdVelGui:
             ttk.Label(mission, text=label).grid(row=r, column=c, sticky="w", padx=8, pady=2)
             ttk.Label(mission, textvariable=self.nav_vars[key]).grid(row=r, column=c + 1, sticky="w", padx=8, pady=2)
 
-        func = ttk.LabelFrame(self.root, text="FUNC Actuators")
+        func = ttk.LabelFrame(left, text="FUNC Actuators")
         func.pack(fill="x", padx=10, pady=(0, 10))
 
         ttk.Label(func, text="FUNC index").grid(row=0, column=0, sticky="w", **pad)
@@ -166,7 +190,7 @@ class UsbCmdVelGui:
         gpio_test.columnconfigure(0, weight=1)
         gpio_test.columnconfigure(1, weight=1)
 
-        ping = ttk.LabelFrame(self.root, text="CAN_PING (diagnostic)")
+        ping = ttk.LabelFrame(left, text="CAN_PING (diagnostic)")
         ping.pack(fill="x", padx=10, pady=(0, 10))
 
         ttk.Label(ping, text="Node ID").grid(row=0, column=0, sticky="w", **pad)
@@ -177,7 +201,7 @@ class UsbCmdVelGui:
 
         ttk.Button(ping, text="Send CAN_PING", command=self.send_can_ping).grid(row=0, column=4, sticky="we", **pad)
 
-        gps = ttk.LabelFrame(self.root, text="GPS (requires GPS_SERIAL_OUTPUT_ENABLE=1 on the robot)")
+        gps = ttk.LabelFrame(left, text="GPS (requires GPS_SERIAL_OUTPUT_ENABLE=1 on the robot)")
         gps.pack(fill="x", padx=10, pady=(0, 10))
 
         ttk.Label(gps, text="Valid").grid(row=0, column=0, sticky="w", **pad)
@@ -204,12 +228,12 @@ class UsbCmdVelGui:
         ttk.Label(gps, text="Last update").grid(row=2, column=2, sticky="w", **pad)
         ttk.Label(gps, textvariable=self.gps_updated_var).grid(row=2, column=3, columnspan=3, sticky="w", **pad)
 
-        status = ttk.Frame(self.root)
+        status = ttk.Frame(left)
         status.pack(fill="x", padx=10, pady=(0, 6))
         ttk.Label(status, text="Status:").pack(side="left")
         ttk.Label(status, textvariable=self.status_var).pack(side="left", padx=(6, 0))
 
-        log_frame = ttk.LabelFrame(self.root, text="Serial Log")
+        log_frame = ttk.LabelFrame(left, text="Serial Log")
         log_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         self.log_text = tk.Text(log_frame, height=10, wrap="word")
@@ -217,6 +241,83 @@ class UsbCmdVelGui:
         self.log_text.configure(state="disabled")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _build_io_panel(self, parent) -> None:
+        pad = {"padx": 8, "pady": 4}
+
+        pots = ttk.LabelFrame(parent, text="DS3502 Pots (POT <ch> <0-100>)")
+        pots.pack(fill="x", padx=10, pady=10)
+        for i in range(self.pot_count):
+            ch = i + 1
+            ttk.Label(pots, text=f"POT {ch}").grid(row=i, column=0, sticky="w", **pad)
+            scale = ttk.Scale(pots, from_=0, to=100, variable=self.pot_vars[i], length=200)
+            scale.grid(row=i, column=1, sticky="we", **pad)
+            # Send on release only — dragging would flood the serial link.
+            scale.bind("<ButtonRelease-1>", lambda _e, c=ch: self.send_pot(c))
+            ttk.Spinbox(pots, from_=0, to=100, increment=1, textvariable=self.pot_vars[i], width=5,
+                        command=lambda c=ch: self.send_pot(c)).grid(row=i, column=2, **pad)
+            ttk.Button(pots, text="Set", width=5, command=lambda c=ch: self.send_pot(c)).grid(row=i, column=3, **pad)
+            ttk.Label(pots, textvariable=self.pot_readback_vars[i], width=14).grid(row=i, column=4, sticky="w", **pad)
+        ttk.Button(pots, text="POT? (read back)", command=lambda: self._send_line("POT?")).grid(
+            row=self.pot_count, column=0, columnspan=5, sticky="we", **pad)
+        pots.columnconfigure(1, weight=1)
+
+        inputs = ttk.LabelFrame(parent, text="Digital Inputs (PCF8574)")
+        inputs.pack(fill="x", padx=10, pady=(0, 10))
+        row = ttk.Frame(inputs)
+        row.pack(fill="x", padx=6, pady=6)
+        for i in range(self.input_count):
+            lbl = tk.Label(row, text=f"IN {i + 1}", width=8, relief="groove", bg="#d0d0d0", pady=6)
+            lbl.pack(side="left", expand=True, fill="x", padx=4)
+            self.input_labels.append(lbl)
+        status = ttk.Frame(inputs)
+        status.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(status, text="IN?", command=lambda: self._send_line("IN?")).pack(side="left")
+        ttk.Label(status, textvariable=self.inputs_status_var).pack(side="left", padx=8)
+
+        act = ttk.LabelFrame(parent, text="Linear Actuator (VNH2SP30)")
+        act.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(act, text="Position").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Progressbar(act, variable=self.act_pos_value, maximum=100).grid(
+            row=0, column=1, columnspan=3, sticky="we", **pad)
+        ttk.Label(act, textvariable=self.act_vars["pos"], width=8).grid(row=0, column=4, sticky="w", **pad)
+
+        fields = [("Target", "target"), ("Raw ADC", "raw"), ("State", "state"), ("Fault", "fault")]
+        for i, (label, key) in enumerate(fields):
+            r, c = 1 + i // 2, (i % 2) * 2
+            ttk.Label(act, text=label).grid(row=r, column=c, sticky="w", **pad)
+            ttk.Label(act, textvariable=self.act_vars[key]).grid(row=r, column=c + 1, sticky="w", **pad)
+
+        ttk.Label(act, text="Move to %").grid(row=3, column=0, sticky="w", **pad)
+        ttk.Scale(act, from_=0, to=100, variable=self.act_target_var).grid(
+            row=3, column=1, columnspan=2, sticky="we", **pad)
+        ttk.Spinbox(act, from_=0, to=100, increment=1, textvariable=self.act_target_var, width=5).grid(
+            row=3, column=3, **pad)
+        ttk.Button(act, text="Move", command=self.send_act_move).grid(row=3, column=4, sticky="we", **pad)
+
+        ttk.Label(act, text="Jog duty %").grid(row=4, column=0, sticky="w", **pad)
+        ttk.Entry(act, textvariable=self.act_jog_duty_var, width=6).grid(row=4, column=1, sticky="w", **pad)
+        ttk.Label(act, text="ms").grid(row=4, column=2, sticky="e", **pad)
+        ttk.Entry(act, textvariable=self.act_jog_ms_var, width=6).grid(row=4, column=3, sticky="w", **pad)
+        jog = ttk.Frame(act)
+        jog.grid(row=5, column=0, columnspan=5, sticky="we", padx=4, pady=2)
+        ttk.Button(jog, text="\u25c0 Retract", command=lambda: self.send_act_jog(-1)).pack(
+            side="left", expand=True, fill="x", padx=4)
+        ttk.Button(jog, text="Extend \u25b6", command=lambda: self.send_act_jog(1)).pack(
+            side="left", expand=True, fill="x", padx=4)
+        ttk.Button(jog, text="ACT?", command=lambda: self._send_line("ACT?")).pack(
+            side="left", expand=True, fill="x", padx=4)
+
+        ttk.Button(act, text="ACT STOP", command=lambda: self._send_line("ACT STOP")).grid(
+            row=6, column=0, columnspan=5, sticky="we", **pad)
+        act.columnconfigure(1, weight=1)
+
+        live = ttk.LabelFrame(parent, text="Live I/O")
+        live.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Checkbutton(live, text="Poll IN? / ACT? every", variable=self.io_live_var,
+                        command=self._toggle_io_live).pack(side="left", padx=8, pady=6)
+        ttk.Entry(live, textvariable=self.io_period_var, width=6).pack(side="left", pady=6)
+        ttk.Label(live, text="ms").pack(side="left", padx=4, pady=6)
 
     def _append_log(self, text: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -271,6 +372,7 @@ class UsbCmdVelGui:
 
     def _disconnect_serial(self) -> None:
         self._stop_continuous()
+        self._stop_io_live()
         self.nav_enabled = False
         if hasattr(self, "nav_btn"):
             self.nav_btn.configure(text="NAV ON")
@@ -311,6 +413,9 @@ class UsbCmdVelGui:
                 nav = self._parse_nav_line(text)
                 if nav is not None:
                     self.root.after(0, lambda n=nav: self._update_nav_display(n))
+                continue
+
+            if self._handle_io_line(text):
                 continue
 
             gps_payload = self._parse_gps_line(text)
@@ -489,6 +594,142 @@ class UsbCmdVelGui:
 
         cmd = f"CAN_PING {node_id} {timeout_ms}"
         self._send_line(cmd)
+
+    # ── I/O panel ────────────────────────────────────────────────────────────
+    _RE_DISABLED = re.compile(r"\[USB_SERIAL\] (POT|IN|ACT) rejected: (\w+_ENABLE) is 0")
+    _RE_IN = re.compile(r"\[USB_SERIAL\] IN((?: \d+=[01])+) raw=(0x[0-9A-Fa-f]+)")
+    _RE_IN_ERR = re.compile(r"\[USB_SERIAL\] IN: (.*)")
+    _RE_ACT = re.compile(
+        r"\[USB_SERIAL\] ACT pos=(-?[\d.]+)% raw=(\d+) target=(-?[\d.]+)% state=(\w+) fault=(\w+)")
+    _RE_POT = re.compile(r"\[USB_SERIAL\] POT (\d+)(?: \(0x[0-9A-Fa-f]+\):| set) (?:wiper=(\d+)/\d+ \(([\d.]+)%\)|(.*))")
+
+    def _handle_io_line(self, text: str) -> bool:
+        """Updates the I/O panel from a status line. Returns True when the line
+        should not be logged (polled status while Live I/O is on)."""
+        live = self.io_live_active
+        m = self._RE_DISABLED.match(text)
+        if m:
+            self.root.after(0, lambda mod=m.group(1), flag=m.group(2): self._show_module_disabled(mod, flag))
+            return live
+        m = self._RE_IN.match(text)
+        if m:
+            states = {int(k): v == "1" for k, v in (p.split("=") for p in m.group(1).split())}
+            raw = m.group(2)
+            self.root.after(0, lambda s=states, r=raw: self._update_inputs(s, f"OK  raw={r}"))
+            return live
+        m = self._RE_IN_ERR.match(text)
+        if m:
+            msg = m.group(1)
+            self.root.after(0, lambda t=msg: self._update_inputs({}, t))
+            return live
+        m = self._RE_ACT.match(text)
+        if m:
+            self.root.after(0, lambda g=m.groups(): self._update_actuator(*g))
+            return live
+        m = self._RE_POT.match(text)
+        if m:
+            ch = int(m.group(1))
+            if 1 <= ch <= self.pot_count:
+                if m.group(2) is not None:
+                    shown = f"{int(m.group(2))}/127 ({float(m.group(3)):.0f}%)"
+                else:
+                    shown = m.group(4)
+                self.root.after(0, lambda c=ch, v=shown: self.pot_readback_vars[c - 1].set(v))
+        return False
+
+    def _show_module_disabled(self, module: str, flag: str) -> None:
+        text = f"disabled ({flag}=0)"
+        if module == "POT":
+            for v in self.pot_readback_vars:
+                v.set("disabled")
+        elif module == "IN":
+            self._update_inputs({}, text)
+        elif module == "ACT":
+            self.act_pos_value.set(0.0)
+            for key in ("pos", "raw", "target", "fault"):
+                self.act_vars[key].set("--")
+            self.act_vars["state"].set(text)
+
+    def _update_inputs(self, states: dict, status: str) -> None:
+        for i, lbl in enumerate(self.input_labels):
+            on = states.get(i + 1)
+            if on is None:
+                lbl.configure(bg="#d0d0d0", fg="black")
+            else:
+                lbl.configure(bg="#3cb043" if on else "#f0f0f0", fg="white" if on else "black")
+        self.inputs_status_var.set(f"{status}  ({time.strftime('%H:%M:%S')})")
+
+    def _update_actuator(self, pos, raw, target, state, fault) -> None:
+        pos_f = float(pos)
+        self.act_pos_value.set(max(0.0, min(100.0, pos_f)))
+        self.act_vars["pos"].set(f"{pos_f:.1f}%")
+        self.act_vars["raw"].set(raw)
+        self.act_vars["target"].set(f"{float(target):.1f}%")
+        self.act_vars["state"].set(state)
+        self.act_vars["fault"].set(fault)
+
+    def send_pot(self, ch: int) -> None:
+        try:
+            pct = max(0.0, min(100.0, float(self.pot_vars[ch - 1].get())))
+        except (tk.TclError, ValueError):
+            messagebox.showerror("Invalid input", "Pot value must be 0-100")
+            return
+        self.pot_vars[ch - 1].set(round(pct))
+        self._send_line(f"POT {ch} {pct:.0f}")
+
+    def send_act_move(self) -> None:
+        try:
+            pct = max(0.0, min(100.0, float(self.act_target_var.get())))
+        except (tk.TclError, ValueError):
+            messagebox.showerror("Invalid input", "Target must be 0-100")
+            return
+        self.act_target_var.set(round(pct, 1))
+        self._send_line(f"ACT {pct:.1f}")
+
+    def send_act_jog(self, direction: int) -> None:
+        try:
+            duty = abs(float(self.act_jog_duty_var.get().strip()))
+            ms = int(self.act_jog_ms_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Jog duty must be a number, ms an integer")
+            return
+        if duty > 100 or not 1 <= ms <= 5000:
+            messagebox.showerror("Invalid input", "Jog duty 0-100 %, time 1-5000 ms")
+            return
+        self._send_line(f"ACT JOG {direction * duty:.0f} {ms}")
+
+    def _toggle_io_live(self) -> None:
+        if self.io_live_var.get():
+            if not self.ser or not self.ser.is_open:
+                self.io_live_var.set(False)
+                messagebox.showerror("Not connected", "Connect serial first")
+                return
+            self.io_live_active = True
+            self._append_log("Live I/O polling started")
+            self._io_live_tick()
+        else:
+            self._stop_io_live()
+
+    def _stop_io_live(self) -> None:
+        self.io_live_active = False
+        if self.io_live_job is not None:
+            self.root.after_cancel(self.io_live_job)
+            self.io_live_job = None
+            self._append_log("Live I/O polling stopped")
+        self.io_live_var.set(False)
+
+    def _io_live_tick(self) -> None:
+        self.io_live_job = None
+        if not self.io_live_var.get() or not self.ser or not self.ser.is_open:
+            return
+        try:
+            period_ms = max(100, int(self.io_period_var.get().strip()))
+        except ValueError:
+            period_ms = 200
+        if not (self._send_line("IN?", log=False) and self._send_line("ACT?", log=False)):
+            self._stop_io_live()
+            return
+        self.io_live_job = self.root.after(period_ms, self._io_live_tick)
 
     def on_close(self) -> None:
         self.reader_running = False

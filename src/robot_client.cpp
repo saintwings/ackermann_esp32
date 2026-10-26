@@ -243,6 +243,29 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   mission["coverage_progress_index"] = telemetry.mission_coverage_progress_index;
   mission["coverage_total"] = telemetry.mission_coverage_total;
 
+  JsonArray pots = payload["pots"].to<JsonArray>();
+  for (int i = 0; i < telemetry.pot_count; ++i) {
+    JsonObject pot = pots.add<JsonObject>();
+    pot["present"] = telemetry.pot_present[i];
+    pot["wiper"] = telemetry.pot_wiper[i];
+    pot["percent"] = telemetry.pot_wiper[i] * 100.0f / 127.0f;
+  }
+
+  if (telemetry.input_count > 0) {
+    JsonObject inputs = payload["inputs"].to<JsonObject>();
+    inputs["ok"] = telemetry.inputs_ok;
+    JsonArray values = inputs["values"].to<JsonArray>();
+    for (int i = 0; i < telemetry.input_count; ++i) values.add(((telemetry.inputs >> i) & 1) != 0);
+  }
+
+  if (telemetry.actuator_enabled) {
+    JsonObject act = payload["actuator"].to<JsonObject>();
+    act["position"] = telemetry.actuator_position_pct;
+    act["target"] = telemetry.actuator_target_pct;
+    act["state"] = telemetry.actuator_state;
+    act["fault"] = telemetry.actuator_fault;
+  }
+
   String json;
   serializeJson(doc, json);
   NetSource src = _net ? _net->source() : NetSource::WIFI;
