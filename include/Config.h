@@ -208,7 +208,7 @@
 // ACT JOG 60 3000 to extend fully, ACT? → copy raw to ACT_ADC_EXTENDED.
 // If ACT JOG 60 retracts instead of extends, set ACT_DIRECTION_SIGN to -1.
 #define ACT_INA_PIN 48
-#define ACT_INB_PIN 44
+#define ACT_INB_PIN 44            // labelled "RX" on the DevKitC-1
 #define ACT_PWM_PIN 47
 #define ACT_POS_PIN 3            // ADC1_CH2; max ~3.1 V — divide a 5 V pot down
 #define ACT_LEDC_CHANNEL 0

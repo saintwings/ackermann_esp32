@@ -178,8 +178,8 @@
 // (they reply "... rejected: <NAME>_ENABLE is 0"), no telemetry fields.
 // The I2C bus only starts when DS3502 or PCF8574 is enabled.
 #define DS3502_ENABLE   1   // 3 x DS3502 digital pots (I2C)
-#define PCF8574_ENABLE  0   // PCF8574 digital inputs (I2C)
-#define ACTUATOR_ENABLE 0   // linear actuator: VNH2SP30 + feedback pot (GPIO 3/44/47/48)
+#define PCF8574_ENABLE  1   // PCF8574 digital inputs (I2C)
+#define ACTUATOR_ENABLE 1   // linear actuator: VNH2SP30 + feedback pot (GPIO 3/44/47/48)
 
 // ── I2C bus ─────────────────────────────────────────────────────────────────
 #define I2C_SDA_PIN 41
@@ -208,13 +208,13 @@
 // ACT JOG 60 3000 to extend fully, ACT? → copy raw to ACT_ADC_EXTENDED.
 // If ACT JOG 60 retracts instead of extends, set ACT_DIRECTION_SIGN to -1.
 #define ACT_INA_PIN 48
-#define ACT_INB_PIN 44
+#define ACT_INB_PIN 44            // labelled "RX" on the DevKitC-1
 #define ACT_PWM_PIN 47
 #define ACT_POS_PIN 3            // ADC1_CH2; max ~3.1 V — divide a 5 V pot down
 #define ACT_LEDC_CHANNEL 0
 #define ACT_PWM_FREQ_HZ 20000
-#define ACT_ADC_RETRACTED 200    // raw ADC (0..4095) at full retract — calibrate
-#define ACT_ADC_EXTENDED 3900    // raw ADC at full extend — calibrate
+#define ACT_ADC_RETRACTED 125    // raw ADC (0..4095) at full retract — calibrate
+#define ACT_ADC_EXTENDED 3170    // raw ADC at full extend — calibrate
 #define ACT_ADC_FAULT_MARGIN 200 // readings further outside the range = broken wire
 #define ACT_DIRECTION_SIGN 1
 #define ACT_DEADBAND_PCT 1.0f    // stop within this distance of the target
