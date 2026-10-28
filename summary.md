@@ -50,7 +50,7 @@ commsTask  (priority 2)         controlTask  (priority 3)
   20 ms nominal loop              20 ms nominal loop
   vTaskDelay(2 ms)                vTaskDelay(1 ms)
   ─ net_manager.update()          ─ ps2x.read_gamepad()
-  ─ robot_client.update()         ─ E-stop toggle (Circle btn)
+  ─ robot_client.update()         ─ E-stop L1+L2+X / release L1+L2+O
   ─ handleUsbSerialControl()      ─ Mode switch (R1+R2+△/✕)
   ─ NTRIP connect/poll            ─ ControlActuation::applyDriveOutputs()
   ─ GPS + IMU update
@@ -224,7 +224,7 @@ Navigation uses haversine distance + bearing → proportional heading error → 
 ## 10. Control Priority
 
 ```
-1. E-stop (PS2 Circle btn or EMERGENCY_STOP command) — overrides everything
+1. E-stop (PS2 L1+L2+Cross, released by L1+L2+Circle, or EMERGENCY_STOP command) — overrides everything
 2. Mission executor — sets remote_move_expire_ms = now + 150 ms each tick
 3. Remote WebSocket (COMMAND_MOVE) — sets expire timestamp
 4. PS2 manual (R1 held)

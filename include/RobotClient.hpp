@@ -41,6 +41,8 @@ struct RobotCommand {
 
 struct RobotTelemetry {
   float battery_level{100.0f};
+  bool e_stop{false};
+  const char* e_stop_reason{""};  // "ps2", "server", "limit: Front L", ...
   float speed{0.0f};
   float heading{0.0f};
 

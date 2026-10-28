@@ -60,6 +60,8 @@ class UsbCmdVelGui:
         # I/O panel: DS3502 pots, PCF8574 inputs, linear actuator.
         self.pot_count = 3
         self.input_count = 4
+        # Inputs are safety limit switches: active = hit, shown red.
+        self.input_names = ["Front L", "Front R", "Rear L", "Rear R"]
         self.pot_vars = [tk.DoubleVar(value=0.0) for _ in range(self.pot_count)]
         self.pot_readback_vars = [tk.StringVar(value="--") for _ in range(self.pot_count)]
         self.input_labels = []
@@ -262,12 +264,12 @@ class UsbCmdVelGui:
             row=self.pot_count, column=0, columnspan=5, sticky="we", **pad)
         pots.columnconfigure(1, weight=1)
 
-        inputs = ttk.LabelFrame(parent, text="Digital Inputs (PCF8574)")
+        inputs = ttk.LabelFrame(parent, text="Limit Switches (PCF8574) — red = hit")
         inputs.pack(fill="x", padx=10, pady=(0, 10))
         row = ttk.Frame(inputs)
         row.pack(fill="x", padx=6, pady=6)
         for i in range(self.input_count):
-            lbl = tk.Label(row, text=f"IN {i + 1}", width=8, relief="groove", bg="#d0d0d0", pady=6)
+            lbl = tk.Label(row, text=self.input_names[i], width=8, relief="groove", bg="#d0d0d0", pady=6)
             lbl.pack(side="left", expand=True, fill="x", padx=4)
             self.input_labels.append(lbl)
         status = ttk.Frame(inputs)
@@ -656,7 +658,7 @@ class UsbCmdVelGui:
             if on is None:
                 lbl.configure(bg="#d0d0d0", fg="black")
             else:
-                lbl.configure(bg="#3cb043" if on else "#f0f0f0", fg="white" if on else "black")
+                lbl.configure(bg="#c62828" if on else "#f0f0f0", fg="white" if on else "black")
         self.inputs_status_var.set(f"{status}  ({time.strftime('%H:%M:%S')})")
 
     def _update_actuator(self, pos, raw, target, state, fault) -> None:

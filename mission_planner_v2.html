@@ -627,6 +627,96 @@
             font-size: 12px;
         }
         
+        /* I/O tab: pots, digital inputs, linear actuator */
+        .io-row {
+            margin-bottom: 10px;
+        }
+        .io-row:last-child {
+            margin-bottom: 0;
+        }
+        .io-row-head {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+        .io-name {
+            color: #e0e0e0;
+        }
+        .io-value {
+            color: #4CAF50;
+            font-family: 'Courier New', monospace;
+        }
+        .io-value.io-muted {
+            color: #888;
+        }
+        .io-value.io-fault {
+            color: #f44336;
+            font-weight: bold;
+        }
+        .io-bar {
+            position: relative;
+            height: 10px;
+            background: #1a1a1a;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .io-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+            border-radius: 5px;
+            transition: width 0.3s;
+        }
+        .io-bar-target {
+            position: absolute;
+            top: -2px;
+            bottom: -2px;
+            width: 2px;
+            background: #FFB300;
+            transform: translateX(-1px);
+        }
+        .io-leds {
+            display: flex;
+            gap: 6px;
+        }
+        .io-led {
+            flex: 1;
+            text-align: center;
+            padding: 8px 4px;
+            border-radius: 4px;
+            font-size: 12px;
+            background: #2a2a2a;
+            color: #888;
+            border: 1px solid #555;
+        }
+        .io-led.on {
+            background: #2e7d32;
+            color: #fff;
+            border-color: #4CAF50;
+        }
+        .io-led.hit {
+            background: #b71c1c;
+            color: #fff;
+            border-color: #f44336;
+            font-weight: bold;
+        }
+        .io-estop {
+            background: #b71c1c;
+            color: #fff;
+            font-weight: bold;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        .io-note {
+            color: #888;
+            font-size: 12px;
+        }
+        #io-content .value-row {
+            font-size: 13px;
+        }
+
         .button-group {
             display: flex;
             gap: 6px;
@@ -896,6 +986,12 @@
                                 <span class="telemetry-value" id="status-battery">--</span>
                             </div>
                         </div>
+
+                        <!-- I/O summary (hidden when the robot sends no I/O telemetry) -->
+                        <div class="telemetry-group" id="io-overlay-group" style="display: none;">
+                            <div class="telemetry-group-title">Mower / I/O</div>
+                            <div id="io-overlay-items"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -919,6 +1015,9 @@
                 </button>
                 <button class="tab-btn" data-tab="coverage-tab" onclick="switchTab('coverage-tab')">
                     <span class="tab-icon">🧭</span><span class="tab-label">Coverage</span>
+                </button>
+                <button class="tab-btn" data-tab="io-tab" onclick="switchTab('io-tab')">
+                    <span class="tab-icon">⚙️</span><span class="tab-label">I/O</span>
                 </button>
             </div>
             
@@ -1009,6 +1108,20 @@
                     </div>
                 </div>
                 
+                <!-- I/O Tab: mower blade speed (DS3502 pots), digital inputs, linear actuator -->
+                <div class="tab-panel" id="io-tab">
+                    <div class="panel" id="io-panel">
+                        <div class="panel-header">
+                            ⚙️ I/O
+                        </div>
+                        <div class="panel-content scroll-area">
+                            <div id="io-content">
+                                <div class="io-note">Select a robot to see its I/O.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Mission Planning Tab -->
                 <div class="tab-panel" id="mission-tab">
                     <div class="panel" id="mission-panel">
@@ -1428,7 +1541,10 @@
                     gps: payload.gps,
                     status: payload.status,
                     odometry: payload.odometry,
-                    mission: payload.mission || null
+                    mission: payload.mission || null,
+                    pots: Array.isArray(payload.pots) ? payload.pots : null,
+                    inputs: payload.inputs || null,
+                    actuator: payload.actuator || null
                 });
                 
                 // Update displays
@@ -1952,7 +2068,135 @@
                 document.getElementById('status-battery').textContent = '--';
             }
             
+            updateIoDisplay(robotId);
             console.log('[TELEMETRY OVERLAY] Update complete');
+        }
+
+        // ── I/O display (DS3502 pots, PCF8574 inputs, linear actuator) ─────────
+        // Names shown in the UI. Index = POT channel - 1 / input number - 1.
+        const IO_LABELS = {
+            pots: ['Speed1', 'Speed2', 'Speed3'],
+            inputs: ['Front L', 'Front R', 'Rear L', 'Rear R'],
+            // Inputs are safety limit switches: active = hit (shown red), and any hit
+            // e-stops the robot (firmware LIMIT_SWITCH_ESTOP_ENABLE).
+            inputsAreLimitSwitches: true,
+            actuator: 'Actuator'
+        };
+
+        function ioEscape(text) {
+            return String(text).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+        }
+
+        function ioPct(value) {
+            const n = Number(value);
+            return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null;
+        }
+
+        function ioBarHtml(pct, targetPct = null) {
+            let html = `<div class="io-bar"><div class="io-bar-fill" style="width: ${(pct ?? 0).toFixed(1)}%;"></div>`;
+            if (targetPct !== null) {
+                html += `<div class="io-bar-target" style="left: ${targetPct.toFixed(1)}%;" title="Target ${targetPct.toFixed(1)}%"></div>`;
+            }
+            return html + '</div>';
+        }
+
+        function updateIoDisplay(robotId) {
+            const container = document.getElementById('io-content');
+            const overlayGroup = document.getElementById('io-overlay-group');
+            const overlayItems = document.getElementById('io-overlay-items');
+            const robot = robots.get(robotId);
+            const telemetry = latestTelemetry.get(robotId);
+            const pots = telemetry && telemetry.pots;
+            const inputs = telemetry && telemetry.inputs;
+            const actuator = telemetry && telemetry.actuator;
+
+            if (!robot || !telemetry || (!pots && !inputs && !actuator)) {
+                if (container) {
+                    container.innerHTML = robot
+                        ? '<div class="io-note">No I/O data from this robot yet (modules disabled, or firmware without I/O telemetry).</div>'
+                        : '<div class="io-note">Select a robot to see its I/O.</div>';
+                }
+                if (overlayGroup) overlayGroup.style.display = 'none';
+                return;
+            }
+
+            let html = '';
+            const overlay = [];
+            const status = telemetry.status || {};
+
+            if (status.e_stop) {
+                const reason = String(status.e_stop_reason || 'unknown');
+                html += `<div class="io-estop">🛑 E-STOP ACTIVE — ${ioEscape(reason)}<br><span style="font-weight: normal; font-size: 12px;">Release with PS2 L1 + L2 + Circle</span></div>`;
+                overlay.push(['E-STOP', reason]);
+            }
+
+            if (pots && pots.length) {
+                html += '<div class="command-section"><div class="command-title">Speed Outputs (DS3502)</div>';
+                pots.forEach((pot, i) => {
+                    const name = IO_LABELS.pots[i] || `Pot ${i + 1}`;
+                    const pct = ioPct(pot.percent);
+                    const present = pot.present !== false;
+                    const valueText = present && pct !== null ? `${pct.toFixed(0)}%` : 'not detected';
+                    html += `<div class="io-row"><div class="io-row-head"><span class="io-name">${ioEscape(name)}</span>`;
+                    html += `<span class="io-value${present ? '' : ' io-muted'}">${valueText}</span></div>`;
+                    html += present ? ioBarHtml(pct) : '';
+                    html += '</div>';
+                    overlay.push([name, valueText]);
+                });
+                html += '</div>';
+            }
+
+            if (actuator) {
+                const name = IO_LABELS.actuator;
+                const pos = ioPct(actuator.position);
+                const target = ioPct(actuator.target);
+                const state = String(actuator.state || '--');
+                const fault = String(actuator.fault || 'none');
+                const hasFault = fault !== 'none';
+                const posText = pos !== null ? `${pos.toFixed(1)}%` : '--';
+                html += `<div class="command-section"><div class="command-title">${ioEscape(name)} (linear)</div>`;
+                html += `<div class="io-row"><div class="io-row-head"><span class="io-name">Position</span>`;
+                html += `<span class="io-value">${posText}</span></div>`;
+                html += ioBarHtml(pos, state === 'moving' ? target : null);
+                html += '</div>';
+                html += `<div class="value-row"><span class="value-key">Target</span><span class="value-data">${target !== null ? target.toFixed(1) + '%' : '--'}</span></div>`;
+                html += `<div class="value-row"><span class="value-key">State</span><span class="value-data">${ioEscape(state)}</span></div>`;
+                html += `<div class="value-row"><span class="value-key">Fault</span><span class="io-value${hasFault ? ' io-fault' : ''}">${ioEscape(fault)}</span></div>`;
+                html += '</div>';
+                overlay.push([name, hasFault ? `${posText} · FAULT ${fault}` : `${posText} · ${state}`]);
+            }
+
+            if (inputs && Array.isArray(inputs.values)) {
+                const limits = IO_LABELS.inputsAreLimitSwitches;
+                html += `<div class="command-section"><div class="command-title">${limits ? 'Limit Switches' : 'Digital Inputs'} (PCF8574)</div>`;
+                if (inputs.ok === false) {
+                    html += '<div class="io-value io-fault" style="margin-bottom: 6px;">PCF8574 read error — values may be stale</div>';
+                }
+                html += '<div class="io-leds">';
+                const hitNames = [];
+                inputs.values.forEach((on, i) => {
+                    const name = IO_LABELS.inputs[i] || `Input ${i + 1}`;
+                    if (on) hitNames.push(name);
+                    const cls = on ? (limits ? ' hit' : ' on') : '';
+                    const stateText = limits ? (on ? 'HIT' : 'OK') : (on ? 'active' : 'inactive');
+                    html += `<div class="io-led${cls}" title="${ioEscape(name)}: ${stateText}">${ioEscape(name)}`;
+                    if (limits) html += `<br><span style="font-size: 11px;">${stateText}</span>`;
+                    html += '</div>';
+                });
+                html += '</div></div>';
+                const summary = inputs.ok === false ? 'read error'
+                    : limits ? (hitNames.length ? `HIT: ${hitNames.join(', ')}` : 'all clear')
+                    : inputs.values.map(v => (v ? '●' : '○')).join(' ');
+                overlay.push([limits ? 'Limits' : 'Inputs', summary]);
+            }
+
+            if (container) container.innerHTML = html;
+            if (overlayGroup && overlayItems) {
+                overlayItems.innerHTML = overlay.map(([k, v]) =>
+                    `<div class="telemetry-item"><span class="telemetry-label">${ioEscape(k)}</span><span class="telemetry-value">${ioEscape(v)}</span></div>`
+                ).join('');
+                overlayGroup.style.display = overlay.length ? 'block' : 'none';
+            }
         }
         
         function displayMissionStatus(robotId) {

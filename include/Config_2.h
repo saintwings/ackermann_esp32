@@ -194,13 +194,25 @@
 // Wiper set at boot, in percent. Until then each chip holds its EEPROM value (0x40 = ~50%).
 #define DS3502_BOOT_PERCENT 0.0f
 
-// ── PCF8574 digital inputs (I2C) ────────────────────────────────────────────
-// Inputs 1..N on P0..P(N-1). Wire each input to pull the pin to GND when active
-// (3.3 V logic only — use optocouplers for 12/24 V signals). USB serial: IN?
+// ── PCF8574 digital inputs (I2C) — safety limit switches ───────────────────
+// Inputs 1..N on P0..P(N-1), 3.3 V logic only (optocouplers for 12/24 V signals).
+// USB serial: IN?
 #define PCF8574_I2C_ADDR 0x20   // PCF8574A: 0x38
 #define DIGITAL_INPUT_COUNT 4
-#define DIGITAL_INPUT_ACTIVE_LOW 1
+#define DIGITAL_INPUT_NAMES {"Front L", "Front R", "Rear L", "Rear R"}
+// 0 = input is active (switch hit) when its pin reads HIGH: normally-closed switch
+//     between the pin and GND — closed in normal operation, opens when hit. Fail-safe:
+//     a broken wire or unplugged switch also reads as hit.
+// 1 = active when the pin is pulled LOW: normally-open switch to GND (not fail-safe).
+#define DIGITAL_INPUT_ACTIVE_LOW 0
 #define DIGITAL_INPUT_POLL_MS 20
+// Latched e-stop when any input becomes active, or when the PCF8574 is missing or
+// stops answering. Release with PS2 L1 + L2 + Circle. A switch still held after the release does
+// not re-trigger (so the robot can be driven away); hitting it again does.
+// Until the switches are wired, jumper P0..P3 to GND or set this to 0.
+#define LIMIT_SWITCH_ESTOP_ENABLE 1
+#define LIMIT_SWITCH_DEBOUNCE_POLLS 2    // consecutive active polls before e-stop (2 x 20 ms)
+#define LIMIT_SWITCH_READ_FAIL_POLLS 5   // consecutive I2C read failures before e-stop
 
 // ── Linear actuator (VNH2SP30 H-bridge + feedback pot) ──────────────────────
 // USB serial: ACT <0-100> (percent of stroke), ACT STOP, ACT?, ACT JOG <-100..100> <ms>

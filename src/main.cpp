@@ -30,6 +30,9 @@
 #ifndef ACTUATOR_ENABLE
 #define ACTUATOR_ENABLE 0
 #endif
+#ifndef LIMIT_SWITCH_ESTOP_ENABLE
+#define LIMIT_SWITCH_ESTOP_ENABLE 0
+#endif
 
 HardwareSerial gps_uart(1);
 NetManager net_manager;
@@ -348,6 +351,8 @@ int ps2_error = 0;
 
 const int MAX_RPM = 150;
 bool e_stop_active = false;
+// Why e-stop was triggered ("ps2", "server", "limit: Front L", ...); "" when released.
+const char* e_stop_reason = "";
 
 enum class RobotMode : uint8_t {
   Normal = 0,
@@ -1774,6 +1779,10 @@ static void handlePotCommand(String args) {
                   DS3502_COUNT, DS3502_COUNT);
     return;
   }
+  if (e_stop_active && raw > 0) {
+    Serial.printf("[USB_SERIAL] POT %d rejected: e-stop active (only 0 allowed)\n", ch);
+    return;
+  }
   Ds3502& pot = pots[ch - 1];
   if (!pot.present()) {
     Serial.printf("[USB_SERIAL] POT %d rejected: DS3502 0x%02X not detected on I2C\n", ch, kDs3502Addresses[ch - 1]);
@@ -1790,6 +1799,25 @@ static void handlePotCommand(String args) {
 #endif
 }
 
+#if PCF8574_ENABLE
+static const char* const kInputNames[DIGITAL_INPUT_COUNT] = DIGITAL_INPUT_NAMES;
+#endif
+
+// Latched e-stop from NavTask (nav lock held). ControlTask stops the motors on its next
+// cycle; release is PS2 L1 + L2 + Circle, as for the other e-stop sources. reason must outlive the
+// e-stop (string literal or static buffer).
+static void triggerEStop(const char* reason) {
+  if (e_stop_active) return;
+  e_stop_active = true;
+  e_stop_reason = reason;
+  if (mission_ctx.active) {
+    mission_ctx.active = false;
+    setMissionState(MissionState::EStop);
+  }
+  resetMissionCommandTargets();
+  Serial.printf("!!! E-STOP ACTIVATED: %s !!!\n", reason);
+}
+
 static void handleInputQuery() {
 #if PCF8574_ENABLE
   if (!digital_inputs_ok) {
@@ -1801,7 +1829,11 @@ static void handleInputQuery() {
   for (int i = 0; i < DIGITAL_INPUT_COUNT; ++i) {
     Serial.printf(" %d=%d", i + 1, (digital_inputs >> i) & 1);
   }
-  Serial.printf(" raw=0x%02X\n", digital_inputs_raw);
+  Serial.printf(" raw=0x%02X", digital_inputs_raw);
+  for (int i = 0; i < DIGITAL_INPUT_COUNT; ++i) {
+    if ((digital_inputs >> i) & 1) Serial.printf(" [%s active]", kInputNames[i]);
+  }
+  Serial.println();
 #else
   Serial.println("[USB_SERIAL] IN rejected: PCF8574_ENABLE is 0");
 #endif
@@ -1855,12 +1887,63 @@ static void handleActuatorCommand(String args) {
 #endif
 }
 
-// Polls the PCF8574 inputs and runs the actuator position loop (NavTask, nav lock held).
+#if PCF8574_ENABLE && LIMIT_SWITCH_ESTOP_ENABLE
+// Edge-triggered: a switch e-stops once when it becomes active (debounced). It must
+// clear before it can trigger again, so after a PS2 release the robot can be driven
+// off a switch that is still pressed. A missing or silent PCF8574 also e-stops.
+static void updateLimitSwitches(bool polled) {
+  static uint8_t active_polls[DIGITAL_INPUT_COUNT] = {};
+  static uint8_t reported_mask = 0;
+  static uint8_t read_fail_polls = 0;
+  static bool expander_fault_reported = false;
+  static char reason[40];
+
+  if (!input_expander.present()) {
+    if (!expander_fault_reported) {
+      expander_fault_reported = true;
+      triggerEStop("limit: PCF8574 not detected");
+    }
+    return;
+  }
+  if (!polled) return;
+
+  if (!digital_inputs_ok) {
+    if (read_fail_polls < 255) ++read_fail_polls;
+    if (read_fail_polls >= LIMIT_SWITCH_READ_FAIL_POLLS && !expander_fault_reported) {
+      expander_fault_reported = true;
+      triggerEStop("limit: PCF8574 read error");
+    }
+    return;
+  }
+  read_fail_polls = 0;
+  expander_fault_reported = false;
+
+  for (int i = 0; i < DIGITAL_INPUT_COUNT; ++i) {
+    const uint8_t bit = static_cast<uint8_t>(1u << i);
+    if (!(digital_inputs & bit)) {
+      active_polls[i] = 0;
+      reported_mask &= static_cast<uint8_t>(~bit);
+      continue;
+    }
+    if (active_polls[i] < 255) ++active_polls[i];
+    if (active_polls[i] >= LIMIT_SWITCH_DEBOUNCE_POLLS && !(reported_mask & bit)) {
+      reported_mask |= bit;
+      snprintf(reason, sizeof(reason), "limit: %s", kInputNames[i]);
+      triggerEStop(reason);
+    }
+  }
+}
+#endif
+
+// Polls the PCF8574 inputs, checks the limit switches, applies e-stop to the pots and
+// runs the actuator position loop (NavTask, nav lock held).
 static void updateIoDevices(unsigned long now) {
 #if PCF8574_ENABLE
   static unsigned long last_input_poll_ms = 0;
+  bool polled = false;
   if (input_expander.present() && now - last_input_poll_ms >= DIGITAL_INPUT_POLL_MS) {
     last_input_poll_ms = now;
+    polled = true;
     uint8_t levels = 0;
     digital_inputs_ok = input_expander.read(levels);
     if (digital_inputs_ok) {
@@ -1869,7 +1952,25 @@ static void updateIoDevices(unsigned long now) {
       digital_inputs = (DIGITAL_INPUT_ACTIVE_LOW ? ~levels : levels) & mask;
     }
   }
+#if LIMIT_SWITCH_ESTOP_ENABLE
+  updateLimitSwitches(polled);
+#else
+  (void)polled;
 #endif
+#endif
+
+  // On e-stop every speed output (Speed1-3) goes to 0 %; the actuator just stops.
+  static bool prev_e_stop = false;
+  if (e_stop_active && !prev_e_stop) {
+#if DS3502_ENABLE
+    for (size_t i = 0; i < DS3502_COUNT; ++i) {
+      if (pots[i].present()) pots[i].setWiper(0);
+    }
+    Serial.println("[DS3502] e-stop: all speed outputs set to 0%");
+#endif
+  }
+  prev_e_stop = e_stop_active;
+
 #if ACTUATOR_ENABLE
   if (e_stop_active && (actuator.state() == LinearActuator::State::Moving ||
                         actuator.state() == LinearActuator::State::Jogging)) {
@@ -2033,9 +2134,10 @@ static void handleUsbSerialLine(const String& raw_line) {
     const bool remote_active = (control_targets.remote_move_expire_ms == 0) || (control_targets.remote_move_expire_ms > now);
     const unsigned long remaining_ms = (control_targets.remote_move_expire_ms == 0) ? 0 : remote_active ? (control_targets.remote_move_expire_ms - now) : 0;
     const char* mode_str = (robot_mode == RobotMode::Normal) ? "NORMAL" : "ZERO_TURN";
-    Serial.printf("[USB_SERIAL] status mode=%s e_stop=%d mission=%s remote_active=%d linear=%.3f angle=%.2f timeout_left_ms=%lu can_tx_ok=%lu can_tx_drop=%lu\n",
+    Serial.printf("[USB_SERIAL] status mode=%s e_stop=%d (%s) mission=%s remote_active=%d linear=%.3f angle=%.2f timeout_left_ms=%lu can_tx_ok=%lu can_tx_drop=%lu\n",
                   mode_str,
                   e_stop_active ? 1 : 0,
+                  e_stop_active ? e_stop_reason : "-",
                   missionStateToString(mission_ctx.state),
                   remote_active ? 1 : 0,
                   control_targets.linear_mps,
@@ -2226,6 +2328,7 @@ static void handleRobotClientCommand() {
         break;
       case RobotCommandType::EmergencyStop:
         e_stop_active = true;
+        e_stop_reason = "server";
         drive_motors.emergencyStop();
         steering_motors.emergencyStop();
         mission_ctx.active = false;
@@ -2408,6 +2511,8 @@ static void publishRobotTelemetry() {
     // Copy shared state under the nav lock; the send below can block on SIM.
     NavLock lock;
     telemetry.battery_level = 100.0f;
+    telemetry.e_stop = e_stop_active;
+    telemetry.e_stop_reason = e_stop_reason;
     telemetry.speed = control_targets.linear_mps;
     telemetry.heading = estimateHeadingDeg();
 
@@ -2680,6 +2785,9 @@ static void controlTask(void* /*pvParameters*/) {
   unsigned long func0_on_combo_last_trigger_ms = 0;
   bool func0_off_combo_prev = false;
   unsigned long func0_off_combo_last_trigger_ms = 0;
+  bool e_stop_applied = false;
+  bool estop_on_combo_prev = false;
+  bool estop_off_combo_prev = false;
   for (;;) {
     if (millis() - last_control_time >= 20) {
       unsigned long now = millis();
@@ -2689,6 +2797,15 @@ static void controlTask(void* /*pvParameters*/) {
       if (dt_ms > loop_stats.max_control_dt_ms) loop_stats.max_control_dt_ms = dt_ms;
       if (dt_ms > 25) ++loop_stats.overrun_count;
 
+      // Stop the motors from this task, which is the one that drives them, whatever set
+      // e-stop (limit switch, server): a drive command sent here in the same cycle could
+      // otherwise overwrite a stop issued from another task.
+      if (e_stop_active && !e_stop_applied) {
+        drive_motors.emergencyStop();
+        steering_motors.emergencyStop();
+      }
+      e_stop_applied = e_stop_active;
+
       if (ps2_error != 0) {
         vTaskDelay(pdMS_TO_TICKS(1));
         continue;
@@ -2696,19 +2813,26 @@ static void controlTask(void* /*pvParameters*/) {
 
       ps2x.read_gamepad();
 
-      if (ps2x.ButtonPressed(PSB_CIRCLE) && !ps2x.Button(PSB_START)) {
-        e_stop_active = !e_stop_active;
-
-        if (e_stop_active) {
-          Serial.println("!!! E-STOP ACTIVATED !!!");
-          drive_motors.emergencyStop();
-          steering_motors.emergencyStop();
-        } else {
-          Serial.println(">>> E-STOP RELEASED <<<");
-          drive_motors.enable();
-          steering_motors.enable();
-        }
+      // E-stop: L1 + L2 + Cross latches it, L1 + L2 + Circle releases it. Edge-detected on
+      // the whole combo so holding the buttons doesn't re-fire every cycle.
+      const bool estop_shift = ps2x.Button(PSB_L1) && ps2x.Button(PSB_L2);
+      const bool estop_on_combo = estop_shift && ps2x.Button(PSB_CROSS);
+      const bool estop_off_combo = estop_shift && ps2x.Button(PSB_CIRCLE);
+      if (estop_on_combo && !estop_on_combo_prev && !e_stop_active) {
+        e_stop_active = true;
+        e_stop_reason = "ps2";
+        Serial.println("!!! E-STOP ACTIVATED !!!");
+        drive_motors.emergencyStop();
+        steering_motors.emergencyStop();
+      } else if (estop_off_combo && !estop_off_combo_prev && e_stop_active) {
+        e_stop_active = false;
+        e_stop_reason = "";
+        Serial.println(">>> E-STOP RELEASED <<<");
+        drive_motors.enable();
+        steering_motors.enable();
       }
+      estop_on_combo_prev = estop_on_combo;
+      estop_off_combo_prev = estop_off_combo;
 
       if (!e_stop_active) {
         bool control_enable = ps2x.Button(PSB_R1);

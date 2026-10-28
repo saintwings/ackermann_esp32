@@ -43,6 +43,7 @@ Adjust in `src/main.cpp` if needed.
 
 ## Controls
 - Hold R1 to enable control (safety)
+- L1 + L2 + CROSS → E-stop (latched); L1 + L2 + CIRCLE → release
 - START + TRIANGLE → Zero-Turn Mode
 - START + CIRCLE → Normal Mode
 - Right stick Y = forward/back speed
