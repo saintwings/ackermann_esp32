@@ -453,7 +453,15 @@ class UsbCmdVelGui:
 
         herr = nav.get("herr")
         self.nav_vars["fix"].set(str(nav.get("fix", "--")))
-        self.nav_vars["herr"].set(f"{herr * 100:.1f} cm" if isinstance(herr, (int, float)) and herr >= 0 else "--")
+        if not isinstance(herr, (int, float)) or herr < 0:
+            herr_text = "--"
+        elif herr < 1:
+            herr_text = f"{herr * 100:.1f} cm"
+        elif herr < 1000:
+            herr_text = f"{herr:.2f} m"
+        else:
+            herr_text = "> 1 km"
+        self.nav_vars["herr"].set(herr_text)
         heading = fmt("heading", ".1f", "\u00b0")
         if "hdg_src" in nav:
             heading += f" ({nav['hdg_src']}, n={nav.get('hdg_n', 0)})"

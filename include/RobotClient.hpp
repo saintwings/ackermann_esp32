@@ -16,6 +16,7 @@ enum class RobotCommandType : uint8_t {
   MissionUploadStart,    // type 40 — begin batched upload, carries tasks JSON
   MissionUploadBatch,    // type 41 — one chunk of waypoints
   MissionUploadExecute,  // type 42 — all batches done, start mission
+  Io,                    // type 17 — speed output / actuator (io_action)
 };
 
 struct RobotCommand {
@@ -37,6 +38,10 @@ struct RobotCommand {
   int    upload_offset{0};
   int    upload_total_waypoints{0};
   int    upload_total_batches{0};
+  // Io fields
+  String io_action{};  // set_speed, actuator_move, actuator_stop
+  int    io_channel{0};
+  float  io_value{0.0f};
 };
 
 struct RobotTelemetry {

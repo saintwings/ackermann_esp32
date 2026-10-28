@@ -410,6 +410,9 @@ enum class MissionTaskType : uint8_t {
   CoveragePath,
   Spiral,
   SetOutput,  // turn output channel A/B/C/D on or off
+  SetSpeed,       // set a DS3502 speed output (Speed1..N) in percent
+  MoveActuator,   // move the linear actuator, optionally waiting until it arrives
+  WaitInput,      // hold still until a PCF8574 input reaches a state
 };
 
 struct MissionWaypointPlan {
@@ -434,6 +437,13 @@ struct MissionTaskPlan {
   // SetOutput params (only used when type == SetOutput)
   uint8_t output_channel{0};   // 0=A 1=B 2=C 3=D
   bool    output_state{false}; // true=ON false=OFF
+  // I/O task params. SetSpeed: io_index = speed channel (1-based), io_value = %.
+  // MoveActuator: io_value = position %, io_wait, wait_ms = timeout.
+  // WaitInput: io_index = input (1-based), output_state = wanted state (true = active),
+  // wait_ms = timeout (0 = none).
+  uint8_t io_index{0};
+  float   io_value{0.0f};
+  bool    io_wait{false};
 };
 
 MissionWaypointPlan mission_waypoints[MISSION_MAX_WAYPOINTS];
@@ -704,6 +714,27 @@ static bool parseMissionPlan(const String& mission_json) {
       t.output_channel = ch;
       t.output_state   = state;
       mission_tasks[mission_task_count++] = t;
+    } else if (type == "set_speed") {
+      MissionTaskPlan t{};
+      t.type     = MissionTaskType::SetSpeed;
+      t.io_index = static_cast<uint8_t>(constrain(task["channel"] | 1, 0, 255));
+      t.io_value = task["percent"] | 0.0f;
+      mission_tasks[mission_task_count++] = t;
+    } else if (type == "move_actuator") {
+      MissionTaskPlan t{};
+      t.type     = MissionTaskType::MoveActuator;
+      t.io_value = task["position"] | 0.0f;
+      t.io_wait  = task["wait"] | true;
+      t.wait_ms  = static_cast<unsigned long>(max(1.0f, task["timeout"] | 30.0f) * 1000.0f);
+      mission_tasks[mission_task_count++] = t;
+    } else if (type == "wait_input") {
+      String state_str = task["state"] | "active";
+      MissionTaskPlan t{};
+      t.type         = MissionTaskType::WaitInput;
+      t.io_index     = static_cast<uint8_t>(constrain(task["input"] | 1, 0, 255));
+      t.output_state = (state_str != "inactive");
+      t.wait_ms      = static_cast<unsigned long>(max(0.0f, task["timeout"] | 0.0f) * 1000.0f);
+      mission_tasks[mission_task_count++] = t;
     }
   }
 
@@ -740,10 +771,16 @@ static void loadSingleWaypointMission(float lat, float lon, float alt) {
   mission_task_started_ms = millis();
 }
 
+// Defined with the USB POT/ACT commands further down.
+static const char* setSpeedOutput(int ch, int raw);
+static const char* moveActuator(float pct);
+static void zeroSpeedOutputs(const char* why);
+
 static void setMissionState(MissionState new_state) {
   if (mission_ctx.state == new_state) return;
   mission_ctx.state = new_state;
   mission_ctx.state_since_ms = millis();
+  if (new_state == MissionState::Failed) zeroSpeedOutputs("mission failed");
 #if DEBUG_LOG_MISSION
   Serial.printf("[MISSION] state=%s\n", missionStateToString(mission_ctx.state));
 #endif
@@ -857,6 +894,128 @@ static bool serverLinkLost(unsigned long now) {
 #endif
 }
 
+// Tasks that only touch I/O run with the robot standing still, so they don't need GPS.
+static bool missionTaskNeedsGps(MissionTaskType type) {
+  switch (type) {
+    case MissionTaskType::Spiral:
+    case MissionTaskType::SetOutput:
+    case MissionTaskType::SetSpeed:
+    case MissionTaskType::MoveActuator:
+    case MissionTaskType::WaitInput:
+      return false;
+    default:
+      return true;
+  }
+}
+
+static void holdMissionStill(unsigned long now) {
+  setMissionAutoZeroTurn(false);
+  resetMissionSpeedSlew();
+  control_targets.linear_mps = 0.0f;
+  control_targets.angle_deg = 0.0f;
+  control_targets.remote_move_expire_ms = now + 150;
+}
+
+static void failMission(const char* why) {
+  mission_debug_valid = false;
+  mission_ctx.active = false;
+  mission_ctx.phase = 0;
+  mission_ctx.waypoint_index = -1;
+  resetMissionCommandTargets();
+  setMissionState(MissionState::Failed);
+  Serial.printf("[MISSION] Failed: task %u: %s\n", static_cast<unsigned>(mission_task_cursor), why);
+}
+
+static void advanceMissionTask(unsigned long now) {
+  ++mission_task_cursor;
+  mission_task_started_ms = now;
+  mission_active_task_cursor = static_cast<size_t>(-1);
+}
+
+// SetOutput / SetSpeed / MoveActuator / WaitInput. Returns false if the task is not one
+// of these. Instant tasks advance at once; waiting ones hold the robot still.
+static bool runMissionIoTask(MissionTaskPlan& task, unsigned long now) {
+  switch (task.type) {
+    case MissionTaskType::SetOutput: {
+      const uint8_t ch = task.output_channel;
+      if (ch < OUTPUT_COUNT) {
+        digitalWrite(kOutputPins[ch], task.output_state ? HIGH : LOW);
+        Serial.printf("[MISSION] Output %c %s (pin %u)\n", 'A' + ch, task.output_state ? "ON" : "OFF", kOutputPins[ch]);
+      }
+      advanceMissionTask(now);
+      return true;
+    }
+    case MissionTaskType::SetSpeed: {
+#if DS3502_ENABLE
+      const float pct = clampf(task.io_value, 0.0f, 100.0f);
+      const char* err = setSpeedOutput(task.io_index, lroundf(pct * Ds3502::kMaxWiper / 100.0f));
+#else
+      const float pct = 0.0f;
+      const char* err = setSpeedOutput(task.io_index, 0);
+#endif
+      if (err) {
+        failMission(err);
+        return true;
+      }
+      Serial.printf("[MISSION] Speed%u -> %.0f%%\n", task.io_index, pct);
+      advanceMissionTask(now);
+      return true;
+    }
+    case MissionTaskType::MoveActuator: {
+      holdMissionStill(now);
+#if ACTUATOR_ENABLE
+      // Start the move on the first tick of this task (a loop re-runs it with a new start time).
+      static size_t started_cursor = static_cast<size_t>(-1);
+      static unsigned long started_ms = 0;
+      if (started_cursor != mission_task_cursor || started_ms != mission_task_started_ms) {
+        started_cursor = mission_task_cursor;
+        started_ms = mission_task_started_ms;
+        if (const char* err = moveActuator(task.io_value)) {
+          failMission(err);
+          return true;
+        }
+        Serial.printf("[MISSION] Actuator -> %.1f%%%s\n", task.io_value, task.io_wait ? " (waiting)" : "");
+        if (!task.io_wait) {
+          advanceMissionTask(now);
+          return true;
+        }
+      }
+      if (actuator.state() == LinearActuator::State::Fault) {
+        failMission(LinearActuator::faultName(actuator.fault()));
+      } else if (actuator.state() == LinearActuator::State::Idle) {
+        Serial.printf("[MISSION] Actuator arrived at %.1f%%\n", actuator.positionPct());
+        advanceMissionTask(now);
+      } else if (now - mission_task_started_ms >= task.wait_ms) {
+        actuator.stop();
+        failMission("actuator move timed out");
+      }
+#else
+      failMission("ACTUATOR_ENABLE is 0");
+#endif
+      return true;
+    }
+    case MissionTaskType::WaitInput: {
+      holdMissionStill(now);
+#if PCF8574_ENABLE
+      if (task.io_index < 1 || task.io_index > DIGITAL_INPUT_COUNT) {
+        failMission("invalid input number");
+      } else if (digital_inputs_ok &&
+                 ((digital_inputs >> (task.io_index - 1)) & 1u) == (task.output_state ? 1u : 0u)) {
+        Serial.printf("[MISSION] Input %u is %s\n", task.io_index, task.output_state ? "active" : "inactive");
+        advanceMissionTask(now);
+      } else if (task.wait_ms > 0 && now - mission_task_started_ms >= task.wait_ms) {
+        failMission("wait for input timed out");
+      }
+#else
+      failMission("PCF8574_ENABLE is 0");
+#endif
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
 static void updateMissionExecutor() {
   static unsigned long invalid_sensor_since_ms = 0;
   unsigned long& gps_hold_since_ms = mission_gps_hold_since_ms;
@@ -937,7 +1096,7 @@ static void updateMissionExecutor() {
 
   // Spiral tasks are purely time-based and do not require GPS or IMU
   const bool task_needs_gps = !(mission_task_cursor < mission_task_count &&
-                                mission_tasks[mission_task_cursor].type == MissionTaskType::Spiral);
+                                !missionTaskNeedsGps(mission_tasks[mission_task_cursor].type));
 
   if (task_needs_gps && (!gps_fix.valid || !imu_state.valid)) {
     mission_debug_valid = false;
@@ -1041,13 +1200,14 @@ static void updateMissionExecutor() {
     return;
   }
 
+  if (runMissionIoTask(task, now)) {
+    mission_debug_valid = false;
+    return;
+  }
+
   if (task.type == MissionTaskType::Wait) {
     mission_debug_valid = false;
-    setMissionAutoZeroTurn(false);
-    resetMissionSpeedSlew();
-    control_targets.linear_mps = 0.0f;
-    control_targets.angle_deg = 0.0f;
-    control_targets.remote_move_expire_ms = now + 150;
+    holdMissionStill(now);
     if ((now - mission_task_started_ms) >= task.wait_ms) {
       ++mission_task_cursor;
       mission_task_started_ms = now;
@@ -1180,20 +1340,12 @@ static void updateMissionExecutor() {
 
     MissionTaskPlan* next_task = &mission_tasks[mission_task_cursor];
 
-    // SetOutput executes instantly — toggle GPIO and immediately advance
-    if (next_task->type == MissionTaskType::SetOutput) {
-      uint8_t ch = next_task->output_channel;
-      bool    on = next_task->output_state;
-      if (ch < OUTPUT_COUNT) {
-        digitalWrite(kOutputPins[ch], on ? HIGH : LOW);
-        Serial.printf("[MISSION] Output %c %s (pin %u)\n",
-          'A' + ch, on ? "ON" : "OFF", kOutputPins[ch]);
-      }
-      mission_task_cursor++;
-      return;
-    }
-
-    if (next_task->type == MissionTaskType::LoopStart ||
+    // Non-waypoint tasks (I/O, wait, loop, spiral) run from the top on the next tick.
+    if (next_task->type == MissionTaskType::SetOutput ||
+        next_task->type == MissionTaskType::SetSpeed ||
+        next_task->type == MissionTaskType::MoveActuator ||
+        next_task->type == MissionTaskType::WaitInput ||
+        next_task->type == MissionTaskType::LoopStart ||
         next_task->type == MissionTaskType::LoopEnd ||
         next_task->type == MissionTaskType::Wait ||
         next_task->type == MissionTaskType::Spiral) {
@@ -1741,6 +1893,74 @@ static void handleCanPing(const String& args) {
   }
 }
 
+// Speed output / actuator actions shared by the USB POT/ACT commands and the server
+// "io" command (caller holds the nav lock). Each returns nullptr on success, else the
+// reason it was rejected (a string literal).
+static const char* setSpeedOutput(int ch, int raw) {
+#if DS3502_ENABLE
+  if (ch < 1 || ch > static_cast<int>(DS3502_COUNT)) return "invalid speed channel";
+  if (raw < 0 || raw > Ds3502::kMaxWiper) return "value out of range";
+  if (e_stop_active && raw > 0) return "e-stop active (only 0 allowed)";
+  Ds3502& pot = pots[ch - 1];
+  if (!pot.present()) return "DS3502 not detected on I2C";
+  if (!pot.setWiper(static_cast<uint8_t>(raw))) return "I2C write error";
+  return nullptr;
+#else
+  (void)ch;
+  (void)raw;
+  return "DS3502_ENABLE is 0";
+#endif
+}
+
+// Sets every present speed output to 0 % (e-stop, mission cancel, server link loss).
+static void zeroSpeedOutputs(const char* why) {
+#if DS3502_ENABLE
+  for (size_t i = 0; i < DS3502_COUNT; ++i) {
+    if (pots[i].present()) pots[i].setWiper(0);
+  }
+  Serial.printf("[DS3502] %s: all speed outputs set to 0%%\n", why);
+#else
+  (void)why;
+#endif
+}
+
+static const char* moveActuator(float pct) {
+#if ACTUATOR_ENABLE
+  if (!(pct >= 0.0f && pct <= 100.0f)) return "position out of range";
+  if (e_stop_active) return "e-stop active";
+  actuator.setTarget(pct);
+  return nullptr;
+#else
+  (void)pct;
+  return "ACTUATOR_ENABLE is 0";
+#endif
+}
+
+static const char* stopActuator() {
+#if ACTUATOR_ENABLE
+  actuator.stop();
+  return nullptr;
+#else
+  return "ACTUATOR_ENABLE is 0";
+#endif
+}
+
+// Server "io" command: action set_speed (channel 1..N, value 0-100 %),
+// actuator_move (value 0-100 %) or actuator_stop.
+static const char* applyIoCommand(const String& action, int channel, float value) {
+  if (action == "set_speed") {
+    if (!(value >= 0.0f && value <= 100.0f)) return "percent out of range";
+#if DS3502_ENABLE
+    return setSpeedOutput(channel, lroundf(value * Ds3502::kMaxWiper / 100.0f));
+#else
+    return setSpeedOutput(channel, 0);
+#endif
+  }
+  if (action == "actuator_move") return moveActuator(value);
+  if (action == "actuator_stop") return stopActuator();
+  return "unknown io action";
+}
+
 // POT <ch> <0-100>     — set DS3502 <ch> (1..DS3502_COUNT) wiper in percent
 // POT <ch> RAW <0-127> — set the wiper in raw steps
 // POT?                 — read every wiper back from the chips
@@ -1779,17 +1999,8 @@ static void handlePotCommand(String args) {
                   DS3502_COUNT, DS3502_COUNT);
     return;
   }
-  if (e_stop_active && raw > 0) {
-    Serial.printf("[USB_SERIAL] POT %d rejected: e-stop active (only 0 allowed)\n", ch);
-    return;
-  }
-  Ds3502& pot = pots[ch - 1];
-  if (!pot.present()) {
-    Serial.printf("[USB_SERIAL] POT %d rejected: DS3502 0x%02X not detected on I2C\n", ch, kDs3502Addresses[ch - 1]);
-    return;
-  }
-  if (!pot.setWiper(static_cast<uint8_t>(raw))) {
-    Serial.printf("[USB_SERIAL] POT %d failed: I2C write error\n", ch);
+  if (const char* err = setSpeedOutput(ch, raw)) {
+    Serial.printf("[USB_SERIAL] POT %d rejected: %s\n", ch, err);
     return;
   }
   Serial.printf("[USB_SERIAL] POT %d set wiper=%d/%u (%.1f%%)\n", ch, raw, Ds3502::kMaxWiper, raw * 100.0f / Ds3502::kMaxWiper);
@@ -1853,7 +2064,7 @@ static void handleActuatorCommand(String args) {
     return;
   }
   if (args == "STOP") {
-    actuator.stop();
+    stopActuator();
     Serial.println("[USB_SERIAL] ACT stopped");
     return;
   }
@@ -1879,7 +2090,7 @@ static void handleActuatorCommand(String args) {
     Serial.println("[USB_SERIAL] Invalid ACT. Usage: ACT <0-100>, ACT STOP, ACT?, ACT JOG <-100..100> <ms>");
     return;
   }
-  actuator.setTarget(pct);
+  moveActuator(pct);
   Serial.printf("[USB_SERIAL] ACT moving to %.1f%% (now %.1f%%)\n", pct, actuator.positionPct());
 #else
   (void)args;
@@ -1961,15 +2172,15 @@ static void updateIoDevices(unsigned long now) {
 
   // On e-stop every speed output (Speed1-3) goes to 0 %; the actuator just stops.
   static bool prev_e_stop = false;
-  if (e_stop_active && !prev_e_stop) {
-#if DS3502_ENABLE
-    for (size_t i = 0; i < DS3502_COUNT; ++i) {
-      if (pots[i].present()) pots[i].setWiper(0);
-    }
-    Serial.println("[DS3502] e-stop: all speed outputs set to 0%");
-#endif
-  }
+  if (e_stop_active && !prev_e_stop) zeroSpeedOutputs("e-stop");
   prev_e_stop = e_stop_active;
+
+  // Same when the server link drops (after MISSION_LINK_LOSS_HOLD_MS). Starts as "lost"
+  // so running without a server (USB serial only) never zeroes the outputs.
+  static bool prev_link_lost = true;
+  const bool link_lost = serverLinkLost(now);
+  if (link_lost && !prev_link_lost) zeroSpeedOutputs("server link lost");
+  prev_link_lost = link_lost;
 
 #if ACTUATOR_ENABLE
   if (e_stop_active && (actuator.state() == LinearActuator::State::Moving ||
@@ -2386,7 +2597,12 @@ static void handleRobotClientCommand() {
         clearMissionPlan();
         resetMissionCommandTargets();
         setMissionState(MissionState::Cancelled);
+        zeroSpeedOutputs("mission cancelled");
         ack_status = "accepted";
+        break;
+      case RobotCommandType::Io:
+        ack_detail = applyIoCommand(command.io_action, command.io_channel, command.io_value);
+        ack_status = ack_detail ? "rejected" : "accepted";
         break;
       case RobotCommandType::Waypoint:
         loadSingleWaypointMission(command.latitude, command.longitude, command.altitude);
@@ -2407,6 +2623,7 @@ static void handleRobotClientCommand() {
         clearMissionPlan();
         resetMissionCommandTargets();
         setMissionState(MissionState::Cancelled);
+        zeroSpeedOutputs("mission cancelled");
         ack_status = "accepted";
         break;
       case RobotCommandType::MissionUploadStart: {
@@ -2523,8 +2740,10 @@ static void publishRobotTelemetry() {
     telemetry.gps_hdop = gps_fix.hdop;
     telemetry.gps_fix_quality = gps_fix.fix_quality;
     telemetry.gps_satellites = gps_fix.satellites;
-    // GST arrives every epoch; treat it as unknown if it stopped (e.g. config NAK).
-    telemetry.gps_h_err_m = (gps_fix.has_gst && now - gps_fix.last_gst_ms < GPS_STALE_TIMEOUT_MS)
+    // GST arrives every epoch; treat it as unknown if it stopped (e.g. config NAK), and
+    // without a fix, where the receiver reports a meaningless huge error.
+    telemetry.gps_h_err_m = (gps_fix.valid && gps_fix.fix_quality > 0 && gps_fix.has_gst &&
+                             now - gps_fix.last_gst_ms < GPS_STALE_TIMEOUT_MS)
                                 ? gps_fix.h_err_m : -1.0f;
 
     telemetry.mission_active = mission_ctx.active && (mission_ctx.state == MissionState::Queued || mission_ctx.state == MissionState::Running || mission_ctx.state == MissionState::Paused);
@@ -3024,7 +3243,7 @@ static void publishNavSerial() {
     lat = gps_fix.latitude;
     lon = gps_fix.longitude;
     fix = gps_fix.valid ? gps_fix.fix_quality : 0;
-    herr = (gps_fix.has_gst && now - gps_fix.last_gst_ms < GPS_STALE_TIMEOUT_MS) ? gps_fix.h_err_m : -1.0f;
+    herr = (fix > 0 && gps_fix.has_gst && now - gps_fix.last_gst_ms < GPS_STALE_TIMEOUT_MS) ? gps_fix.h_err_m : -1.0f;
     heading = estimateHeadingDeg();
     mission_state = missionStateToString(mission_ctx.state);
     holding = mission_ctx.active && (mission_gps_hold_since_ms != 0 || mission_link_hold_since_ms != 0);

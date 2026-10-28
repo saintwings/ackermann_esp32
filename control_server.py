@@ -76,6 +76,7 @@ class MessageType(Enum):
     COMMAND_WAYPOINT = 11
     COMMAND_EMERGENCY_STOP = 12
     COMMAND_CANCEL_TASK = 13
+    COMMAND_IO = 17
     
     # Server-to-Web
     TELEMETRY_UPDATE = 20
@@ -952,6 +953,22 @@ class ControlServer:
                 'client_id': web_message.get('client_id'),
                 'payload': {
                     'command': 'cancel_mission'
+                }
+            }
+        elif command == 'io':
+            # Speed outputs (DS3502) and linear actuator; the firmware validates ranges and e-stop.
+            action = payload.get('action')
+            if action not in ('set_speed', 'actuator_move', 'actuator_stop'):
+                raise ValueError(f'Unknown io action: {action}')
+            return {
+                'type': MessageType.COMMAND_IO.value,
+                'robot_id': web_message.get('robot_id'),
+                'client_id': web_message.get('client_id'),
+                'payload': {
+                    'command': 'io',
+                    'action': action,
+                    'channel': int(payload.get('channel', 0)),
+                    'value': float(payload.get('value', 0.0))
                 }
             }
         else:

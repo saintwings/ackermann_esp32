@@ -42,14 +42,79 @@
             z-index: 100;
             gap: 8px;
         }
-        #topbar .app-title {
-            font-size: 13px;
-            font-weight: 700;
-            color: #4CAF50;
-            letter-spacing: 0.03em;
+        /* Selected-robot badge: always visible so every tab shows where commands go. */
+        #selected-robot-badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            margin: 0;
+            padding: 3px 10px;
+            min-height: 0 !important;  /* override the global 40-44 px button tap height */
+            height: 26px;
+            border-radius: 12px;
+            border: 1px solid #555;
+            background: #2a2a2a;
+            color: #e0e0e0;
+            font-size: 12px;
+            cursor: pointer;
             white-space: nowrap;
+        }
+        #selected-robot-badge:hover {
+            transform: none;
+            border-color: #4CAF50;
+        }
+        #selected-robot-badge.none {
+            border-color: #FF9800;
+            color: #FF9800;
+        }
+        #selected-robot-badge.estop {
+            border-color: #f44336;
+            background: #4a1515;
+        }
+        #selected-robot-badge .srb-swatch {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            border: 1px solid #fff;
+            flex-shrink: 0;
+        }
+        #selected-robot-badge .srb-name {
+            min-width: 48px;
+            font-weight: 700;
             overflow: hidden;
             text-overflow: ellipsis;
+        }
+        #selected-robot-badge .srb-tag {
+            font-size: 10px;
+            font-weight: 700;
+            padding: 1px 5px;
+            border-radius: 3px;
+            background: #f44336;
+            color: #fff;
+        }
+        #topbar-estop {
+            min-height: 0 !important;
+            height: 28px;
+            margin: 0 auto 0 0;
+            padding: 0 12px;
+            background: #f44336;
+            color: #fff;
+            font-weight: 700;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        #topbar-estop:hover { background: #da190b; }
+        #topbar-estop:disabled {
+            background: #5a2a2a;
+            color: #aaa;
+            cursor: not-allowed;
+            transform: none;
+        }
+        #server-status {
+            font-size: 12px;
+            color: #94a3b8;
+            white-space: nowrap;
         }
         #topbar .user-section {
             display: flex;
@@ -245,11 +310,12 @@
         }
 
         /* Minimized overlay: only the header row stays visible so the map is unobstructed */
-        .telemetry-overlay.minimized > :not(.telemetry-header) {
+        /* (floating only — phones start it minimized; the in-card panel has its own Hide button) */
+        .telemetry-overlay.minimized:not(.embedded) > :not(.telemetry-header) {
             display: none !important;
         }
 
-        .telemetry-overlay.minimized .telemetry-header {
+        .telemetry-overlay.minimized:not(.embedded) .telemetry-header {
             margin-bottom: 0;
             padding-bottom: 0;
             border-bottom: none;
@@ -439,7 +505,58 @@
         
         .robot-item.selected {
             border-color: #4CAF50;
-            background: #404040;
+            background: #2e3d2e;
+            box-shadow: inset 4px 0 0 #4CAF50;
+        }
+        .robot-expand-btn {
+            min-height: 0 !important;
+            margin: 0 0 0 auto;
+            padding: 3px 8px;
+            font-size: 11px;
+            background: #555;
+            color: #e0e0e0;
+        }
+        .telemetry-float-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: #b0b0b0;
+            margin-bottom: 10px;
+            cursor: pointer;
+        }
+        /* Robot info inside the selected robot card instead of floating on the map */
+        .telemetry-overlay.embedded {
+            position: static;
+            max-width: none;
+            max-height: none;
+            margin-top: 10px;
+            padding: 10px 0 0;
+            background: transparent;
+            border: none;
+            border-top: 1px solid #555;
+            border-radius: 0;
+            box-shadow: none;
+            backdrop-filter: none;
+            cursor: default;
+        }
+        .telemetry-overlay.embedded #telemetry-color-indicator,
+        .telemetry-overlay.embedded #telemetry-robot-name,
+        .telemetry-overlay.embedded #telemetry-toggle-btn {
+            display: none;
+        }
+        .telemetry-overlay.embedded .telemetry-header {
+            justify-content: flex-end;
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+        .robot-selected-tag {
+            font-size: 10px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: #4CAF50;
+            color: #fff;
         }
         
         .robot-item.offline {
@@ -713,8 +830,37 @@
             color: #888;
             font-size: 12px;
         }
-        #io-content .value-row {
+        #io-act-status .value-row {
             font-size: 13px;
+        }
+        .io-ctl-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .io-ctl-row input[type="range"] {
+            flex: 1;
+            margin: 0;
+        }
+        .io-ctl-row input[type="number"] {
+            width: 70px;
+        }
+        .io-ctl-row button {
+            margin-bottom: 0;
+            padding: 6px 10px;
+        }
+        .io-ctl-name {
+            width: 60px;
+            font-size: 13px;
+            color: #e0e0e0;
+        }
+        .io-ctl-val {
+            width: 40px;
+            text-align: right;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            color: #4CAF50;
         }
 
         .button-group {
@@ -728,15 +874,33 @@
             min-width: 80px;
         }
         
-        #status-message {
-            background: #3d3d3d;
-            padding: 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            color: #64B5F6;
-            margin-bottom: 10px;
-            border-left: 3px solid #4CAF50;
+        #toast-container {
+            position: fixed;
+            top: 46px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            width: min(420px, calc(100% - 32px));
+            pointer-events: none;
         }
+        .toast {
+            width: 100%;
+            background: #2d2d2d;
+            color: #e0e0e0;
+            border-left: 4px solid #4CAF50;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 13px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+            transition: opacity 0.3s;
+        }
+        .toast.warning { border-left-color: #FF9800; }
+        .toast.error { border-left-color: #f44336; }
+        .toast.fade { opacity: 0; }
         
         .scroll-area {
             overflow-y: auto;
@@ -851,7 +1015,7 @@
             }
 
             /* Minimized: shrink to a small chip in the corner instead of spanning the map */
-            .telemetry-overlay.minimized {
+            .telemetry-overlay.minimized:not(.embedded) {
                 right: auto;
                 max-width: calc(100% - 16px);
                 padding: 6px 8px;
@@ -867,8 +1031,11 @@
                 height: 44px;
             }
 
-            #topbar .app-title {
-                max-width: 40vw;
+            /* Phones: the dot alone shows the server link, and the robot name gets the room
+               instead of the user name (Logout stays) */
+            #server-status .server-status-text,
+            #topbar .user-name {
+                display: none;
             }
 
             .panel-content {
@@ -915,17 +1082,22 @@
 </head>
 <body>
     <div id="topbar">
-        <span class="app-title">🤖 Mission Planner</span>
+        <button id="selected-robot-badge" class="none" onclick="switchTab('robots-tab')" title="Robot that receives your commands — click to change">
+            No robot selected
+        </button>
+        <button id="topbar-estop" onclick="sendEmergencyStop()" disabled title="Emergency stop the selected robot">🛑 E-STOP</button>
+        <span id="server-status" title="Connection to the control server">
+            <span class="status-indicator status-offline"></span><span class="server-status-text">Disconnected</span>
+        </span>
         <div class="user-section" id="user-bar">
             <!-- filled by renderUserBar() -->
         </div>
     </div>
+    <!-- Toast messages: visible on every tab (updateStatusMessage, robot replies) -->
+    <div id="toast-container" aria-live="polite"></div>
     <div class="container">
         <!-- Map/Visualization Panel -->
         <div class="panel" id="map-panel">
-            <div class="panel-header">
-                📍 Visualization
-            </div>
             <div class="panel-content">
                 <div id="map-visualization" style="position: relative;">
                     <div id="map"></div>
@@ -1026,16 +1198,15 @@
                 <!-- Robots Tab -->
                 <div class="tab-panel active" id="robots-tab">
                     <div class="panel" id="robot-panel">
-                        <div class="panel-header">
-                            🤖 Robots
-                            <span id="server-status" style="margin-left: auto; font-size: 12px;">
-                                <span class="status-indicator status-offline"></span>Disconnected
-                            </span>
-                        </div>
                         <div class="panel-content scroll-area">
+                            <label class="telemetry-float-label">
+                                <input type="checkbox" id="telemetry-floating-toggle" onchange="setTelemetryFloating(this.checked)">
+                                Show robot info as floating panel on map
+                            </label>
                             <div id="robot-list" class="robot-list">
                                 <div style="color: #666; font-size: 12px;">Waiting for server...</div>
                             </div>
+                            <div id="telemetry-parking" style="display: none;"></div>
                         </div>
                     </div>
                 </div>
@@ -1044,16 +1215,7 @@
                 <!-- Control Tab -->
                 <div class="tab-panel" id="control-tab">
                     <div class="panel" id="control-panel">
-                        <div class="panel-header">
-                            🎮 Commands
-                        </div>
                         <div class="panel-content scroll-area">
-                            <div id="command-robot-info" style="background: #3d3d3d; padding: 8px; border-radius: 4px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-                                <div id="command-color-indicator" style="width: 16px; height: 16px; border-radius: 3px; background: #666; border: 2px solid white;"></div>
-                                <div id="command-robot-name" style="font-weight: bold; color: #4CAF50; flex: 1;">Select a robot</div>
-                            </div>
-                            <div id="status-message"></div>
-                            
                             <div class="command-section" id="movement-section">
                                 <div class="command-title">Movement</div>
                                 <div class="form-group">
@@ -1097,13 +1259,6 @@
                                     Navigate to Waypoint
                                 </button>
                             </div>
-                            
-                            <div class="command-section">
-                                <div class="command-title">Emergency Controls</div>
-                                <button class="btn-danger" onclick="sendEmergencyStop()" style="width: 100%;">
-                                    🛑 EMERGENCY STOP
-                                </button>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -1111,12 +1266,35 @@
                 <!-- I/O Tab: mower blade speed (DS3502 pots), digital inputs, linear actuator -->
                 <div class="tab-panel" id="io-tab">
                     <div class="panel" id="io-panel">
-                        <div class="panel-header">
-                            ⚙️ I/O
-                        </div>
                         <div class="panel-content scroll-area">
-                            <div id="io-content">
-                                <div class="io-note">Select a robot to see its I/O.</div>
+                            <div id="io-banner"></div>
+                            <div id="io-empty" class="io-note">Select a robot to see its I/O.</div>
+                            <div id="io-controls">
+                                <div class="command-section" id="io-speed-section" style="display: none;">
+                                    <div class="command-title">Speed (DS3502)</div>
+                                    <div id="io-speed-controls"></div>
+                                    <button class="btn-warning" style="width: 100%;" onclick="ioStopAllSpeeds()">All speeds → 0%</button>
+                                </div>
+                                <div class="command-section" id="io-act-section" style="display: none;">
+                                    <div class="command-title" id="io-act-title">Actuator (linear)</div>
+                                    <div id="io-act-status"></div>
+                                    <div class="io-ctl-row" style="margin-top: 10px;">
+                                        <input type="number" id="io-act-target" min="0" max="100" step="1" value="50">
+                                        <span class="io-note">%</span>
+                                        <button class="btn-primary" style="flex: 1;" onclick="ioMoveActuator(document.getElementById('io-act-target').value)">Move</button>
+                                    </div>
+                                    <div class="io-ctl-row">
+                                        <button class="btn-secondary" style="flex: 1;" onclick="ioMoveActuator(0)">0%</button>
+                                        <button class="btn-secondary" style="flex: 1;" onclick="ioMoveActuator(50)">50%</button>
+                                        <button class="btn-secondary" style="flex: 1;" onclick="ioMoveActuator(100)">100%</button>
+                                        <button class="btn-danger" style="flex: 1;" onclick="ioSendIo('actuator_stop', 0, 0)">Stop</button>
+                                    </div>
+                                </div>
+                                <div class="command-section" id="io-limits-section" style="display: none;">
+                                    <div class="command-title" id="io-limits-title">Limit Switches (PCF8574)</div>
+                                    <div id="io-limits"></div>
+                                </div>
+                                <div class="io-note">Rejected while e-stop is active (except 0% / Stop). Speeds go to 0% on e-stop, mission cancel and server link loss.</div>
                             </div>
                         </div>
                     </div>
@@ -1125,15 +1303,7 @@
                 <!-- Mission Planning Tab -->
                 <div class="tab-panel" id="mission-tab">
                     <div class="panel" id="mission-panel">
-                        <div class="panel-header">
-                            📋 Mission Planning
-                        </div>
                         <div class="panel-content scroll-area">
-                            <div id="mission-robot-info" style="background: #3d3d3d; padding: 8px; border-radius: 4px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-                                <div id="mission-color-indicator" style="width: 16px; height: 16px; border-radius: 3px; background: #666; border: 2px solid white;"></div>
-                                <div id="mission-robot-name" style="font-weight: bold; color: #4CAF50; flex: 1;">Select a robot</div>
-                            </div>
-                            
                             <!-- Mission Name -->
                             <div class="command-section" style="background: #2d2d2d; padding: 10px; border-radius: 4px; margin-bottom: 12px;">
                                 <div class="form-group" style="margin-bottom: 0;">
@@ -1178,6 +1348,9 @@
                                         <option value="loop_start">Loop Start</option>
                                         <option value="loop_end">Loop End</option>
                                         <option value="set_output">Set Output (A/B/C/D)</option>
+                                        <option value="set_speed">Set Speed (Speed1-3)</option>
+                                        <option value="move_actuator">Move Actuator</option>
+                                        <option value="wait_input">Wait for Input</option>
                                     </select>
                                 </div>
                                 <div id="task-options"></div>
@@ -1198,7 +1371,6 @@
                             
                             <!-- Execute Mission -->
                             <div class="command-section">
-                                <div id="mission-feedback" style="display:none; background:#3d3d3d; padding:8px; border-radius:4px; font-size:12px; color:#ccc; margin-bottom:10px; border-left:3px solid #4CAF50;"></div>
                                 <button class="btn-primary" onclick="executeMission()" style="width: 100%; background: #4CAF50;">
                                     ✓ Execute Mission
                                 </button>
@@ -1230,9 +1402,6 @@
                 <!-- Coverage Planning Tab -->
                 <div class="tab-panel" id="coverage-tab">
                     <div class="panel" id="coverage-panel">
-                        <div class="panel-header">
-                            🧭 Coverage Planning
-                        </div>
                         <div class="panel-content scroll-area">
                             <div class="command-section" style="background: #2d2d2d;">
                                 <div class="command-title">Geometry From Existing Waypoints</div>
@@ -1295,7 +1464,6 @@
                                     </div>
                                 </div>
                                 <button class="btn-primary" onclick="generateCoveragePlan()" style="width: 100%;">Generate Coverage Plan</button>
-                                <div id="coverage-feedback" style="display:none; background:#3d3d3d; padding:8px; border-radius:4px; font-size:12px; color:#ccc; margin-top:8px; border-left:3px solid #4CAF50;"></div>
                             </div>
 
                             <div class="command-section" style="background: #2d2d2d;">
@@ -1554,11 +1722,9 @@
                     updateTelemetryOverlay(robotId);
                     displayMissionStatus(robotId);
                 } else if (!selectedRobotId) {
-                    // Auto-select first robot and show overlay
-                    selectedRobotId = robotId;
-                    updateRobotList();
-                    updateTelemetryOverlay(robotId);
-                    displayMissionStatus(robotId);
+                    // Auto-select the first robot exactly as a click would, so every tab
+                    // (Commands, Mission Plan, I/O) targets it too.
+                    selectRobot(robotId);
                 }
                 
                 // Update robot position on map
@@ -1744,10 +1910,34 @@
             }
         }
 
+        // Server events seen so far; the first SERVER_STATUS is history and is not toasted.
+        let seenServerEvents = null;
+
+        // Toasts new warning/error events (rejected command ACKs, offline robot, ...) that
+        // name the selected robot.
+        function toastServerEvents(events) {
+            const keys = events.map(ev => `${ev.ts}|${ev.msg}`);
+            if (seenServerEvents === null) {
+                seenServerEvents = new Set(keys);
+                return;
+            }
+            const robot = selectedRobotId ? robots.get(selectedRobotId) : null;
+            events.forEach((ev, i) => {
+                if (seenServerEvents.has(keys[i])) return;
+                seenServerEvents.add(keys[i]);
+                const msg = String(ev.msg || '');
+                if (!robot || (ev.level !== 'warning' && ev.level !== 'error')) return;
+                if (!msg.includes(robot.robot_name || selectedRobotId) && !msg.includes(selectedRobotId)) return;
+                updateStatusMessage(msg, ev.level);
+            });
+            if (seenServerEvents.size > 500) seenServerEvents = new Set(keys);
+        }
+
         function handleServerStatus(message) {
-            if (!CURRENT_USER?.is_admin) return;
             const payload = message.payload || {};
             const events  = Array.isArray(payload.events) ? payload.events : [];
+            toastServerEvents(events);
+            if (!CURRENT_USER?.is_admin) return;
 
             // Update header counts
             const counts = document.getElementById('server-log-counts');
@@ -1782,49 +1972,146 @@
         
         function updateServerStatus(connected) {
             const elem = document.getElementById('server-status');
-            if (connected) {
-                elem.innerHTML = '<span class="status-indicator status-online"></span>Connected';
-            } else {
-                elem.innerHTML = '<span class="status-indicator status-offline"></span>Disconnected';
-            }
+            if (!elem) return;
+            elem.innerHTML = `<span class="status-indicator ${connected ? 'status-online' : 'status-offline'}"></span>` +
+                `<span class="server-status-text">${connected ? 'Connected' : 'Disconnected'}</span>`;
         }
         
+        // Robot info (GPS, status, mission, I/O) is one element, #telemetry-overlay. It sits
+        // either inside the selected robot's card in the list, or floating on the map
+        // (the "floating panel" checkbox). The list is only rebuilt when its structure
+        // changes, so a click on a card (or its Hide button) is never lost to a re-render.
+        let robotListSignature = '';
+        let robotDetailsExpanded = true;
+        let telemetryFloating = false;
+        try {
+            robotDetailsExpanded = localStorage.getItem('robotDetailsExpanded') !== '0';
+            telemetryFloating = localStorage.getItem('telemetryFloating') === '1';
+        } catch (e) { /* storage unavailable: use defaults */ }
+
+        function placeTelemetryPanel() {
+            const panel = document.getElementById('telemetry-overlay');
+            if (!panel) return;
+            const slot = document.getElementById('robot-details-slot');
+            let parent = document.getElementById('telemetry-parking');
+            if (telemetryFloating) {
+                parent = document.getElementById('map-visualization');
+            } else if (slot && robotDetailsExpanded) {
+                parent = slot;
+            }
+            panel.classList.toggle('embedded', !telemetryFloating);
+            if (panel.parentElement !== parent) parent.appendChild(panel);
+        }
+
+        function setTelemetryFloating(on) {
+            telemetryFloating = !!on;
+            try { localStorage.setItem('telemetryFloating', telemetryFloating ? '1' : '0'); } catch (e) {}
+            robotListSignature = '';
+            updateRobotList();
+        }
+
+        function toggleRobotDetails() {
+            robotDetailsExpanded = !robotDetailsExpanded;
+            try { localStorage.setItem('robotDetailsExpanded', robotDetailsExpanded ? '1' : '0'); } catch (e) {}
+            robotListSignature = '';
+            updateRobotList();
+        }
+
+        function robotStateHtml(robot, robotId) {
+            const isOnline = robot.online;
+            const telemetry = latestTelemetry.get(robotId);
+            const eStop = !!(telemetry && telemetry.status && telemetry.status.e_stop);
+            let html = `<span class="status-indicator ${isOnline ? 'status-online' : 'status-offline'}"></span>`;
+            html += `<span class="${isOnline ? 'robot-online' : 'robot-offline'}">${isOnline ? 'Online' : 'Offline'}</span>`;
+            html += `<span style="color: #666;"> • ${ioEscape(robot.robot_type || 'unknown')}</span>`;
+            if (robot.battery_level !== undefined) html += `<span style="color: #aaa;"> • 🔋 ${Number(robot.battery_level).toFixed(0)}%</span>`;
+            if (eStop) html += ' <span class="srb-tag" style="background: #f44336; color: #fff; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px;">E-STOP</span>';
+            return html;
+        }
+
         function updateRobotList() {
             const container = document.getElementById('robot-list');
-            
+            const floatToggle = document.getElementById('telemetry-floating-toggle');
+            if (floatToggle) floatToggle.checked = telemetryFloating;
+
             if (robots.size === 0) {
+                robotListSignature = '';
+                const panel = document.getElementById('telemetry-overlay');
+                const parking = document.getElementById('telemetry-parking');
+                if (panel && parking && container.contains(panel)) parking.appendChild(panel);
                 container.innerHTML = '<div style="color: #666; font-size: 12px;">No robots available</div>';
+                updateSelectedRobotBadge();
                 return;
             }
-            
-            let html = '';
-            robots.forEach((robot, robotId) => {
-                const isOnline = robot.online;
-                const isSelected = robotId === selectedRobotId;
-                const robotColor = getColorForRobot(robotId);
-                
-                html += `
-                    <div class="robot-item ${isSelected ? 'selected' : ''} ${!isOnline ? 'offline' : ''}" 
+
+            const signature = JSON.stringify([selectedRobotId, robotDetailsExpanded, telemetryFloating,
+                [...robots].map(([id, r]) => [id, r.robot_name, r.robot_type])]);
+            if (signature !== robotListSignature) {
+                robotListSignature = signature;
+                // Park the info panel so it survives the list being replaced.
+                const panel = document.getElementById('telemetry-overlay');
+                const parking = document.getElementById('telemetry-parking');
+                if (panel && parking && container.contains(panel)) parking.appendChild(panel);
+
+                let html = '';
+                robots.forEach((robot, robotId) => {
+                    const isSelected = robotId === selectedRobotId;
+                    const name = ioEscape(robot.robot_name || robotId);
+                    html += `
+                    <div class="robot-item ${isSelected ? 'selected' : ''}" id="robot-item-${robotId}"
                          onclick="selectRobot('${robotId}')">
                         <div style="display: flex; align-items: center; gap: 8px;">
-                            <div style="width: 16px; height: 16px; background: ${robotColor}; border-radius: 3px; border: 2px solid #fff; flex-shrink: 0;"></div>
-                            <strong>${robot.robot_name || robotId}</strong>
+                            <div style="width: 16px; height: 16px; background: ${getColorForRobot(robotId)}; border-radius: 3px; border: 2px solid #fff; flex-shrink: 0;"></div>
+                            <strong>${name}</strong>
+                            ${isSelected ? '<span class="robot-selected-tag">✓ SELECTED</span>' : ''}
+                            ${isSelected && !telemetryFloating
+                                ? `<button class="robot-expand-btn" onclick="event.stopPropagation(); toggleRobotDetails()" title="${robotDetailsExpanded ? 'Hide' : 'Show'} robot info">${robotDetailsExpanded ? '▾ Hide' : '▸ Info'}</button>`
+                                : ''}
                         </div>
-                        <div class="robot-status">
-                            <span class="status-indicator ${isOnline ? 'status-online' : 'status-offline'}"></span>
-                            <span class="${isOnline ? 'robot-online' : 'robot-offline'}">
-                                ${isOnline ? 'Online' : 'Offline'}
-                            </span>
-                            <span style="color: #666;"> • ${robot.robot_type || 'unknown'}</span>
-                        </div>
-                        ${robot.battery_level !== undefined ? 
-                            `<div class="robot-status">Battery: ${robot.battery_level.toFixed(0)}%</div>` : ''}
-                        <div class="robot-status" id="link-${robotId}">${linkHealthHtml(robot)}</div>
-                    </div>
-                `;
+                        <div class="robot-status" id="robot-state-${robotId}"></div>
+                        <div class="robot-status" id="link-${robotId}"></div>
+                        ${isSelected ? '<div id="robot-details-slot" onclick="event.stopPropagation()"></div>' : ''}
+                    </div>`;
+                });
+                container.innerHTML = html;
+                placeTelemetryPanel();
+            }
+
+            // In-place updates: status text, link health, offline styling.
+            robots.forEach((robot, robotId) => {
+                const item = document.getElementById(`robot-item-${robotId}`);
+                if (item) item.classList.toggle('offline', !robot.online);
+                const state = document.getElementById(`robot-state-${robotId}`);
+                if (state) state.innerHTML = robotStateHtml(robot, robotId);
+                const link = document.getElementById(`link-${robotId}`);
+                if (link) link.innerHTML = linkHealthHtml(robot);
             });
-            
-            container.innerHTML = html;
+            updateSelectedRobotBadge();
+        }
+
+        function updateSelectedRobotBadge() {
+            const badge = document.getElementById('selected-robot-badge');
+            if (!badge) return;
+            const robot = selectedRobotId ? robots.get(selectedRobotId) : null;
+            const estopBtn = document.getElementById('topbar-estop');
+            if (estopBtn) {
+                estopBtn.disabled = !(robot && robot.online);
+                estopBtn.title = robot ? `Emergency stop ${robot.robot_name || selectedRobotId}` : 'Select a robot first';
+            }
+            if (!robot) {
+                badge.className = 'none';
+                badge.textContent = 'No robot selected';
+                return;
+            }
+            const telemetry = latestTelemetry.get(selectedRobotId);
+            const eStop = !!(telemetry && telemetry.status && telemetry.status.e_stop);
+            badge.className = eStop ? 'estop' : '';
+            badge.innerHTML = `
+                <span class="srb-swatch" style="background: ${getColorForRobot(selectedRobotId)};"></span>
+                <span class="status-indicator ${robot.online ? 'status-online' : 'status-offline'}"></span>
+                <span class="srb-name">${ioEscape(robot.robot_name || selectedRobotId)}</span>
+                ${eStop ? '<span class="srb-tag">E-STOP</span>' : ''}
+                ${robot.online ? '' : '<span style="color: #888;">offline</span>'}`;
         }
 
         // Link health under each robot: telemetry age (green < 3 s, amber < 6 s, red
@@ -1866,12 +2153,7 @@
             updateMissionSection(robotId);
             updateMissionDisplay();
             bringRobotToTop(robotId);
-            
-            // Switch to Commands tab for easy control access
-            const commandsTab = document.getElementById('commands-tab-btn');
-            if (commandsTab && !commandsTab.classList.contains('tab-active')) {
-                commandsTab.click();
-            }
+
         }
         
         function bringRobotToTop(robotId) {
@@ -1885,7 +2167,6 @@
                 // Update all robot markers to show selection state
                 updateRobotMarkerStyles();
                 
-                console.log('[Z-INDEX] Robot', robotId, 'brought to top with zIndex:', marker.zIndex);
             }
         }
         
@@ -2019,24 +2300,19 @@
             const telemetry = latestTelemetry.get(robotId);
             const overlay = document.getElementById('telemetry-overlay');
             
-            console.log('[TELEMETRY OVERLAY] Updating for robot:', robotId, 'robot:', robot, 'telemetry:', telemetry, 'overlay element:', overlay);
-            
             if (!robot) {
-                console.log('[TELEMETRY OVERLAY] No robot found, hiding overlay');
                 overlay.style.display = 'none';
                 return;
             }
             
             // Always show overlay when robot is selected
             overlay.style.display = 'block';
-            console.log('[TELEMETRY OVERLAY] Overlay display set to block');
             
             // Update header
             const headerElement = document.getElementById('telemetry-robot-name');
             const colorIndicator = document.getElementById('telemetry-color-indicator');
             headerElement.textContent = robot.robot_name || robot.robot_id;
             colorIndicator.style.background = getColorForRobot(robotId);
-            console.log('[TELEMETRY OVERLAY] Updated header to:', headerElement.textContent);
             
             // Update GPS data (or show placeholder)
             if (telemetry && hasUsableGpsFix(telemetry.gps)) {
@@ -2053,7 +2329,7 @@
                 document.getElementById('gps-alt').textContent = '--';
                 document.getElementById('gps-hdop').textContent = telemetry && telemetry.gps && Number.isFinite(Number(telemetry.gps.hdop)) ? Number(telemetry.gps.hdop).toFixed(2) : '--';
                 document.getElementById('gps-fix').textContent = telemetry && telemetry.gps ? (telemetry.gps.fix_quality || 'invalid') : '--';
-                showGpsError(telemetry && telemetry.gps);
+                showGpsError(telemetry && telemetry.gps, false);
             }
             
             // Update Status data (or show placeholder)
@@ -2069,7 +2345,6 @@
             }
             
             updateIoDisplay(robotId);
-            console.log('[TELEMETRY OVERLAY] Update complete');
         }
 
         // ── I/O display (DS3502 pots, PCF8574 inputs, linear actuator) ─────────
@@ -2100,8 +2375,101 @@
             return html + '</div>';
         }
 
+        // ── I/O control (server "io" command → firmware type 17) ──────────────
+        let ioLastUserInputMs = 0;  // don't overwrite sliders from telemetry while the user is using them
+
+        function ioSendIo(action, channel, value) {
+            if (!selectedRobotId) {
+                updateStatusMessage('Please select a robot first', 'error');
+                return false;
+            }
+            sendMessage({
+                type: 32,  // WEB_SEND_COMMAND
+                robot_id: selectedRobotId,
+                client_id: CLIENT_ID,
+                payload: { command: 'io', action, channel, value }
+            });
+            return true;
+        }
+
+        function ioBuildSpeedControls() {
+            const box = document.getElementById('io-speed-controls');
+            if (!box) return;
+            box.innerHTML = IO_LABELS.pots.map((name, i) => `
+                <div class="io-ctl-row">
+                    <span class="io-ctl-name">${ioEscape(name)}</span>
+                    <input type="range" id="io-speed-${i}" min="0" max="100" step="1" value="0"
+                           oninput="ioLastUserInputMs = Date.now(); document.getElementById('io-speed-val-${i}').textContent = this.value + '%'"
+                           onchange="ioSetSpeed(${i}, this.value)">
+                    <span class="io-ctl-val" id="io-speed-val-${i}">0%</span>
+                </div>`).join('');
+        }
+
+        function ioCurrentSpeed(index) {
+            const t = selectedRobotId && latestTelemetry.get(selectedRobotId);
+            const pot = t && t.pots && t.pots[index];
+            return pot ? ioPct(pot.percent) : null;
+        }
+
+        function ioSetSpeed(index, value) {
+            ioLastUserInputMs = Date.now();
+            const pct = Math.round(Number(value));
+            const name = IO_LABELS.pots[index] || `Speed${index + 1}`;
+            // Starting an output from 0 % (e.g. the mower blade) needs a confirmation.
+            if (pct > 0 && !(ioCurrentSpeed(index) > 0) && !confirm(`Start ${name} at ${pct}%?`)) {
+                const slider = document.getElementById(`io-speed-${index}`);
+                if (slider) slider.value = 0;
+                document.getElementById(`io-speed-val-${index}`).textContent = '0%';
+                return;
+            }
+            if (ioSendIo('set_speed', index + 1, pct)) updateStatusMessage(`${name} → ${pct}% sent`);
+        }
+
+        function ioStopAllSpeeds() {
+            ioLastUserInputMs = 0;
+            IO_LABELS.pots.forEach((_, i) => ioSendIo('set_speed', i + 1, 0));
+            updateStatusMessage('All speeds → 0% sent');
+        }
+
+        function ioMoveActuator(value) {
+            const pct = Number(value);
+            if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+                updateStatusMessage('Actuator target must be 0-100%', 'error');
+                return;
+            }
+            if (ioSendIo('actuator_move', 0, pct)) updateStatusMessage(`${IO_LABELS.actuator} → ${pct}% sent`);
+        }
+
+        // Keeps the speed sliders on the robot's reported values unless the user just touched one.
+        // Keeps the speed sliders on the robot's reported values unless the user just touched one.
+        function ioSyncControls(pots) {
+            if (!pots) return;
+            const recentlyTouched = Date.now() - ioLastUserInputMs < 3000;
+            pots.forEach((pot, i) => {
+                const slider = document.getElementById(`io-speed-${i}`);
+                const val = document.getElementById(`io-speed-val-${i}`);
+                if (!slider || !val) return;
+                const present = pot.present !== false;
+                slider.disabled = !present;
+                if (!present) {
+                    val.textContent = 'n/a';
+                    val.title = 'DS3502 not detected';
+                    return;
+                }
+                const pct = ioPct(pot.percent);
+                if (recentlyTouched || pct === null) return;
+                slider.value = Math.round(pct);
+                val.textContent = `${Math.round(pct)}%`;
+            });
+        }
+
+        function ioShow(id, visible) {
+            const el = document.getElementById(id);
+            if (el) el.style.display = visible ? '' : 'none';
+        }
+
+        // Fills the I/O tab and the "Mower / I/O" group of the robot info panel.
         function updateIoDisplay(robotId) {
-            const container = document.getElementById('io-content');
             const overlayGroup = document.getElementById('io-overlay-group');
             const overlayItems = document.getElementById('io-overlay-items');
             const robot = robots.get(robotId);
@@ -2109,66 +2477,68 @@
             const pots = telemetry && telemetry.pots;
             const inputs = telemetry && telemetry.inputs;
             const actuator = telemetry && telemetry.actuator;
+            const hasIo = !!(robot && telemetry && (pots || inputs || actuator));
 
-            if (!robot || !telemetry || (!pots && !inputs && !actuator)) {
-                if (container) {
-                    container.innerHTML = robot
-                        ? '<div class="io-note">No I/O data from this robot yet (modules disabled, or firmware without I/O telemetry).</div>'
-                        : '<div class="io-note">Select a robot to see its I/O.</div>';
+            const empty = document.getElementById('io-empty');
+            if (empty) {
+                empty.textContent = robot
+                    ? 'No I/O data from this robot yet (modules disabled, or firmware without I/O telemetry).'
+                    : 'Select a robot to see its I/O.';
+            }
+            ioShow('io-empty', !hasIo);
+            ioShow('io-speed-section', hasIo && !!(pots && pots.length));
+            ioShow('io-act-section', hasIo && !!actuator);
+            ioShow('io-limits-section', hasIo && !!(inputs && Array.isArray(inputs.values)));
+
+            const banner = document.getElementById('io-banner');
+            const overlay = [];
+            const status = (telemetry && telemetry.status) || {};
+            if (banner) {
+                if (robot && status.e_stop) {
+                    const reason = String(status.e_stop_reason || 'unknown');
+                    banner.innerHTML = `<div class="io-estop">🛑 E-STOP ACTIVE — ${ioEscape(reason)}<br><span style="font-weight: normal; font-size: 12px;">Release with PS2 L1 + L2 + Circle</span></div>`;
+                    overlay.push(['E-STOP', reason]);
+                } else {
+                    banner.innerHTML = '';
                 }
+            }
+
+            if (!hasIo) {
                 if (overlayGroup) overlayGroup.style.display = 'none';
                 return;
             }
 
-            let html = '';
-            const overlay = [];
-            const status = telemetry.status || {};
-
-            if (status.e_stop) {
-                const reason = String(status.e_stop_reason || 'unknown');
-                html += `<div class="io-estop">🛑 E-STOP ACTIVE — ${ioEscape(reason)}<br><span style="font-weight: normal; font-size: 12px;">Release with PS2 L1 + L2 + Circle</span></div>`;
-                overlay.push(['E-STOP', reason]);
-            }
-
             if (pots && pots.length) {
-                html += '<div class="command-section"><div class="command-title">Speed Outputs (DS3502)</div>';
                 pots.forEach((pot, i) => {
-                    const name = IO_LABELS.pots[i] || `Pot ${i + 1}`;
                     const pct = ioPct(pot.percent);
                     const present = pot.present !== false;
-                    const valueText = present && pct !== null ? `${pct.toFixed(0)}%` : 'not detected';
-                    html += `<div class="io-row"><div class="io-row-head"><span class="io-name">${ioEscape(name)}</span>`;
-                    html += `<span class="io-value${present ? '' : ' io-muted'}">${valueText}</span></div>`;
-                    html += present ? ioBarHtml(pct) : '';
-                    html += '</div>';
-                    overlay.push([name, valueText]);
+                    overlay.push([IO_LABELS.pots[i] || `Speed${i + 1}`, present && pct !== null ? `${pct.toFixed(0)}%` : 'not detected']);
                 });
-                html += '</div>';
+                ioSyncControls(pots);
             }
 
             if (actuator) {
-                const name = IO_LABELS.actuator;
                 const pos = ioPct(actuator.position);
                 const target = ioPct(actuator.target);
                 const state = String(actuator.state || '--');
                 const fault = String(actuator.fault || 'none');
                 const hasFault = fault !== 'none';
                 const posText = pos !== null ? `${pos.toFixed(1)}%` : '--';
-                html += `<div class="command-section"><div class="command-title">${ioEscape(name)} (linear)</div>`;
-                html += `<div class="io-row"><div class="io-row-head"><span class="io-name">Position</span>`;
+                let html = `<div class="io-row"><div class="io-row-head"><span class="io-name">Position</span>`;
                 html += `<span class="io-value">${posText}</span></div>`;
-                html += ioBarHtml(pos, state === 'moving' ? target : null);
-                html += '</div>';
-                html += `<div class="value-row"><span class="value-key">Target</span><span class="value-data">${target !== null ? target.toFixed(1) + '%' : '--'}</span></div>`;
-                html += `<div class="value-row"><span class="value-key">State</span><span class="value-data">${ioEscape(state)}</span></div>`;
-                html += `<div class="value-row"><span class="value-key">Fault</span><span class="io-value${hasFault ? ' io-fault' : ''}">${ioEscape(fault)}</span></div>`;
-                html += '</div>';
-                overlay.push([name, hasFault ? `${posText} · FAULT ${fault}` : `${posText} · ${state}`]);
+                html += ioBarHtml(pos, state === 'moving' ? target : null) + '</div>';
+                html += `<div class="value-row"><span class="value-key">Target / State</span><span class="value-data">${target !== null ? target.toFixed(1) + '%' : '--'} · ${ioEscape(state)}</span></div>`;
+                if (hasFault) {
+                    html += `<div class="value-row"><span class="value-key">Fault</span><span class="io-value io-fault">${ioEscape(fault)}</span></div>`;
+                }
+                document.getElementById('io-act-status').innerHTML = html;
+                overlay.push([IO_LABELS.actuator, hasFault ? `${posText} · FAULT ${fault}` : `${posText} · ${state}`]);
             }
 
             if (inputs && Array.isArray(inputs.values)) {
                 const limits = IO_LABELS.inputsAreLimitSwitches;
-                html += `<div class="command-section"><div class="command-title">${limits ? 'Limit Switches' : 'Digital Inputs'} (PCF8574)</div>`;
+                document.getElementById('io-limits-title').textContent = `${limits ? 'Limit Switches' : 'Digital Inputs'} (PCF8574)`;
+                let html = '';
                 if (inputs.ok === false) {
                     html += '<div class="io-value io-fault" style="margin-bottom: 6px;">PCF8574 read error — values may be stale</div>';
                 }
@@ -2183,14 +2553,14 @@
                     if (limits) html += `<br><span style="font-size: 11px;">${stateText}</span>`;
                     html += '</div>';
                 });
-                html += '</div></div>';
+                html += '</div>';
+                document.getElementById('io-limits').innerHTML = html;
                 const summary = inputs.ok === false ? 'read error'
                     : limits ? (hitNames.length ? `HIT: ${hitNames.join(', ')}` : 'all clear')
                     : inputs.values.map(v => (v ? '●' : '○')).join(' ');
                 overlay.push([limits ? 'Limits' : 'Inputs', summary]);
             }
 
-            if (container) container.innerHTML = html;
             if (overlayGroup && overlayItems) {
                 overlayItems.innerHTML = overlay.map(([k, v]) =>
                     `<div class="telemetry-item"><span class="telemetry-label">${ioEscape(k)}</span><span class="telemetry-value">${ioEscape(v)}</span></div>`
@@ -2250,7 +2620,7 @@
                 html += `<strong>Mission:</strong> ${mission.name || 'Unknown'}<br>`;
                 html += `<strong>Status:</strong> ${missionState}${missionHolding ? ' (holding)' : ''}<br>`;
                 if (missionHolding) {
-                    const herrText = Number.isFinite(herrM) && herrM >= 0 ? `${(herrM * 100).toFixed(1)} cm` : 'unknown';
+                    const herrText = (hasUsableGpsFix(telemetry.gps) && formatGpsError(herrM)) || 'no fix';
                     html += `<strong>GPS Error:</strong> ${herrText} (resumes below ${(GPS_HOLD_ERROR_M * 80).toFixed(0)} cm)<br>`;
                 }
                 html += `<strong>Current Waypoint:</strong> ${waypointIndex >= 0 ? waypointIndex : '--'}${currentWaypoint ? ` (${currentWaypoint.name})` : ''}<br>`;
@@ -2289,15 +2659,6 @@
             const robot = robots.get(robotId);
             const isOnline = robot && robot.online;
             
-            // Update robot info display
-            if (robot) {
-                document.getElementById('command-robot-name').textContent = robot.robot_name || robot.robot_id;
-                document.getElementById('command-color-indicator').style.background = getColorForRobot(robotId);
-            } else {
-                document.getElementById('command-robot-name').textContent = 'Select a robot';
-                document.getElementById('command-color-indicator').style.background = '#666';
-            }
-            
             // Disable buttons if robot is offline
             document.querySelectorAll('#movement-section button, #waypoint-section button').forEach(btn => {
                 btn.disabled = !isOnline;
@@ -2305,42 +2666,21 @@
         }
         
         function updateMissionSection(robotId) {
-            const robot = robots.get(robotId);
-            
-            // Update robot info display
-            if (robot) {
-                document.getElementById('mission-robot-name').textContent = robot.robot_name || robot.robot_id;
-                document.getElementById('mission-color-indicator').style.background = getColorForRobot(robotId);
-            } else {
-                document.getElementById('mission-robot-name').textContent = 'Select a robot';
-                document.getElementById('mission-color-indicator').style.background = '#666';
-            }
+            // The selected robot is shown in the top bar; nothing tab-specific to update.
         }
         
+        // Status messages show as a toast under the top bar, whichever tab is open.
         function updateStatusMessage(message, type = 'info') {
-            const color = type === 'error' ? '#f44336' : (type === 'warning' ? '#FF9800' : '#4CAF50');
-
-            // Update the primary status bar (Control tab)
-            const elem = document.getElementById('status-message');
-            if (elem) {
-                elem.style.borderLeftColor = color;
-                elem.textContent = message;
-                setTimeout(() => { if (elem.textContent === message) elem.textContent = ''; }, 5000);
-            }
-
-            // Mirror into whichever tab-local feedback element is present
-            ['mission-feedback', 'coverage-feedback'].forEach(id => {
-                const el = document.getElementById(id);
-                if (!el) return;
-                el.style.display = 'block';
-                el.style.borderLeftColor = color;
-                el.textContent = message;
-                clearTimeout(el._clearTimer);
-                el._clearTimer = setTimeout(() => {
-                    el.style.display = 'none';
-                    el.textContent = '';
-                }, 5000);
-            });
+            const box = document.getElementById('toast-container');
+            if (!box) return;
+            const toast = document.createElement('div');
+            toast.className = `toast ${type === 'error' || type === 'warning' ? type : ''}`;
+            toast.textContent = message;
+            box.appendChild(toast);
+            while (box.children.length > 3) box.firstChild.remove();
+            const ms = type === 'error' ? 7000 : 4000;
+            setTimeout(() => toast.classList.add('fade'), ms);
+            setTimeout(() => toast.remove(), ms + 300);
         }
 
         function hasFiniteGpsCoordinates(gps) {
@@ -2353,17 +2693,23 @@
         // Robot's GST horizontal 1-sigma error (gps.h_err_m, -1 or absent = unknown).
         // Red above 10 cm: the firmware holds a running mission at that point.
         const GPS_HOLD_ERROR_M = 0.10;
-        function showGpsError(gps) {
+
+        // "1.4 cm", "2.35 m", "> 1 km"; null when unknown.
+        function formatGpsError(herrM) {
+            const herr = Number(herrM);
+            if (!Number.isFinite(herr) || herr < 0) return null;
+            if (herr < 1) return `${(herr * 100).toFixed(1)} cm`;
+            if (herr < 1000) return `${herr.toFixed(2)} m`;
+            return '> 1 km';
+        }
+
+        // hasFix false: no usable fix, so any reported error is meaningless.
+        function showGpsError(gps, hasFix = true) {
             const el = document.getElementById('gps-herr');
             if (!el) return;
-            const herr = gps ? Number(gps.h_err_m) : NaN;
-            if (!Number.isFinite(herr) || herr < 0) {
-                el.textContent = '--';
-                el.style.color = '';
-                return;
-            }
-            el.textContent = (herr * 100).toFixed(1) + ' cm';
-            el.style.color = herr > GPS_HOLD_ERROR_M ? '#F44336' : '';
+            const text = hasFix && gps ? formatGpsError(gps.h_err_m) : null;
+            el.textContent = text ?? (hasFix ? '--' : 'no fix');
+            el.style.color = text && Number(gps.h_err_m) > GPS_HOLD_ERROR_M ? '#F44336' : '';
         }
 
         function hasUsableGpsFix(gps) {
@@ -2480,15 +2826,21 @@
             updateStatusMessage(`Waypoint command sent to ${robots.get(selectedRobotId).robot_name}`);
         }
         
-        function sendEmergencyStop() {
-            if (!selectedRobotId) {
+        // robotId defaults to the selected robot (top-bar E-STOP).
+        function sendEmergencyStop(robotId = selectedRobotId) {
+            if (!robotId) {
                 updateStatusMessage('Please select a robot first', 'error');
+                return;
+            }
+            const robotName = robots.get(robotId)?.robot_name || robotId;
+            // Guard against an accidental tap. The PS2 L1 + L2 + Cross combo stays the instant e-stop.
+            if (!confirm(`EMERGENCY STOP ${robotName}?\n\nThe robot stops, its mission ends and all speeds go to 0%.\nRelease is only possible on the PS2 controller (L1 + L2 + Circle).`)) {
                 return;
             }
             
             const message = {
                 type: 32,  // WEB_SEND_COMMAND
-                robot_id: selectedRobotId,
+                robot_id: robotId,
                 client_id: CLIENT_ID,
                 payload: {
                     command: 'emergency_stop'
@@ -2496,7 +2848,7 @@
             };
             
             sendMessage(message);
-            updateStatusMessage('EMERGENCY STOP sent!', 'error');
+            updateStatusMessage(`EMERGENCY STOP sent to ${robotName}!`, 'error');
         }
         
         // ====================================================================
@@ -3404,6 +3756,60 @@
                         </select>
                     </div>
                 `;
+            } else if (taskType === 'set_speed') {
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Output</label>
+                        <select id="task-speed-channel">
+                            ${IO_LABELS.pots.map((name, i) => `<option value="${i + 1}">${ioEscape(name)}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Speed (%)</label>
+                        <input type="number" id="task-speed-percent" value="0" min="0" max="100" step="1">
+                    </div>
+                    <div class="io-note">Runs instantly. Speeds also go to 0% if the mission is cancelled or fails.</div>
+                `;
+            } else if (taskType === 'move_actuator') {
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Position (%)</label>
+                        <input type="number" id="task-act-position" value="50" min="0" max="100" step="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Wait until arrived</label>
+                        <select id="task-act-wait">
+                            <option value="yes">Yes — robot holds still</option>
+                            <option value="no">No — continue at once</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Timeout (seconds)</label>
+                        <input type="number" id="task-act-timeout" value="30" min="1" step="1">
+                    </div>
+                    <div class="io-note">The mission fails on timeout or an actuator fault.</div>
+                `;
+            } else if (taskType === 'wait_input') {
+                options.innerHTML = `
+                    <div class="form-group">
+                        <label>Input</label>
+                        <select id="task-input-index">
+                            ${IO_LABELS.inputs.map((name, i) => `<option value="${i + 1}">${ioEscape(name)}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Wait until</label>
+                        <select id="task-input-state">
+                            <option value="active">Active</option>
+                            <option value="inactive">Inactive</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Timeout (seconds, 0 = none)</label>
+                        <input type="number" id="task-input-timeout" value="0" min="0" step="1">
+                    </div>
+                    <div class="io-note">${IO_LABELS.inputsAreLimitSwitches ? 'These inputs are limit switches: an active switch also triggers the e-stop.' : ''} The mission fails on timeout.</div>
+                `;
             }
 
             if (taskType === 'spiral') {
@@ -3502,6 +3908,30 @@
                 task.channel = document.getElementById('task-output-channel').value;
                 task.state   = document.getElementById('task-output-state').value === 'on';
                 task.description = `Output ${task.channel} ${task.state ? 'ON' : 'OFF'}`;
+            } else if (taskType === 'set_speed') {
+                task.channel = parseInt(document.getElementById('task-speed-channel').value, 10);
+                task.percent = Number(document.getElementById('task-speed-percent').value);
+                if (!Number.isFinite(task.percent) || task.percent < 0 || task.percent > 100) {
+                    updateStatusMessage('Speed must be 0-100%', 'error');
+                    return;
+                }
+                task.description = `${IO_LABELS.pots[task.channel - 1] || 'Speed' + task.channel} → ${task.percent}%`;
+            } else if (taskType === 'move_actuator') {
+                task.position = Number(document.getElementById('task-act-position').value);
+                task.wait = document.getElementById('task-act-wait').value === 'yes';
+                task.timeout = Number(document.getElementById('task-act-timeout').value);
+                if (!Number.isFinite(task.position) || task.position < 0 || task.position > 100) {
+                    updateStatusMessage('Actuator position must be 0-100%', 'error');
+                    return;
+                }
+                if (!Number.isFinite(task.timeout) || task.timeout < 1) task.timeout = 30;
+                task.description = `${IO_LABELS.actuator} → ${task.position}%` + (task.wait ? ` (wait, ${task.timeout}s timeout)` : '');
+            } else if (taskType === 'wait_input') {
+                task.input = parseInt(document.getElementById('task-input-index').value, 10);
+                task.state = document.getElementById('task-input-state').value;
+                task.timeout = Math.max(0, Number(document.getElementById('task-input-timeout').value) || 0);
+                task.description = `Wait: ${IO_LABELS.inputs[task.input - 1] || 'Input ' + task.input} ${task.state}` +
+                    (task.timeout > 0 ? ` (${task.timeout}s timeout)` : '');
             }
             
             if (editingTaskIndex >= 0) {
@@ -3565,6 +3995,20 @@
                 updateCoveragePathSpeedDisplay();
             } else if (task.type === 'loop_end') {
                 document.getElementById('task-loop-count').value = task.count;
+            } else if (task.type === 'set_output') {
+                document.getElementById('task-output-channel').value = task.channel;
+                document.getElementById('task-output-state').value = task.state ? 'on' : 'off';
+            } else if (task.type === 'set_speed') {
+                document.getElementById('task-speed-channel').value = String(task.channel);
+                document.getElementById('task-speed-percent').value = task.percent;
+            } else if (task.type === 'move_actuator') {
+                document.getElementById('task-act-position').value = task.position;
+                document.getElementById('task-act-wait').value = task.wait === false ? 'no' : 'yes';
+                document.getElementById('task-act-timeout').value = task.timeout;
+            } else if (task.type === 'wait_input') {
+                document.getElementById('task-input-index').value = String(task.input);
+                document.getElementById('task-input-state').value = task.state;
+                document.getElementById('task-input-timeout').value = task.timeout;
             }
             
             // Update waypoint marker selection
@@ -5014,6 +5458,7 @@ document.getElementById('stats').innerHTML=\`
 
         window.addEventListener('load', async () => {
             initializeVisualization();
+            ioBuildSpeedControls();
             await fetchWsToken();   // must have token before WS connect
             connectToServer();
             updateCoverageWaypointSelector();

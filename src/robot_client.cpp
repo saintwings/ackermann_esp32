@@ -17,6 +17,7 @@ constexpr uint8_t MSG_COMMAND_CANCEL_TASK = 13;
 constexpr uint8_t MSG_COMMAND_EXECUTE_MISSION = 14;
 constexpr uint8_t MSG_COMMAND_PAUSE_MISSION = 15;
 constexpr uint8_t MSG_COMMAND_CANCEL_MISSION = 16;
+constexpr uint8_t MSG_COMMAND_IO = 17;
 constexpr uint8_t MSG_MISSION_UPLOAD_START   = 40;
 constexpr uint8_t MSG_MISSION_UPLOAD_BATCH   = 41;
 constexpr uint8_t MSG_MISSION_UPLOAD_EXECUTE = 42;
@@ -367,6 +368,13 @@ void RobotClient::handleTextMessage(const String& text) {
     case MSG_COMMAND_CANCEL_MISSION:
       command.type = RobotCommandType::CancelMission;
       command.command_name = "cancel_mission";
+      break;
+    case MSG_COMMAND_IO:
+      command.type = RobotCommandType::Io;
+      command.io_action = payload["action"] | "";
+      command.command_name = "io_" + command.io_action;
+      command.io_channel = payload["channel"] | 0;
+      command.io_value = payload["value"] | 0.0f;
       break;
     case MSG_MISSION_UPLOAD_START:
       command.type = RobotCommandType::MissionUploadStart;
