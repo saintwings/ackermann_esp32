@@ -1272,6 +1272,10 @@
                             <div id="io-controls">
                                 <div class="command-section" id="io-speed-section" style="display: none;">
                                     <div class="command-title">Speed (DS3502)</div>
+                                    <label class="io-note" style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px; cursor: pointer;">
+                                        <input type="checkbox" id="io-speed-link" onchange="ioSetSpeedLink(this.checked)" style="width: auto; margin: 0;">
+                                        Link all speeds (any slider sets every output)
+                                    </label>
                                     <div id="io-speed-controls"></div>
                                     <button class="btn-warning" style="width: 100%;" onclick="ioStopAllSpeeds()">All speeds → 0%</button>
                                 </div>
@@ -2415,10 +2419,49 @@
                 <div class="io-ctl-row">
                     <span class="io-ctl-name">${ioEscape(name)}</span>
                     <input type="range" id="io-speed-${i}" min="0" max="100" step="1" value="0"
-                           oninput="ioLastUserInputMs = Date.now(); document.getElementById('io-speed-val-${i}').textContent = this.value + '%'"
-                           onchange="ioSetSpeed(${i}, this.value)">
+                           oninput="ioSpeedSliderInput(${i}, this.value)"
+                           onchange="ioSpeedLinked ? ioSetAllSpeeds(this.value) : ioSetSpeed(${i}, this.value)">
                     <span class="io-ctl-val" id="io-speed-val-${i}">0%</span>
                 </div>`).join('');
+        }
+
+        // "Link all speeds" tickbox; remembered per browser.
+        let ioSpeedLinked = false;
+        try { ioSpeedLinked = localStorage.getItem('ioSpeedLinked') === '1'; } catch (e) {}
+
+        function ioSetSpeedLink(on) {
+            ioSpeedLinked = !!on;
+            try { localStorage.setItem('ioSpeedLinked', ioSpeedLinked ? '1' : '0'); } catch (e) {}
+        }
+
+        // While dragging, show the value on this slider, or on every slider when linked.
+        function ioSpeedSliderInput(index, value) {
+            ioLastUserInputMs = Date.now();
+            IO_LABELS.pots.forEach((_, i) => {
+                if (!ioSpeedLinked && i !== index) return;
+                const slider = document.getElementById(`io-speed-${i}`);
+                if (!slider || slider.disabled) return;
+                slider.value = value;
+                document.getElementById(`io-speed-val-${i}`).textContent = `${value}%`;
+            });
+        }
+
+        // Linked mode: one value to every detected output, with one start confirmation.
+        function ioSetAllSpeeds(value) {
+            ioLastUserInputMs = Date.now();
+            const pct = Math.round(Number(value));
+            const t = selectedRobotId && latestTelemetry.get(selectedRobotId);
+            const pots = (t && t.pots) || [];
+            const channels = IO_LABELS.pots.map((_, i) => i).filter(i => !pots[i] || pots[i].present !== false);
+            const starting = channels.filter(i => !(ioCurrentSpeed(i) > 0));
+            if (pct > 0 && starting.length && !confirm(`Start ${starting.map(i => IO_LABELS.pots[i]).join(', ')} at ${pct}%?`)) {
+                ioLastUserInputMs = 0;
+                ioSyncControls(pots);  // back to the robot's reported values
+                return;
+            }
+            let sent = 0;
+            channels.forEach(i => { if (ioSendIo('set_speed', i + 1, pct)) ++sent; });
+            if (sent) updateStatusMessage(`All speeds → ${pct}% sent`);
         }
 
         function ioCurrentSpeed(index) {
@@ -5532,6 +5575,8 @@ document.getElementById('stats').innerHTML=\`
         window.addEventListener('load', async () => {
             initializeVisualization();
             ioBuildSpeedControls();
+            const speedLink = document.getElementById('io-speed-link');
+            if (speedLink) speedLink.checked = ioSpeedLinked;
             await fetchWsToken();   // must have token before WS connect
             connectToServer();
             updateCoverageWaypointSelector();

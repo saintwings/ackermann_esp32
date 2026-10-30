@@ -277,6 +277,7 @@
 // Robot motion limits
 #define MAX_LINEAR_SPEED_MS 0.5f       // Maximum forward/reverse speed (m/s)
 #define MAX_STEERING_ANGLE_DEG 45.0f   // Maximum steering angle (degrees)
+#define STEER_MAX_WHEEL_ANGLE_DEG 45.0f // Mechanical limit of each steered wheel; inner wheel saturates here
 
 // Heading offset (degrees) added after IMU yaw computation.
 // Positive = rotate heading clockwise. Range: any value, normalised to 0-360.

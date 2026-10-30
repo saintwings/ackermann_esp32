@@ -544,7 +544,7 @@ static constexpr int8_t MOTOR_DI_LEFT = DRIVE_LEFT_SIGN;
 static constexpr int8_t MOTOR_DI_RIGHT = DRIVE_RIGHT_SIGN;
 
 RobotMode robot_mode = RobotMode::Normal;
-DoubleAckermannSteering robot(WHEELBASE_M, TRACK_WIDTH_M);
+DoubleAckermannSteering robot(WHEELBASE_M, TRACK_WIDTH_M, STEER_MAX_WHEEL_ANGLE_DEG);
 
 static inline float clampf(float v, float lo, float hi) {
   if (v < lo) return lo;
