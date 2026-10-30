@@ -215,6 +215,7 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   status["heading"] = telemetry.heading;
   status["e_stop"] = telemetry.e_stop;
   status["e_stop_reason"] = telemetry.e_stop_reason;
+  status["motors_released"] = telemetry.motors_released;
 
   JsonObject gps = payload["gps"].to<JsonObject>();
   gps["valid"] = telemetry.gps_valid;
@@ -267,6 +268,28 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
     act["target"] = telemetry.actuator_target_pct;
     act["state"] = telemetry.actuator_state;
     act["fault"] = telemetry.actuator_fault;
+  }
+
+  // Motors are polled at ~1 Hz, so send them at most once a second (saves SIM data);
+  // the web UI keeps the last list between updates.
+  static unsigned long last_motors_ms = 0;
+  if (telemetry.motor_count > 0 && now - last_motors_ms >= 1000) {
+    last_motors_ms = now;
+    JsonArray motors = payload["motors"].to<JsonArray>();
+    for (int i = 0; i < telemetry.motor_count; ++i) {
+      const MotorStatus& m = telemetry.motors[i];
+      JsonObject motor = motors.add<JsonObject>();
+      motor["name"] = telemetry.motor_names[i];
+      motor["online"] = m.online;
+      motor["enabled"] = m.enabled;
+      motor["fault"] = m.fault;
+      motor["fault_code"] = m.fault_code;
+      motor["fault_text"] = m.fault_text;
+      // NAN serializes as null
+      motor["voltage"] = m.voltage_v;
+      motor["temp"] = m.temp_c;
+      motor["age_ms"] = m.updated_ms ? static_cast<long>(now - m.updated_ms) : -1L;
+    }
   }
 
   String json;

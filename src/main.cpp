@@ -33,6 +33,9 @@
 #ifndef LIMIT_SWITCH_ESTOP_ENABLE
 #define LIMIT_SWITCH_ESTOP_ENABLE 0
 #endif
+#ifndef MOTOR_STATUS_POLL_MS
+#define MOTOR_STATUS_POLL_MS 1000UL
+#endif
 
 HardwareSerial gps_uart(1);
 NetManager net_manager;
@@ -110,6 +113,7 @@ static void controlTask(void* pvParameters);
 static void commsTask(void* pvParameters);
 static void serialCmdTask(void* pvParameters);
 static void navTask(void* pvParameters);
+static void motorStatusTask(void* pvParameters);
 
 // Guards GPS fix, IMU state and mission state shared between NavTask (owner),
 // CommsTask (server commands, telemetry, logging) and SerialCmdTask.
@@ -345,6 +349,23 @@ Gim8108SteeringMotorPair steering_motors_impl(
 
 IDriveMotorPair& drive_motors = drive_motors_impl;
 ISteeringMotorPair& steering_motors = steering_motors_impl;
+
+// Motor driver health, refreshed by MotorStatusTask (nav lock held while copying).
+// 0/1 = drive front/rear, 2/3 = steer left/right.
+static constexpr int kMotorCount = 4;
+static const char* const kMotorNames[kMotorCount] = {"Drive F", "Drive R", "Steer L", "Steer R"};
+static MotorStatus motor_status[kMotorCount];
+// Fault reset requested by serial/server, run by ControlTask (the task that drives the
+// motors). Bits: kMotorResetDrive, kMotorResetSteer.
+static constexpr uint8_t kMotorResetDrive = 0x01;
+static constexpr uint8_t kMotorResetSteer = 0x02;
+static volatile uint8_t motor_reset_request = 0;
+// Motors unpowered to save energy (MOTOR RELEASE / server motor_release): no drive or
+// steering output and no mission start until MOTOR ACTIVATE. Set by ControlTask when it
+// executes motor_power_request.
+static volatile bool motors_released = false;
+enum class MotorPowerRequest : uint8_t { None, Release, Activate };
+static volatile MotorPowerRequest motor_power_request = MotorPowerRequest::None;
 
 PS2X ps2x;
 int ps2_error = 0;
@@ -1854,6 +1875,7 @@ static void handleCanPing(const String& args) {
   timeout_ms = max(50UL, min(timeout_ms, 2000UL));
 
   Serial.printf("[USB_SERIAL] CAN_PING node_id=%lu listening for %lu ms...\n", node_id, timeout_ms);
+  CanRxLock can_lock;
 
   const unsigned long start = millis();
   unsigned long other_frame_count = 0;
@@ -1891,6 +1913,49 @@ static void handleCanPing(const String& args) {
   } else {
     Serial.println("[USB_SERIAL]   Bus has traffic but none from this node id — check the device's configured CAN node id");
   }
+}
+
+// GIM_PROBE <id> [cmd_hex] [window_ms] — sends a one-byte GIM8108 command (default 0xAE,
+// read status) to <id> and prints every frame from ids 0x000-0x0FF for window_ms
+// (default 150, max 1000). Diagnostic, blocking like CAN_PING.
+static void handleGimProbe(const String& args) {
+  unsigned int id = 0, cmd = 0xAE;
+  unsigned long window_ms = 150;
+  if (sscanf(args.c_str(), "%u %x %lu", &id, &cmd, &window_ms) < 1 || id > 0x7FF || cmd > 0xFF) {
+    Serial.println("[USB_SERIAL] Invalid GIM_PROBE. Usage: GIM_PROBE <id> [cmd_hex] [window_ms]");
+    return;
+  }
+  window_ms = max(10UL, min(window_ms, 1000UL));
+
+  CanRxLock can_lock;
+  twai_message_t msg;
+  while (twai_receive(&msg, 0) == ESP_OK) {
+  }
+  twai_message_t req = {};
+  req.identifier = id;
+  req.data_length_code = 1;
+  req.data[0] = static_cast<uint8_t>(cmd);
+  const esp_err_t tx = twai_transmit(&req, pdMS_TO_TICKS(20));
+  Serial.printf("[USB_SERIAL] GIM_PROBE id=0x%03X cmd=0x%02X tx=%s, frames from 0x000-0x0FF for %lu ms:\n", id, cmd,
+                tx == ESP_OK ? "ok" : esp_err_to_name(tx), window_ms);
+
+  const unsigned long start = millis();
+  int shown = 0, other = 0;
+  while (millis() - start < window_ms) {
+    if (twai_receive(&msg, pdMS_TO_TICKS(5)) != ESP_OK) continue;
+    if (msg.identifier > 0xFF) {
+      ++other;
+      continue;
+    }
+    if (shown >= 30) continue;
+    ++shown;
+    char hex[3 * 8 + 1] = "";
+    for (int i = 0; i < msg.data_length_code && i < 8; ++i) snprintf(hex + 3 * i, 4, "%02X ", msg.data[i]);
+    Serial.printf("[USB_SERIAL]   +%3lums id=0x%03lX dlc=%d %s%s\n", millis() - start,
+                  static_cast<unsigned long>(msg.identifier), msg.data_length_code, hex,
+                  msg.data[0] == cmd ? "<- reply" : "");
+  }
+  Serial.printf("[USB_SERIAL] GIM_PROBE done: %d frame(s) shown, %d from other ids\n", shown, other);
 }
 
 // Speed output / actuator actions shared by the USB POT/ACT commands and the server
@@ -1945,8 +2010,34 @@ static const char* stopActuator() {
 #endif
 }
 
+// Queues a motor fault reset for ControlTask. mask: kMotorResetDrive / kMotorResetSteer.
+// Rejected during e-stop, since the reset re-enables the motors.
+static const char* requestMotorReset(uint8_t mask) {
+  if (e_stop_active) return "e-stop active: release it first (release also re-enables the motors)";
+  if (motors_released) return "motors released: activate them instead";
+  motor_reset_request |= mask;
+  return nullptr;
+}
+
+// Queues motor release (release = true) or re-activation for ControlTask (caller holds
+// the nav lock). Clears any held drive command so the robot doesn't move off it on
+// activation.
+static const char* requestMotorPower(bool release) {
+  if (release) {
+    if (mission_ctx.active) return "mission active: cancel it first";
+  } else if (e_stop_active) {
+    return "e-stop active: release it first";
+  }
+  control_targets.linear_mps = 0.0f;
+  control_targets.angle_deg = 0.0f;
+  control_targets.remote_move_expire_ms = 1;
+  motor_power_request = release ? MotorPowerRequest::Release : MotorPowerRequest::Activate;
+  return nullptr;
+}
+
 // Server "io" command: action set_speed (channel 1..N, value 0-100 %),
-// actuator_move (value 0-100 %) or actuator_stop.
+// actuator_move (value 0-100 %), actuator_stop, motor_reset (channel 0 = all,
+// 1 = drive, 2 = steering), motor_release or motor_activate.
 static const char* applyIoCommand(const String& action, int channel, float value) {
   if (action == "set_speed") {
     if (!(value >= 0.0f && value <= 100.0f)) return "percent out of range";
@@ -1958,6 +2049,14 @@ static const char* applyIoCommand(const String& action, int channel, float value
   }
   if (action == "actuator_move") return moveActuator(value);
   if (action == "actuator_stop") return stopActuator();
+  if (action == "motor_reset") {
+    if (channel == 0) return requestMotorReset(kMotorResetDrive | kMotorResetSteer);
+    if (channel == 1) return requestMotorReset(kMotorResetDrive);
+    if (channel == 2) return requestMotorReset(kMotorResetSteer);
+    return "motor_reset channel must be 0 (all), 1 (drive) or 2 (steering)";
+  }
+  if (action == "motor_release") return requestMotorPower(true);
+  if (action == "motor_activate") return requestMotorPower(false);
   return "unknown io action";
 }
 
@@ -2192,6 +2291,51 @@ static void updateIoDevices(unsigned long now) {
 #endif
 }
 
+// MOTOR?                     — last polled status of every motor driver
+// MOTOR RESET [ALL|DRIVE|STEER] — clear latched faults and re-enable (default ALL)
+// MOTOR RELEASE / MOTOR ACTIVATE — unpower all motors to save energy / power them again
+static void handleMotorCommand(String args) {
+  args.trim();
+  if (args == "RELEASE" || args == "ACTIVATE") {
+    if (const char* err = requestMotorPower(args == "RELEASE")) {
+      Serial.printf("[USB_SERIAL] MOTOR %s rejected: %s\n", args.c_str(), err);
+    } else {
+      Serial.printf("[USB_SERIAL] MOTOR %s queued\n", args.c_str());
+    }
+    return;
+  }
+  if (args == "?") {
+    const unsigned long now = millis();
+    Serial.printf("[USB_SERIAL] MOTOR power: %s\n", motors_released ? "RELEASED" : "active");
+    for (int i = 0; i < kMotorCount; ++i) {
+      const MotorStatus& m = motor_status[i];
+      if (!m.online) {
+        Serial.printf("[USB_SERIAL] MOTOR %s: offline (no CAN reply)\n", kMotorNames[i]);
+        continue;
+      }
+      Serial.printf("[USB_SERIAL] MOTOR %s: %s %s code=0x%08lX V=%.1f T=%.1fC age=%lums%s%s\n", kMotorNames[i],
+                    m.enabled ? "enabled" : "disabled", m.fault ? "FAULT" : "ok",
+                    static_cast<unsigned long>(m.fault_code), m.voltage_v, m.temp_c, now - m.updated_ms,
+                    m.fault_text[0] ? " " : "", m.fault_text);
+    }
+    return;
+  }
+
+  uint8_t mask = 0;
+  if (args == "RESET" || args == "RESET ALL") mask = kMotorResetDrive | kMotorResetSteer;
+  else if (args == "RESET DRIVE") mask = kMotorResetDrive;
+  else if (args == "RESET STEER") mask = kMotorResetSteer;
+  if (!mask) {
+    Serial.println("[USB_SERIAL] Invalid MOTOR. Usage: MOTOR?, MOTOR RESET [ALL|DRIVE|STEER], MOTOR RELEASE, MOTOR ACTIVATE");
+    return;
+  }
+  if (const char* err = requestMotorReset(mask)) {
+    Serial.printf("[USB_SERIAL] MOTOR RESET rejected: %s\n", err);
+    return;
+  }
+  Serial.println("[USB_SERIAL] MOTOR RESET queued");
+}
+
 static void handleUsbSerialLine(const String& raw_line) {
   String line = raw_line;
   line.trim();
@@ -2201,7 +2345,7 @@ static void handleUsbSerialLine(const String& raw_line) {
   upper.toUpperCase();
 
   if (upper == "HELP" || upper == "?") {
-    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, CAN_PING <node_id> [timeout_ms]");
+    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
     return;
   }
 
@@ -2209,6 +2353,11 @@ static void handleUsbSerialLine(const String& raw_line) {
     String args = line.substring(8);
     args.trim();
     handleCanPing(args);
+    return;
+  }
+
+  if (upper.startsWith("GIM_PROBE")) {
+    handleGimProbe(line.substring(9));
     return;
   }
 
@@ -2256,6 +2405,11 @@ static void handleUsbSerialLine(const String& raw_line) {
     return;
   }
 
+  if (upper == "MOTOR?" || upper.startsWith("MOTOR ")) {
+    handleMotorCommand(upper.substring(5));
+    return;
+  }
+
   if (upper == "STOP") {
     control_targets.linear_mps = 0.0f;
     control_targets.angle_deg = 0.0f;
@@ -2279,7 +2433,9 @@ static void handleUsbSerialLine(const String& raw_line) {
   }
 
   if (upper == "MISSION_RESUME") {
-    if (mission_ctx.active && mission_ctx.state == MissionState::Paused) {
+    if (motors_released) {
+      Serial.println("[USB_SERIAL] MISSION_RESUME rejected: motors released (MOTOR ACTIVATE first)");
+    } else if (mission_ctx.active && mission_ctx.state == MissionState::Paused) {
       setMissionState(MissionState::Running);
       Serial.println("[USB_SERIAL] MISSION_RESUME accepted");
     } else {
@@ -2345,10 +2501,11 @@ static void handleUsbSerialLine(const String& raw_line) {
     const bool remote_active = (control_targets.remote_move_expire_ms == 0) || (control_targets.remote_move_expire_ms > now);
     const unsigned long remaining_ms = (control_targets.remote_move_expire_ms == 0) ? 0 : remote_active ? (control_targets.remote_move_expire_ms - now) : 0;
     const char* mode_str = (robot_mode == RobotMode::Normal) ? "NORMAL" : "ZERO_TURN";
-    Serial.printf("[USB_SERIAL] status mode=%s e_stop=%d (%s) mission=%s remote_active=%d linear=%.3f angle=%.2f timeout_left_ms=%lu can_tx_ok=%lu can_tx_drop=%lu\n",
+    Serial.printf("[USB_SERIAL] status mode=%s e_stop=%d (%s) motors_released=%d mission=%s remote_active=%d linear=%.3f angle=%.2f timeout_left_ms=%lu can_tx_ok=%lu can_tx_drop=%lu\n",
                   mode_str,
                   e_stop_active ? 1 : 0,
                   e_stop_active ? e_stop_reason : "-",
+                  motors_released ? 1 : 0,
                   missionStateToString(mission_ctx.state),
                   remote_active ? 1 : 0,
                   control_targets.linear_mps,
@@ -2394,12 +2551,12 @@ static void handleUsbSerialLine(const String& raw_line) {
 }
 
 // Serial commands change mode, mission and actuator state, so they run under the
-// nav lock — except CAN_PING, a bounded blocking diagnostic that touches none of it.
+// nav lock — except CAN_PING / GIM_PROBE, bounded blocking diagnostics that touch none of it.
 static void handleUsbSerialLineLocked(const String& line) {
   String upper = line;
   upper.trim();
   upper.toUpperCase();
-  if (upper.startsWith("CAN_PING")) {
+  if (upper.startsWith("CAN_PING") || upper.startsWith("GIM_PROBE")) {
     handleUsbSerialLine(line);
     return;
   }
@@ -2527,7 +2684,16 @@ static void handleRobotClientCommand() {
   const char* ack_detail = nullptr;
   {
     NavLock lock;
-    switch (command.type) {
+    // Released motors can't drive: refuse anything that would start or resume a mission.
+    const bool starts_mission = command.type == RobotCommandType::ExecuteMission ||
+                                command.type == RobotCommandType::Waypoint ||
+                                command.type == RobotCommandType::MissionUploadExecute ||
+                                (command.type == RobotCommandType::PauseMission && mission_ctx.active &&
+                                 mission_ctx.state == MissionState::Paused);
+    if (motors_released && starts_mission) {
+      ack_status = "rejected";
+      ack_detail = "motors released: activate them first";
+    } else switch (command.type) {
       case RobotCommandType::Move:
         control_targets.linear_mps = command.linear_velocity;
         control_targets.angle_deg = convertAngularToSteeringDeg(command.linear_velocity, command.angular_velocity, WHEELBASE_M, MAX_STEER_DEG);
@@ -2730,6 +2896,7 @@ static void publishRobotTelemetry() {
     telemetry.battery_level = 100.0f;
     telemetry.e_stop = e_stop_active;
     telemetry.e_stop_reason = e_stop_reason;
+    telemetry.motors_released = motors_released;
     telemetry.speed = control_targets.linear_mps;
     telemetry.heading = estimateHeadingDeg();
 
@@ -2772,6 +2939,11 @@ static void publishRobotTelemetry() {
     telemetry.actuator_state = LinearActuator::stateName(actuator.state());
     telemetry.actuator_fault = LinearActuator::faultName(actuator.fault());
 #endif
+    telemetry.motor_count = kMotorCount;
+    for (int i = 0; i < kMotorCount; ++i) {
+      telemetry.motor_names[i] = kMotorNames[i];
+      telemetry.motors[i] = motor_status[i];
+    }
     telemetry.mission_coverage_active = false;
     telemetry.mission_coverage_progress_index = -1;
     telemetry.mission_coverage_total = 0;
@@ -2818,6 +2990,11 @@ static void publishRobotTelemetry() {
 }
 
 static void applyModeInit(RobotMode mode) {
+  if (motors_released) {
+    // The drive loop sets the mode's steering once the motors are activated.
+    Serial.println("Mode changed while motors released: steering not moved");
+    return;
+  }
   if (mode == RobotMode::Normal) {
     Serial.println("Enter Mode 0 : normal mode");
     steering_motors.setSteeringTurns(0.0f, 0.0f);
@@ -2847,7 +3024,7 @@ void setup() {
     delay(10);
   }
   delay(1000);
-  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, CAN_PING <node_id> [timeout_ms]");
+  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
   Serial.println("[USB_SERIAL]   FUNC_<n> ON|OFF drives a GPIO actuator directly; FUNC_<n> <degrees> DEG moves a CAN actuator then returns it to 0");
   Serial.println("[USB_SERIAL]   FUNC_<n> <degrees> REL_DEG moves a CAN actuator relative to its current position and just holds there");
@@ -2931,6 +3108,7 @@ void setup() {
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
   twai_driver_install(&g_config, &t_config, &f_config);
   twai_start();
+  canRxLockInit();
 
   // --- Initialize Motors ---
   Serial.println("Configuring drive motor backend...");
@@ -2987,8 +3165,19 @@ void setup() {
     nullptr,
     1);
 
+  // Lowest priority: its CAN status reads block for tens of ms per motor.
+  xTaskCreatePinnedToCore(
+    motorStatusTask,
+    "MotorStatusTask",
+    4096,
+    nullptr,
+    1,
+    nullptr,
+    1);
+
   Serial.println("[RTOS] ControlTask pinned to Core 1");
   Serial.println("[RTOS] SerialCmdTask pinned to Core 1");
+  Serial.println("[RTOS] MotorStatusTask pinned to Core 1");
   Serial.println("[RTOS] CommsTask pinned to Core 0");
   Serial.println("[RTOS] NavTask pinned to Core 0");
   
@@ -3025,6 +3214,41 @@ static void controlTask(void* /*pvParameters*/) {
       }
       e_stop_applied = e_stop_active;
 
+      // Motor release / activation (MOTOR RELEASE|ACTIVATE / server motor_release|activate).
+      const MotorPowerRequest power_req = motor_power_request;
+      if (power_req != MotorPowerRequest::None) {
+        motor_power_request = MotorPowerRequest::None;
+        if (power_req == MotorPowerRequest::Release) {
+          drive_motors.setWheelRpm(0, 0);
+          drive_motors.release();
+          steering_motors.release();
+          motors_released = true;
+          Serial.println("[MOTOR] released (unpowered) — MOTOR ACTIVATE to drive again");
+        } else if (e_stop_active) {
+          Serial.println("[MOTOR] activate dropped: e-stop active");
+        } else {
+          drive_motors.enable();
+          steering_motors.enable();
+          motors_released = false;
+          Serial.println("[MOTOR] activated");
+        }
+      }
+
+      // Motor fault reset (MOTOR RESET / server motor_reset). Re-checked here because
+      // e-stop may have latched after the request was queued.
+      const uint8_t reset_mask = motor_reset_request;
+      if (reset_mask) {
+        motor_reset_request = 0;
+        if (e_stop_active) {
+          Serial.println("[MOTOR] reset dropped: e-stop active");
+        } else {
+          if (reset_mask & kMotorResetDrive) drive_motors.clearFaults();
+          if (reset_mask & kMotorResetSteer) steering_motors.clearFaults();
+          Serial.printf("[MOTOR] fault reset sent:%s%s\n", (reset_mask & kMotorResetDrive) ? " drive" : "",
+                        (reset_mask & kMotorResetSteer) ? " steer" : "");
+        }
+      }
+
       if (ps2_error != 0) {
         vTaskDelay(pdMS_TO_TICKS(1));
         continue;
@@ -3047,8 +3271,10 @@ static void controlTask(void* /*pvParameters*/) {
         e_stop_active = false;
         e_stop_reason = "";
         Serial.println(">>> E-STOP RELEASED <<<");
-        drive_motors.enable();
-        steering_motors.enable();
+        if (!motors_released) {
+          drive_motors.enable();
+          steering_motors.enable();
+        }
       }
       estop_on_combo_prev = estop_on_combo;
       estop_off_combo_prev = estop_off_combo;
@@ -3109,7 +3335,8 @@ static void controlTask(void* /*pvParameters*/) {
           MAX_LINEAR_MPS,
           MAX_STEER_DEG);
 
-        ControlActuation::applyDriveOutputs(
+        // Released motors get no commands: a GIM8108 position command could re-power it.
+        if (!motors_released) ControlActuation::applyDriveOutputs(
           robot_mode == RobotMode::ZeroTurn,
           cmd.linear_mps,
           cmd.angle_deg,
@@ -3273,6 +3500,28 @@ static void publishNavSerial() {
                   tlat, tlon, dist, bearingDeg(lat, lon, tlat, tlon), speed_cmd);
   }
   Serial.printf("%s}\n", buf);
+}
+
+static void motorStatusTask(void* /*pvParameters*/) {
+  for (;;) {
+    MotorStatus fresh[kMotorCount];
+    drive_motors.readStatus(&fresh[0]);
+    steering_motors.readStatus(&fresh[2]);
+    {
+      NavLock lock;
+      for (int i = 0; i < kMotorCount; ++i) {
+        // Log transitions so a fault shows up in the serial log without polling MOTOR?.
+        const MotorStatus& prev = motor_status[i];
+        if (fresh[i].online != prev.online || fresh[i].fault != prev.fault || fresh[i].fault_code != prev.fault_code) {
+          Serial.printf("[MOTOR] %s: %s%s\n", kMotorNames[i],
+                        !fresh[i].online ? "offline" : fresh[i].fault ? "FAULT " : "ok",
+                        fresh[i].online && fresh[i].fault ? fresh[i].fault_text : "");
+        }
+        motor_status[i] = fresh[i];
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(MOTOR_STATUS_POLL_MS));
+  }
 }
 
 static void serialCmdTask(void* /*pvParameters*/) {

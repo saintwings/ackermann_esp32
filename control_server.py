@@ -956,9 +956,11 @@ class ControlServer:
                 }
             }
         elif command == 'io':
-            # Speed outputs (DS3502) and linear actuator; the firmware validates ranges and e-stop.
+            # Speed outputs (DS3502), linear actuator and motor fault reset; the firmware
+            # validates ranges and e-stop.
             action = payload.get('action')
-            if action not in ('set_speed', 'actuator_move', 'actuator_stop'):
+            if action not in ('set_speed', 'actuator_move', 'actuator_stop', 'motor_reset',
+                              'motor_release', 'motor_activate'):
                 raise ValueError(f'Unknown io action: {action}')
             return {
                 'type': MessageType.COMMAND_IO.value,

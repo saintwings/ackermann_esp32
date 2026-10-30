@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "NetManager.hpp"
 #include "SimWsClient.hpp"
+#include "SystemState.hpp"
 
 enum class RobotCommandType : uint8_t {
   None = 0,
@@ -48,6 +49,7 @@ struct RobotTelemetry {
   float battery_level{100.0f};
   bool e_stop{false};
   const char* e_stop_reason{""};  // "ps2", "server", "limit: Front L", ...
+  bool motors_released{false};    // motors unpowered to save energy (MOTOR RELEASE)
   float speed{0.0f};
   float heading{0.0f};
 
@@ -93,6 +95,12 @@ struct RobotTelemetry {
   float actuator_target_pct{0.0f};
   const char* actuator_state{"idle"};
   const char* actuator_fault{"none"};
+
+  // CAN motor drivers (drive front/rear, steer left/right)
+  static constexpr int kMaxMotors = 4;
+  int motor_count{0};
+  const char* motor_names[kMaxMotors]{};
+  MotorStatus motors[kMaxMotors]{};
 };
 
 class RobotClient {

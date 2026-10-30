@@ -75,6 +75,16 @@ class UsbCmdVelGui:
         self.io_period_var = tk.StringVar(value="200")
         self.io_live_job = None
         self.io_live_active = False  # read by the serial thread; Tk vars are main-thread only
+        self.io_live_ticks = 0
+
+        # Motors panel: CAN motor drivers (MOTOR?), order as the firmware prints them.
+        self.motor_names = ["Drive F", "Drive R", "Steer L", "Steer R"]
+        self.motor_vars = {n: {k: tk.StringVar(value="--") for k in ("state", "volt", "temp", "fault")}
+                           for n in self.motor_names}
+        self.motor_state_labels = {}
+        self.motor_power_var = tk.StringVar(value="--")
+        self.motor_status_var = tk.StringVar(value="--")
+        self.gim_probe_id_var = tk.StringVar(value="1")
 
         self._build_ui()
         self._refresh_ports()
@@ -314,12 +324,57 @@ class UsbCmdVelGui:
             row=6, column=0, columnspan=5, sticky="we", **pad)
         act.columnconfigure(1, weight=1)
 
+        self._build_motor_panel(parent)
+
         live = ttk.LabelFrame(parent, text="Live I/O")
         live.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Checkbutton(live, text="Poll IN? / ACT? every", variable=self.io_live_var,
+        ttk.Checkbutton(live, text="Poll IN? / ACT? (MOTOR? ~1 s) every", variable=self.io_live_var,
                         command=self._toggle_io_live).pack(side="left", padx=8, pady=6)
         ttk.Entry(live, textvariable=self.io_period_var, width=6).pack(side="left", pady=6)
         ttk.Label(live, text="ms").pack(side="left", padx=4, pady=6)
+
+    def _build_motor_panel(self, parent) -> None:
+        pad = {"padx": 6, "pady": 2}
+        motors = ttk.LabelFrame(parent, text="Motors (CAN) — MOTOR?")
+        motors.pack(fill="x", padx=10, pady=(0, 10))
+
+        for c, head in enumerate(("Motor", "State", "V", "°C", "Fault")):
+            ttk.Label(motors, text=head, font=("TkDefaultFont", 9, "bold")).grid(row=0, column=c, sticky="w", **pad)
+        for r, name in enumerate(self.motor_names, start=1):
+            v = self.motor_vars[name]
+            ttk.Label(motors, text=name).grid(row=r, column=0, sticky="w", **pad)
+            lbl = tk.Label(motors, textvariable=v["state"], width=9, relief="groove", bg="#d0d0d0")
+            lbl.grid(row=r, column=1, sticky="w", **pad)
+            self.motor_state_labels[name] = lbl
+            ttk.Label(motors, textvariable=v["volt"], width=5).grid(row=r, column=2, sticky="w", **pad)
+            ttk.Label(motors, textvariable=v["temp"], width=5).grid(row=r, column=3, sticky="w", **pad)
+            ttk.Label(motors, textvariable=v["fault"], wraplength=180).grid(row=r, column=4, sticky="w", **pad)
+        motors.columnconfigure(4, weight=1)
+
+        row = len(self.motor_names) + 1
+        power = ttk.Frame(motors)
+        power.grid(row=row, column=0, columnspan=5, sticky="we", padx=4, pady=(6, 2))
+        ttk.Label(power, text="Power:").pack(side="left")
+        ttk.Label(power, textvariable=self.motor_power_var, width=10).pack(side="left", padx=(4, 8))
+        ttk.Button(power, text="MOTOR?", command=lambda: self._send_line("MOTOR?")).pack(side="left", padx=2)
+        ttk.Button(power, text="Release (save power)", command=self.send_motor_release).pack(side="left", padx=2)
+        ttk.Button(power, text="Activate", command=lambda: self._send_line("MOTOR ACTIVATE")).pack(side="left", padx=2)
+
+        reset = ttk.Frame(motors)
+        reset.grid(row=row + 1, column=0, columnspan=5, sticky="we", padx=4, pady=2)
+        ttk.Label(reset, text="Reset faults:").pack(side="left")
+        for label, arg in (("All", "ALL"), ("Drive", "DRIVE"), ("Steer", "STEER")):
+            ttk.Button(reset, text=label, width=6,
+                       command=lambda a=arg: self._send_line(f"MOTOR RESET {a}")).pack(side="left", padx=2)
+
+        probe = ttk.Frame(motors)
+        probe.grid(row=row + 2, column=0, columnspan=5, sticky="we", padx=4, pady=(2, 4))
+        ttk.Label(probe, text="GIM_PROBE id").pack(side="left")
+        ttk.Entry(probe, textvariable=self.gim_probe_id_var, width=4).pack(side="left", padx=4)
+        ttk.Button(probe, text="Probe 0xAE (raw frames → log)",
+                   command=self.send_gim_probe).pack(side="left", padx=2)
+        ttk.Label(motors, textvariable=self.motor_status_var).grid(
+            row=row + 3, column=0, columnspan=5, sticky="w", padx=6, pady=(0, 4))
 
     def _append_log(self, text: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -613,10 +668,37 @@ class UsbCmdVelGui:
         r"\[USB_SERIAL\] ACT pos=(-?[\d.]+)% raw=(\d+) target=(-?[\d.]+)% state=(\w+) fault=(\w+)")
     _RE_POT = re.compile(r"\[USB_SERIAL\] POT (\d+)(?: \(0x[0-9A-Fa-f]+\):| set) (?:wiper=(\d+)/\d+ \(([\d.]+)%\)|(.*))")
 
+    _RE_MOTOR_POWER = re.compile(r"\[USB_SERIAL\] MOTOR power: (\w+)")
+    _RE_MOTOR_OFFLINE = re.compile(r"\[USB_SERIAL\] MOTOR (.+?): offline")
+    _RE_MOTOR = re.compile(
+        r"\[USB_SERIAL\] MOTOR (.+?): (enabled|disabled) (ok|FAULT) code=(0x[0-9A-Fa-f]+) "
+        r"V=(\S+) T=(\S+?)C age=\d+ms ?(.*)")
+    _RE_MOTOR_EVENT = re.compile(r"\[MOTOR\] (released|activated)")
+
     def _handle_io_line(self, text: str) -> bool:
         """Updates the I/O panel from a status line. Returns True when the line
         should not be logged (polled status while Live I/O is on)."""
         live = self.io_live_active
+        m = self._RE_MOTOR_POWER.match(text)
+        if m:
+            self.root.after(0, lambda p=m.group(1): self.motor_power_var.set(p))
+            return live
+        m = self._RE_MOTOR_OFFLINE.match(text)
+        if m:
+            self.root.after(0, lambda n=m.group(1): self._update_motor(n, "OFFLINE", "", "", ""))
+            return live
+        m = self._RE_MOTOR.match(text)
+        if m:
+            name, enabled, ok, code, volt, temp, fault_text = m.groups()
+            state = "FAULT" if ok == "FAULT" else ("OK" if enabled == "enabled" else "disabled")
+            fault = (fault_text or code) if ok == "FAULT" else ""
+            self.root.after(0, lambda a=(name, state, volt, temp, fault): self._update_motor(*a))
+            return live
+        m = self._RE_MOTOR_EVENT.match(text)
+        if m:
+            power = "RELEASED" if m.group(1) == "released" else "active"
+            self.root.after(0, lambda p=power: self.motor_power_var.set(p))
+            return False
         m = self._RE_DISABLED.match(text)
         if m:
             self.root.after(0, lambda mod=m.group(1), flag=m.group(2): self._show_module_disabled(mod, flag))
@@ -677,6 +759,41 @@ class UsbCmdVelGui:
         self.act_vars["target"].set(f"{float(target):.1f}%")
         self.act_vars["state"].set(state)
         self.act_vars["fault"].set(fault)
+
+    def _update_motor(self, name: str, state: str, volt: str, temp: str, fault: str) -> None:
+        v = self.motor_vars.get(name)
+        if v is None:
+            return
+        def num(x):
+            try:
+                f = float(x)
+            except ValueError:
+                return "--"
+            return "--" if f != f else f"{f:.1f}"  # nan -> --
+        v["state"].set(state)
+        v["volt"].set(num(volt) if volt else "--")
+        v["temp"].set(num(temp) if temp else "--")
+        v["fault"].set(fault)
+        colors = {"OK": ("#3cb043", "white"), "FAULT": ("#c62828", "white"),
+                  "OFFLINE": ("#c62828", "white"), "disabled": ("#f0f0f0", "black")}
+        bg, fg = colors.get(state, ("#d0d0d0", "black"))
+        self.motor_state_labels[name].configure(bg=bg, fg=fg)
+        self.motor_status_var.set(f"updated {time.strftime('%H:%M:%S')}")
+
+    def send_motor_release(self) -> None:
+        if not messagebox.askyesno(
+                "Release motors",
+                "Unpower all motors? Wheels roll freely and steering is not held — not on a slope."):
+            return
+        self._send_line("MOTOR RELEASE")
+
+    def send_gim_probe(self) -> None:
+        try:
+            motor_id = int(self.gim_probe_id_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Invalid input", "GIM id must be an integer")
+            return
+        self._send_line(f"GIM_PROBE {motor_id}")
 
     def send_pot(self, ch: int) -> None:
         try:
@@ -739,6 +856,11 @@ class UsbCmdVelGui:
         if not (self._send_line("IN?", log=False) and self._send_line("ACT?", log=False)):
             self._stop_io_live()
             return
+        # Motors are polled at ~1 Hz on the robot, so ask about once a second.
+        self.io_live_ticks += 1
+        if self.io_live_ticks * period_ms >= 1000:
+            self.io_live_ticks = 0
+            self._send_line("MOTOR?", log=False)
         self.io_live_job = self.root.after(period_ms, self._io_live_tick)
 
     def on_close(self) -> None:

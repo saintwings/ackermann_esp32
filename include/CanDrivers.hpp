@@ -4,6 +4,16 @@
 
 #include "SystemState.hpp"
 
+// Serializes CAN request/reply exchanges across tasks: each one drains the shared RX
+// queue and then waits for its reply, so two running at once would steal each other's
+// frames. Recursive, so a multi-read status call can hold it across its reads. No-op
+// until canRxLockInit() has run (as NavLock).
+void canRxLockInit();
+struct CanRxLock {
+  CanRxLock();
+  ~CanRxLock();
+};
+
 class ODriveCAN {
  public:
   uint32_t node_id;
@@ -27,6 +37,11 @@ class ODriveCAN {
   // motor/axis turns (not divided by gear_ratio). Returns false on timeout/no response.
   bool get_position_turns(float* out_turns, unsigned long timeout_ms = 200);
 
+  // Clear_Errors; the axis then needs set_axis_state(8) to re-enter closed loop.
+  void clear_errors();
+  // Waits for the ODrive's periodic heartbeat (axis_error, axis_state).
+  bool read_status(MotorStatus* out, unsigned long timeout_ms = 150);
+
  private:
   LoopStats* loop_stats_;
 };
@@ -45,12 +60,16 @@ class GIM8108CAN {
   // no position readback needed, immune to any software/hardware baseline drift).
   void move_relative_position_turns(float turns);
   void go_home();
+  // Read status (0xAE): voltage, current, temperature, mode, fault. Retries once.
+  bool read_status(MotorStatus* out, unsigned long timeout_ms = 50);
 
  private:
   void send_cmd(uint8_t cmd, const uint8_t* payload = nullptr, uint8_t payload_len = 0);
 
   uint32_t can_id_;
   LoopStats* loop_stats_;
+  int32_t last_sent_counts_ = INT32_MIN;
+  unsigned long last_sent_ms_ = 0;
 };
 
 class ZLAC8015D {
@@ -74,6 +93,14 @@ class ZLAC8015D {
   void enable_motor();
   void set_sync_speed(int16_t left_rpm, int16_t right_rpm);
   void trigger_e_stop();
+  // Controlword fault reset (0x80); the driver then needs enable_motor().
+  void clear_fault();
+  // Controlword 0x06: both motors unpowered (no holding torque); enable_motor() re-enables.
+  void release_motor();
+  // SDO upload of one object; false on timeout or SDO abort.
+  bool read_sdo(uint16_t index, uint8_t sub, uint32_t* out, unsigned long timeout_ms = 30);
+  // Status word, error code (0x603F), temperatures and bus voltage.
+  bool read_status(MotorStatus* out);
 
  private:
   LoopStats* loop_stats_;

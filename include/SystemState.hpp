@@ -63,6 +63,19 @@ inline const char* missionStateToString(MissionState state) {
   }
 }
 
+// One motor driver's health, read over CAN by MotorStatusTask. For a ZLAC8015D one entry
+// covers the driver (both hub wheels on that axle).
+struct MotorStatus {
+  bool online{false};      // answered the last status request
+  bool enabled{false};     // powered / closed loop
+  bool fault{false};
+  uint32_t fault_code{0};  // driver-specific raw code (ZLAC 0x603F, GIM fault byte, ODrive axis_error)
+  char fault_text[64]{};   // decoded fault names, "" when none
+  float voltage_v{NAN};    // bus voltage, NAN = not available
+  float temp_c{NAN};       // hottest motor/driver temperature, NAN = not available
+  unsigned long updated_ms{0};
+};
+
 struct ControlTargets {
   float linear_mps{0.0f};
   float angle_deg{0.0f};

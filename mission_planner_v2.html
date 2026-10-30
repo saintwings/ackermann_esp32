@@ -1290,6 +1290,19 @@
                                         <button class="btn-danger" style="flex: 1;" onclick="ioSendIo('actuator_stop', 0, 0)">Stop</button>
                                     </div>
                                 </div>
+                                <div class="command-section" id="io-motors-section" style="display: none;">
+                                    <div class="command-title">Motors (CAN)</div>
+                                    <div id="io-motors"></div>
+                                    <div class="io-ctl-row" style="margin-top: 10px;">
+                                        <button class="btn-warning" style="flex: 1;" onclick="ioResetMotors(0)">Reset all</button>
+                                        <button class="btn-secondary" style="flex: 1;" onclick="ioResetMotors(1)">Reset drive</button>
+                                        <button class="btn-secondary" style="flex: 1;" onclick="ioResetMotors(2)">Reset steering</button>
+                                    </div>
+                                    <div class="io-ctl-row">
+                                        <button class="btn-secondary" style="flex: 1;" id="io-motor-power-btn" onclick="ioToggleMotorPower()">Release motors</button>
+                                    </div>
+                                    <div class="io-note">Reset clears latched driver faults and re-enables the motors. Release unpowers all motors to save energy (wheels roll freely, steering is not held); Activate powers them again. Reset is rejected during e-stop or while released; release is rejected during a mission.</div>
+                                </div>
                                 <div class="command-section" id="io-limits-section" style="display: none;">
                                     <div class="command-title" id="io-limits-title">Limit Switches (PCF8574)</div>
                                     <div id="io-limits"></div>
@@ -1712,7 +1725,10 @@
                     mission: payload.mission || null,
                     pots: Array.isArray(payload.pots) ? payload.pots : null,
                     inputs: payload.inputs || null,
-                    actuator: payload.actuator || null
+                    actuator: payload.actuator || null,
+                    // Sent about once a second, not in every telemetry message: keep the last list.
+                    motors: Array.isArray(payload.motors) ? payload.motors
+                        : ((latestTelemetry.get(robotId) || {}).motors || null)
                 });
                 
                 // Update displays
@@ -2440,6 +2456,46 @@
             if (ioSendIo('actuator_move', 0, pct)) updateStatusMessage(`${IO_LABELS.actuator} → ${pct}% sent`);
         }
 
+        // channel: 0 = all, 1 = drive (ZLAC), 2 = steering
+        function ioResetMotors(channel) {
+            const what = ['all motors', 'drive motors', 'steering motors'][channel];
+            if (!confirm(`Clear faults and re-enable ${what}? The robot may move if it has an active command.`)) return;
+            if (ioSendIo('motor_reset', channel, 0)) updateStatusMessage(`Motor reset (${what}) sent`);
+        }
+
+        function ioToggleMotorPower() {
+            const t = selectedRobotId && latestTelemetry.get(selectedRobotId);
+            const released = !!(t && t.status && t.status.motors_released);
+            if (released) {
+                if (!confirm('Activate (power) all motors?')) return;
+                if (ioSendIo('motor_activate', 0, 0)) updateStatusMessage('Motor activate sent');
+            } else {
+                if (!confirm('Release all motors? Wheels will roll freely and steering will not hold — do not release on a slope.')) return;
+                if (ioSendIo('motor_release', 0, 0)) updateStatusMessage('Motor release sent');
+            }
+        }
+
+        function ioMotorsHtml(motors) {
+            return motors.map(m => {
+                const name = ioEscape(m.name || 'Motor');
+                let state, cls;
+                if (!m.online) { state = 'OFFLINE'; cls = 'io-fault'; }
+                else if (m.fault) { state = 'FAULT'; cls = 'io-fault'; }
+                else if (!m.enabled) { state = 'disabled'; cls = 'io-muted'; }
+                else { state = 'OK'; cls = ''; }
+                const parts = [];
+                if (m.online && Number.isFinite(m.voltage)) parts.push(`${m.voltage.toFixed(1)} V`);
+                if (m.online && Number.isFinite(m.temp)) parts.push(`${m.temp.toFixed(0)} °C`);
+                let html = `<div class="value-row"><span class="value-key">${name}</span>`;
+                html += `<span class="io-value ${cls}">${state}${parts.length ? ' · ' + parts.join(' · ') : ''}</span></div>`;
+                if (m.online && m.fault) {
+                    const text = m.fault_text || `code 0x${(Number(m.fault_code) >>> 0).toString(16).toUpperCase()}`;
+                    html += `<div class="io-note io-fault" style="margin: -2px 0 6px 0; color: #f44336;">${ioEscape(text)}</div>`;
+                }
+                return html;
+            }).join('');
+        }
+
         // Keeps the speed sliders on the robot's reported values unless the user just touched one.
         // Keeps the speed sliders on the robot's reported values unless the user just touched one.
         function ioSyncControls(pots) {
@@ -2477,7 +2533,8 @@
             const pots = telemetry && telemetry.pots;
             const inputs = telemetry && telemetry.inputs;
             const actuator = telemetry && telemetry.actuator;
-            const hasIo = !!(robot && telemetry && (pots || inputs || actuator));
+            const motors = telemetry && telemetry.motors;
+            const hasIo = !!(robot && telemetry && (pots || inputs || actuator || (motors && motors.length)));
 
             const empty = document.getElementById('io-empty');
             if (empty) {
@@ -2489,6 +2546,7 @@
             ioShow('io-speed-section', hasIo && !!(pots && pots.length));
             ioShow('io-act-section', hasIo && !!actuator);
             ioShow('io-limits-section', hasIo && !!(inputs && Array.isArray(inputs.values)));
+            ioShow('io-motors-section', hasIo && !!(motors && motors.length));
 
             const banner = document.getElementById('io-banner');
             const overlay = [];
@@ -2533,6 +2591,21 @@
                 }
                 document.getElementById('io-act-status').innerHTML = html;
                 overlay.push([IO_LABELS.actuator, hasFault ? `${posText} · FAULT ${fault}` : `${posText} · ${state}`]);
+            }
+
+            const released = !!status.motors_released;
+            const powerBtn = document.getElementById('io-motor-power-btn');
+            if (powerBtn) {
+                powerBtn.textContent = released ? 'Activate motors' : 'Release motors (save power)';
+                powerBtn.className = released ? 'btn-primary' : 'btn-secondary';
+            }
+            if (motors && motors.length) {
+                document.getElementById('io-motors').innerHTML =
+                    (released ? '<div class="io-value io-muted" style="margin-bottom: 6px;">⏻ Motors RELEASED (unpowered)</div>' : '') +
+                    ioMotorsHtml(motors);
+                const bad = motors.filter(m => !m.online || m.fault).map(m => `${m.name}: ${m.online ? 'FAULT' : 'offline'}`);
+                overlay.push(['Motors', released ? 'released' + (bad.length ? ' · ' + bad.join(', ') : '')
+                    : (bad.length ? bad.join(', ') : 'all OK')]);
             }
 
             if (inputs && Array.isArray(inputs.values)) {

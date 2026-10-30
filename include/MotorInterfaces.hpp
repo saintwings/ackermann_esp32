@@ -11,6 +11,12 @@ class IDriveMotorPair {
   virtual void enable() = 0;
   virtual void emergencyStop() = 0;
   virtual void setWheelRpm(int16_t left_rpm, int16_t right_rpm) = 0;
+  // Unpowers the motors (no holding torque, wheels roll freely); enable() re-powers them.
+  virtual void release() = 0;
+  // Clears latched driver faults and re-enables the motors.
+  virtual void clearFaults() = 0;
+  // Reads both drivers' status over CAN (blocking, tens of ms): [0] = front, [1] = rear.
+  virtual void readStatus(MotorStatus out[2]) = 0;
 };
 
 class ISteeringMotorPair {
@@ -21,6 +27,12 @@ class ISteeringMotorPair {
   virtual void emergencyStop() = 0;
   virtual void goHome() = 0;
   virtual void setSteeringTurns(float left_turns, float right_turns) = 0;
+  // Unpowers the motors (no holding torque); enable() re-powers them.
+  virtual void release() = 0;
+  // Clears latched driver faults and re-enables the motors.
+  virtual void clearFaults() = 0;
+  // Reads both motors' status over CAN (blocking, tens of ms): [0] = left, [1] = right.
+  virtual void readStatus(MotorStatus out[2]) = 0;
 };
 
 class ZlacDriveMotorPair final : public IDriveMotorPair {
@@ -46,6 +58,22 @@ class ZlacDriveMotorPair final : public IDriveMotorPair {
   void setWheelRpm(int16_t left_rpm, int16_t right_rpm) override {
     front_.set_sync_speed(left_rpm, right_rpm);
     rear_.set_sync_speed(left_rpm, right_rpm);
+  }
+
+  void release() override {
+    front_.release_motor();
+    rear_.release_motor();
+  }
+
+  void clearFaults() override {
+    front_.clear_fault();
+    rear_.clear_fault();
+    enable();
+  }
+
+  void readStatus(MotorStatus out[2]) override {
+    if (!front_.read_status(&out[0])) out[0] = MotorStatus{};
+    if (!rear_.read_status(&out[1])) out[1] = MotorStatus{};
   }
 
  private:
@@ -87,6 +115,20 @@ class OdriveSteeringMotorPair final : public ISteeringMotorPair {
   void setSteeringTurns(float left_turns, float right_turns) override {
     left_.set_position(left_turns);
     right_.set_position(right_turns);
+  }
+
+  // Axis IDLE, as emergencyStop().
+  void release() override { emergencyStop(); }
+
+  void clearFaults() override {
+    left_.clear_errors();
+    right_.clear_errors();
+    enable();
+  }
+
+  void readStatus(MotorStatus out[2]) override {
+    if (!left_.read_status(&out[0])) out[0] = MotorStatus{};
+    if (!right_.read_status(&out[1])) out[1] = MotorStatus{};
   }
 
  private:
@@ -135,6 +177,17 @@ class Gim8108SteeringMotorPair final : public ISteeringMotorPair {
   void setSteeringTurns(float left_turns, float right_turns) override {
     left_.set_absolute_position_turns(static_cast<float>(left_sign_) * left_turns);
     right_.set_absolute_position_turns(static_cast<float>(right_sign_) * right_turns);
+  }
+
+  // 0xCF disable, as emergencyStop().
+  void release() override { emergencyStop(); }
+
+  // 0xAF clears the fault and re-enables the motor, which is what enable() sends.
+  void clearFaults() override { enable(); }
+
+  void readStatus(MotorStatus out[2]) override {
+    if (!left_.read_status(&out[0])) out[0] = MotorStatus{};
+    if (!right_.read_status(&out[1])) out[1] = MotorStatus{};
   }
 
  private:
