@@ -1207,6 +1207,13 @@
                                 <div style="color: #666; font-size: 12px;">Waiting for server...</div>
                             </div>
                             <div id="telemetry-parking" style="display: none;"></div>
+                            <div class="command-section" id="robot-info-section" style="display: none; margin-top: 12px;">
+                                <div class="command-title" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span>Robot Details</span>
+                                    <button class="btn-secondary" style="margin: 0; padding: 3px 10px; font-size: 11px;" onclick="requestRobotInfo(selectedRobotId)">Refresh</button>
+                                </div>
+                                <div id="robot-info"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1696,6 +1703,9 @@
                 handleTelemetryUpdate(message);
             } else if (msgType === 22) {  // SERVER_STATUS
                 handleServerStatus(message);
+            } else if (msgType === 3) {  // ROBOT_INFO (answer to get_info)
+                robotInfo.set(message.robot_id, { info: message.payload || {}, received_ms: Date.now() });
+                if (message.robot_id === selectedRobotId) renderRobotInfo(selectedRobotId);
             }
         }
         
@@ -2162,9 +2172,67 @@
         }
         setInterval(refreshLinkHealth, 1000);
         
+        // ── Robot details (get_info → ROBOT_INFO): geometry, limits, hardware ──
+        const robotInfo = new Map();  // robot_id -> { info, received_ms }
+
+        function requestRobotInfo(robotId) {
+            if (!robotId) return;
+            sendMessage({
+                type: 32,  // WEB_SEND_COMMAND
+                robot_id: robotId,
+                client_id: CLIENT_ID,
+                payload: { command: 'get_info' }
+            });
+        }
+
+        function renderRobotInfo(robotId) {
+            const section = document.getElementById('robot-info-section');
+            const box = document.getElementById('robot-info');
+            if (!section || !box) return;
+            section.style.display = robotId ? '' : 'none';
+            if (!robotId) return;
+            const entry = robotInfo.get(robotId);
+            if (!entry) {
+                box.innerHTML = '<div class="io-note">Asking the robot…</div>';
+                return;
+            }
+            const i = entry.info;
+            const g = i.geometry || {}, l = i.limits || {}, m = i.motors || {}, io = i.io || {}, nav = i.nav || {}, r = i.robot || {};
+            const num = (v, d = 2, unit = '') => (typeof v === 'number' ? `${v.toFixed(d)}${unit}` : '--');
+            const yes = v => (v === undefined ? '--' : v ? 'yes' : 'no');
+            const netModes = ['offline', 'WiFi + SIM fallback', 'SIM only', 'WiFi only'];
+            const rows = [
+                ['Track width W', num(g.track_width_m, 2, ' m')],
+                ['Wheelbase H', num(g.wheelbase_m, 2, ' m')],
+                ['Wheel diameter', num(g.wheel_diameter_m, 3, ' m')],
+                ['Max speed', num(l.max_linear_mps, 2, ' m/s')],
+                ['Max steering', num(l.max_steering_deg, 0, '°')],
+                ['Max wheel angle', num(l.max_wheel_angle_deg, 0, '°')],
+                ['Zero-turn angle', num(l.zero_turn_angle_deg, 1, '°')],
+                ['Max wheel rpm', l.max_wheel_rpm ?? '--'],
+                ['Drive motors', m.drive ? `${m.drive.type} (ids ${m.drive.front_id}/${m.drive.rear_id})` : '--'],
+                ['Steer motors', m.steer ? `${m.steer.type} (ids ${m.steer.left_id}/${m.steer.right_id})` : '--'],
+                ['E-stop', m.estop_hold === undefined ? '--' : m.estop_hold ? 'stop & hold' : 'release'],
+                ['Speed outputs', io.speed_outputs ?? '--'],
+                ['Inputs', Array.isArray(io.inputs) && io.inputs.length ? io.inputs.join(', ') : 'none'],
+                ['Limit-switch e-stop', yes(io.limit_switch_estop)],
+                ['Actuator', yes(io.actuator)],
+                ['Heading source', nav.heading_source || '--'],
+                ['Waypoint radius', num(nav.waypoint_reached_m, 2, ' m')],
+                ['Network', (i.net && netModes[i.net.mode]) || '--'],
+                ['Firmware build', r.firmware_build || '--'],
+            ];
+            box.innerHTML = rows.map(([k, v]) =>
+                `<div class="value-row"><span class="value-key">${ioEscape(k)}</span><span class="value-data">${ioEscape(v)}</span></div>`
+            ).join('') + `<div class="io-note" style="margin-top: 6px;">Received ${new Date(entry.received_ms).toLocaleTimeString()}</div>`;
+        }
+
         function selectRobot(robotId) {
             console.log('[ROBOT SELECT] Selected robot:', robotId);
             selectedRobotId = robotId;
+            // Details are static per firmware build: ask once per page load, Refresh re-asks.
+            if (!robotInfo.has(robotId)) requestRobotInfo(robotId);
+            renderRobotInfo(robotId);
             updateRobotList();
             updateTelemetryDisplay(robotId);
             updateTelemetryOverlay(robotId);

@@ -10,6 +10,8 @@ class IDriveMotorPair {
   virtual void begin() = 0;
   virtual void enable() = 0;
   virtual void emergencyStop() = 0;
+  // E-stop with ESTOP_HOLD: ramp to 0 rpm and stay powered so the wheels hold.
+  virtual void stopAndHold() = 0;
   virtual void setWheelRpm(int16_t left_rpm, int16_t right_rpm) = 0;
   // Unpowers the motors (no holding torque, wheels roll freely); enable() re-powers them.
   virtual void release() = 0;
@@ -25,6 +27,8 @@ class ISteeringMotorPair {
   virtual void begin() = 0;
   virtual void enable() = 0;
   virtual void emergencyStop() = 0;
+  // E-stop with ESTOP_HOLD: stay powered at the last commanded angle.
+  virtual void stopAndHold() = 0;
   virtual void goHome() = 0;
   virtual void setSteeringTurns(float left_turns, float right_turns) = 0;
   // Unpowers the motors (no holding torque); enable() re-powers them.
@@ -53,6 +57,11 @@ class ZlacDriveMotorPair final : public IDriveMotorPair {
   void emergencyStop() override {
     front_.trigger_e_stop();
     rear_.trigger_e_stop();
+  }
+
+  void stopAndHold() override {
+    front_.stop_hold();
+    rear_.stop_hold();
   }
 
   void setWheelRpm(int16_t left_rpm, int16_t right_rpm) override {
@@ -106,6 +115,9 @@ class OdriveSteeringMotorPair final : public ISteeringMotorPair {
     left_.set_axis_state(1);
     right_.set_axis_state(1);
   }
+
+  // Closed loop holds the last input_pos; nothing to send.
+  void stopAndHold() override {}
 
   void goHome() override {
     left_.go_home();
@@ -168,6 +180,9 @@ class Gim8108SteeringMotorPair final : public ISteeringMotorPair {
     left_.disable_motor();
     right_.disable_motor();
   }
+
+  // Position mode holds the last target; nothing to send.
+  void stopAndHold() override {}
 
   void goHome() override {
     left_.go_home();

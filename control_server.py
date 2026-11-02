@@ -70,6 +70,7 @@ class MessageType(Enum):
     ROBOT_REGISTER = 0
     SENSOR_TELEMETRY = 1
     COMMAND_ACK = 2
+    ROBOT_INFO = 3          # answer to COMMAND_GET_INFO; forwarded to web clients as-is
     
     # Server-to-Robot
     COMMAND_MOVE = 10
@@ -77,6 +78,7 @@ class MessageType(Enum):
     COMMAND_EMERGENCY_STOP = 12
     COMMAND_CANCEL_TASK = 13
     COMMAND_IO = 17
+    COMMAND_GET_INFO = 18
     
     # Server-to-Web
     TELEMETRY_UPDATE = 20
@@ -450,6 +452,17 @@ class ControlServer:
                     elif msg_type == MessageType.SENSOR_TELEMETRY.value:
                         await self.handle_telemetry(robot_id, message, websocket)
                     
+                    elif msg_type == MessageType.ROBOT_INFO.value:
+                        if robot_id:
+                            info = message.get('payload', {})
+                            geo = info.get('geometry', {})
+                            self._rlog(robot_id).log_comm(
+                                "INFO",
+                                f"fw={info.get('robot', {}).get('firmware_build')} "
+                                f"W={geo.get('track_width_m')} H={geo.get('wheelbase_m')} "
+                                f"wheel_d={geo.get('wheel_diameter_m')}")
+                            await self.broadcast_telemetry(message)
+
                     elif msg_type == MessageType.WEB_SEND_COMMAND.value:
                         await self.handle_web_command(message, websocket)
                     
@@ -954,6 +967,14 @@ class ControlServer:
                 'payload': {
                     'command': 'cancel_mission'
                 }
+            }
+        elif command == 'get_info':
+            # Robot answers with a ROBOT_INFO message (geometry, limits, hardware).
+            return {
+                'type': MessageType.COMMAND_GET_INFO.value,
+                'robot_id': web_message.get('robot_id'),
+                'client_id': web_message.get('client_id'),
+                'payload': {'command': 'get_info'}
             }
         elif command == 'io':
             # Speed outputs (DS3502), linear actuator and motor fault reset; the firmware

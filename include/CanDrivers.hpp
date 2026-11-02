@@ -93,6 +93,9 @@ class ZLAC8015D {
   void enable_motor();
   void set_sync_speed(int16_t left_rpm, int16_t right_rpm);
   void trigger_e_stop();
+  // Target 0 rpm on both wheels, motor left enabled (holds); unlike set_sync_speed it is
+  // never throttled and waits for TX space.
+  void stop_hold();
   // Controlword fault reset (0x80); the driver then needs enable_motor().
   void clear_fault();
   // Controlword 0x06: both motors unpowered (no holding torque); enable_motor() re-enables.

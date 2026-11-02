@@ -10,6 +10,7 @@ namespace {
 constexpr uint8_t MSG_ROBOT_REGISTER = 0;
 constexpr uint8_t MSG_SENSOR_TELEMETRY = 1;
 constexpr uint8_t MSG_COMMAND_ACK = 2;
+constexpr uint8_t MSG_ROBOT_INFO = 3;
 constexpr uint8_t MSG_COMMAND_MOVE = 10;
 constexpr uint8_t MSG_COMMAND_WAYPOINT = 11;
 constexpr uint8_t MSG_COMMAND_EMERGENCY_STOP = 12;
@@ -18,6 +19,7 @@ constexpr uint8_t MSG_COMMAND_EXECUTE_MISSION = 14;
 constexpr uint8_t MSG_COMMAND_PAUSE_MISSION = 15;
 constexpr uint8_t MSG_COMMAND_CANCEL_MISSION = 16;
 constexpr uint8_t MSG_COMMAND_IO = 17;
+constexpr uint8_t MSG_COMMAND_GET_INFO = 18;
 constexpr uint8_t MSG_MISSION_UPLOAD_START   = 40;
 constexpr uint8_t MSG_MISSION_UPLOAD_BATCH   = 41;
 constexpr uint8_t MSG_MISSION_UPLOAD_EXECUTE = 42;
@@ -315,6 +317,22 @@ void RobotClient::queueCommand(const RobotCommand& command) {
   impl_->has_pending_command = true;
 }
 
+void RobotClient::sendRobotInfo(const JsonDocument& info) {
+  if (!isConnected()) return;
+
+  JsonDocument doc;
+  doc["type"] = MSG_ROBOT_INFO;
+  doc["robot_id"] = ROBOT_ID;
+  doc["timestamp"] = millis();
+  doc["payload"] = info;
+
+  String json;
+  serializeJson(doc, json);
+  NetSource src = _net ? _net->source() : NetSource::WIFI;
+  if (src == NetSource::SIM && _simWs) { _simWs->sendText(json); }
+  else { impl_->websocket.sendTXT(json.c_str()); }
+}
+
 void RobotClient::sendCommandAck(const RobotCommand& command, const char* status, const char* detail) {
   if (!isConnected()) return;
 
@@ -391,6 +409,10 @@ void RobotClient::handleTextMessage(const String& text) {
     case MSG_COMMAND_CANCEL_MISSION:
       command.type = RobotCommandType::CancelMission;
       command.command_name = "cancel_mission";
+      break;
+    case MSG_COMMAND_GET_INFO:
+      command.type = RobotCommandType::GetInfo;
+      command.command_name = "get_info";
       break;
     case MSG_COMMAND_IO:
       command.type = RobotCommandType::Io;

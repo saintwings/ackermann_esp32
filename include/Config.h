@@ -265,6 +265,12 @@
 #define STEER_GIM_LEFT_SIGN 1
 #define STEER_GIM_RIGHT_SIGN 1
 
+// What e-stop does to the motors.
+// 1 = stop and hold: drive wheels ramp to 0 rpm (0x6084 decel) and stay powered, so the
+//     robot holds on a slope; steering stays powered at its last angle.
+// 0 = release: drive quick stop, steering unpowered (no hold).
+#define ESTOP_HOLD 1
+
 // Robot geometry (meters)
 // W = track width, H = wheelbase/axle spacing used by zero-turn steering geometry.
 #define ROBOT_GEOMETRY_W_M 0.36f

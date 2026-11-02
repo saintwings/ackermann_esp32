@@ -33,6 +33,9 @@
 #ifndef LIMIT_SWITCH_ESTOP_ENABLE
 #define LIMIT_SWITCH_ESTOP_ENABLE 0
 #endif
+#ifndef ESTOP_HOLD
+#define ESTOP_HOLD 1
+#endif
 #ifndef MOTOR_STATUS_POLL_MS
 #define MOTOR_STATUS_POLL_MS 1000UL
 #endif
@@ -366,6 +369,18 @@ static volatile uint8_t motor_reset_request = 0;
 static volatile bool motors_released = false;
 enum class MotorPowerRequest : uint8_t { None, Release, Activate };
 static volatile MotorPowerRequest motor_power_request = MotorPowerRequest::None;
+
+// E-stop motor action (ESTOP_HOLD in Config*.h). Hold: drive ramps to 0 rpm and every
+// motor stays powered, so the robot holds on a slope. Released motors stay released.
+static void stopMotorsForEStop() {
+#if ESTOP_HOLD
+  drive_motors.stopAndHold();
+  steering_motors.stopAndHold();
+#else
+  drive_motors.emergencyStop();
+  steering_motors.emergencyStop();
+#endif
+}
 
 PS2X ps2x;
 int ps2_error = 0;
@@ -2291,6 +2306,70 @@ static void updateIoDevices(unsigned long now) {
 #endif
 }
 
+// Static robot description (geometry, limits, hardware, enabled modules) plus a few
+// runtime settings. Shared by serial INFO? and the server's get_info (ROBOT_INFO).
+// Caller holds the nav lock.
+static void fillRobotInfo(JsonDocument& info) {
+  JsonObject robot = info["robot"].to<JsonObject>();
+  robot["id"] = ROBOT_ID;
+  robot["name"] = ROBOT_NAME;
+  robot["type"] = ROBOT_TYPE;
+  robot["firmware_build"] = __DATE__ " " __TIME__;
+  robot["uptime_ms"] = millis();
+
+  JsonObject geometry = info["geometry"].to<JsonObject>();
+  geometry["track_width_m"] = ROBOT_GEOMETRY_W_M;  // W
+  geometry["wheelbase_m"] = ROBOT_GEOMETRY_H_M;    // H
+  geometry["wheel_diameter_m"] = DRIVE_WHEEL_DIAMETER_M;
+
+  JsonObject limits = info["limits"].to<JsonObject>();
+  limits["max_linear_mps"] = MAX_LINEAR_SPEED_MS;
+  limits["max_steering_deg"] = MAX_STEERING_ANGLE_DEG;
+#ifdef STEER_MAX_WHEEL_ANGLE_DEG
+  limits["max_wheel_angle_deg"] = STEER_MAX_WHEEL_ANGLE_DEG;
+#endif
+  limits["max_wheel_rpm"] = MAX_RPM;
+  limits["zero_turn_angle_deg"] = ControlActuation::computeZeroTurnSteeringAngleDeg(WHEELBASE_M, TRACK_WIDTH_M);
+
+  JsonObject motors = info["motors"].to<JsonObject>();
+  JsonObject drive = motors["drive"].to<JsonObject>();
+  drive["type"] = "ZLAC8015D";
+  drive["front_id"] = DRIVE_FRONT_MOTOR_ID;
+  drive["rear_id"] = DRIVE_REAR_MOTOR_ID;
+  JsonObject steer = motors["steer"].to<JsonObject>();
+  steer["type"] = STEER_MOTOR_TYPE == STEER_MOTOR_TYPE_GIM8108 ? "GIM8108" : "ODrive";
+  steer["left_id"] = STEER_LEFT_MOTOR_ID;
+  steer["right_id"] = STEER_RIGHT_MOTOR_ID;
+  motors["estop_hold"] = ESTOP_HOLD != 0;
+  motors["released"] = motors_released;
+
+  JsonObject io = info["io"].to<JsonObject>();
+#if DS3502_ENABLE
+  io["speed_outputs"] = DS3502_COUNT;
+#else
+  io["speed_outputs"] = 0;
+#endif
+  JsonArray inputs = io["inputs"].to<JsonArray>();
+#if PCF8574_ENABLE
+  for (int i = 0; i < DIGITAL_INPUT_COUNT; ++i) inputs.add(kInputNames[i]);
+#endif
+  io["limit_switch_estop"] = LIMIT_SWITCH_ESTOP_ENABLE != 0;
+  io["actuator"] = ACTUATOR_ENABLE != 0;
+
+  JsonObject nav = info["nav"].to<JsonObject>();
+  nav["mode"] = robot_mode == RobotMode::Normal ? "normal" : "zero_turn";
+  nav["heading_source"] = heading_source == HeadingSource::Gps ? "gps" : "mag";
+  nav["waypoint_reached_m"] = MISSION_WAYPOINT_REACHED_M;
+  nav["coverage_waypoint_reached_m"] = MISSION_COVERAGE_WAYPOINT_REACHED_M;
+#ifdef MISSION_AUTO_ZERO_TURN_ENABLE
+  nav["auto_zero_turn"] = MISSION_AUTO_ZERO_TURN_ENABLE != 0;
+#endif
+
+  JsonObject net = info["net"].to<JsonObject>();
+  net["mode"] = NET_MODE;  // 0=offline, 1=WiFi+SIM fallback, 2=SIM only, 3=WiFi only
+  net["telemetry_interval_ms"] = ROBOT_TELEMETRY_INTERVAL_MS;
+}
+
 // MOTOR?                     — last polled status of every motor driver
 // MOTOR RESET [ALL|DRIVE|STEER] — clear latched faults and re-enable (default ALL)
 // MOTOR RELEASE / MOTOR ACTIVATE — unpower all motors to save energy / power them again
@@ -2345,7 +2424,7 @@ static void handleUsbSerialLine(const String& raw_line) {
   upper.toUpperCase();
 
   if (upper == "HELP" || upper == "?") {
-    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
+    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
     return;
   }
 
@@ -2402,6 +2481,16 @@ static void handleUsbSerialLine(const String& raw_line) {
 
   if (upper == "ACT" || upper.startsWith("ACT ") || upper == "ACT?") {
     handleActuatorCommand(upper.substring(3));
+    return;
+  }
+
+  if (upper == "INFO?") {
+    // One JSON line, like NAV {...}, for a companion computer.
+    JsonDocument info;
+    fillRobotInfo(info);
+    Serial.print("INFO ");
+    serializeJson(info, Serial);
+    Serial.println();
     return;
   }
 
@@ -2682,6 +2771,8 @@ static void handleRobotClientCommand() {
   // modem round-trip and must not stall NavTask.
   const char* ack_status = nullptr;
   const char* ack_detail = nullptr;
+  JsonDocument info;  // filled for GetInfo, sent with the ack (after the lock)
+  bool send_info = false;
   {
     NavLock lock;
     // Released motors can't drive: refuse anything that would start or resume a mission.
@@ -2706,8 +2797,7 @@ static void handleRobotClientCommand() {
       case RobotCommandType::EmergencyStop:
         e_stop_active = true;
         e_stop_reason = "server";
-        drive_motors.emergencyStop();
-        steering_motors.emergencyStop();
+        stopMotorsForEStop();
         mission_ctx.active = false;
         setMissionState(MissionState::EStop);
         ack_status = "accepted";
@@ -2864,10 +2954,15 @@ static void handleRobotClientCommand() {
         ack_status = "accepted";
         break;
       }
+      case RobotCommandType::GetInfo:
+        fillRobotInfo(info);
+        send_info = true;  // the ROBOT_INFO reply is the answer; no ack
+        break;
       case RobotCommandType::None:
         break;
     }
   }
+  if (send_info) robot_client.sendRobotInfo(info);
   if (ack_status) robot_client.sendCommandAck(command, ack_status, ack_detail);
 }
 
@@ -3024,7 +3119,7 @@ void setup() {
     delay(10);
   }
   delay(1000);
-  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
+  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
   Serial.println("[USB_SERIAL]   FUNC_<n> ON|OFF drives a GPIO actuator directly; FUNC_<n> <degrees> DEG moves a CAN actuator then returns it to 0");
   Serial.println("[USB_SERIAL]   FUNC_<n> <degrees> REL_DEG moves a CAN actuator relative to its current position and just holds there");
@@ -3209,8 +3304,7 @@ static void controlTask(void* /*pvParameters*/) {
       // e-stop (limit switch, server): a drive command sent here in the same cycle could
       // otherwise overwrite a stop issued from another task.
       if (e_stop_active && !e_stop_applied) {
-        drive_motors.emergencyStop();
-        steering_motors.emergencyStop();
+        stopMotorsForEStop();
       }
       e_stop_applied = e_stop_active;
 
@@ -3265,13 +3359,14 @@ static void controlTask(void* /*pvParameters*/) {
         e_stop_active = true;
         e_stop_reason = "ps2";
         Serial.println("!!! E-STOP ACTIVATED !!!");
-        drive_motors.emergencyStop();
-        steering_motors.emergencyStop();
+        stopMotorsForEStop();
       } else if (estop_off_combo && !estop_off_combo_prev && e_stop_active) {
         e_stop_active = false;
         e_stop_reason = "";
         Serial.println(">>> E-STOP RELEASED <<<");
-        if (!motors_released) {
+        // With ESTOP_HOLD the motors never went down; re-running the ZLAC enable
+        // sequence would briefly unpower them (controlword 0x06) and let it roll.
+        if (!ESTOP_HOLD && !motors_released) {
           drive_motors.enable();
           steering_motors.enable();
         }

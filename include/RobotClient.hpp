@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include "NetManager.hpp"
 #include "SimWsClient.hpp"
 #include "SystemState.hpp"
@@ -18,6 +19,7 @@ enum class RobotCommandType : uint8_t {
   MissionUploadBatch,    // type 41 — one chunk of waypoints
   MissionUploadExecute,  // type 42 — all batches done, start mission
   Io,                    // type 17 — speed output / actuator (io_action)
+  GetInfo,               // type 18 — reply with a ROBOT_INFO message (sendRobotInfo)
 };
 
 struct RobotCommand {
@@ -116,6 +118,8 @@ class RobotClient {
   bool hasPendingCommand() const;
   RobotCommand consumeCommand();
   void sendCommandAck(const RobotCommand& command, const char* status, const char* detail = nullptr);
+  // ROBOT_INFO (type 3): static robot description, answer to GET_INFO. info = payload.
+  void sendRobotInfo(const JsonDocument& info);
 
  private:
   void sendRegister();
