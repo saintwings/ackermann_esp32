@@ -5228,6 +5228,13 @@
             return (status.heading || 0).toFixed(1) + '°' + src;
         }
 
+        // Unwrapped rotation: step from the current angle by the shortest difference so the
+        // CSS transition turns 359 -> 1 by +2 deg instead of spinning -358 deg.
+        function shortestRotationDeg(currentDeg, targetDeg) {
+            const delta = ((targetDeg - currentDeg) % 360 + 540) % 360 - 180;
+            return currentDeg + delta;
+        }
+
         // Arrow = heading known, ready for a mission; dashed circle = heading not calibrated.
         function setRobotMarkerShape(svg, ready) {
             const arrow = svg.querySelector('path');
@@ -5280,7 +5287,8 @@
                 arrowSvg.style.position = 'absolute';
                 arrowSvg.style.left = '-20px';
                 arrowSvg.style.top = '-20px';
-                arrowSvg.style.transform = `rotate(${Number.isFinite(yaw) ? yaw : 0}deg)`;
+                arrowSvg.rotationDeg = Number.isFinite(yaw) ? yaw : 0;
+                arrowSvg.style.transform = `rotate(${arrowSvg.rotationDeg}deg)`;
                 arrowSvg.style.transformOrigin = 'center';
                 arrowSvg.style.transition = 'transform 0.2s ease-out';
                 
@@ -5362,7 +5370,10 @@
                 
                 // Update arrow rotation
                 if (marker.arrowSvg) {
-                    marker.arrowSvg.style.transform = `rotate(${Number.isFinite(yaw) ? yaw : 0}deg)`;
+                    if (Number.isFinite(yaw)) {
+                        marker.arrowSvg.rotationDeg = shortestRotationDeg(marker.arrowSvg.rotationDeg || 0, yaw);
+                        marker.arrowSvg.style.transform = `rotate(${marker.arrowSvg.rotationDeg}deg)`;
+                    }
                     setRobotMarkerShape(marker.arrowSvg, isHeadingReady(status));
                     
                     // Update selection styling if this is the selected robot
