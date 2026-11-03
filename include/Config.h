@@ -85,6 +85,8 @@
 #define HEADING_GPS_MAX_YAW_CHANGE_DEG 3.0f  // more turning than this restarts the segment
 #define HEADING_GPS_GAIN 0.3f                // fraction of each course error applied
 #define HEADING_GPS_MAX_HERR_M 0.05f         // GST error limit for using a sample
+#define HEADING_GPS_FLOAT_MIN_BASELINE_M 2.0f  // RTK float: log-only samples (DEBUG_LOG_HEADING), never applied
+#define HEADING_GPS_FLOAT_MAX_YAW_CHANGE_DEG 10.0f  // turning limit for float samples (chord = mid heading)
 
 // Echo GPS data to USB Serial as JSON, same fields as the "gps" object sent
 // to the web UI in robot telemetry (valid/latitude/longitude/altitude/hdop/

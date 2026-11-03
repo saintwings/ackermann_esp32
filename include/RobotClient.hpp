@@ -54,6 +54,8 @@ struct RobotTelemetry {
   bool motors_released{false};    // motors unpowered to save energy (MOTOR RELEASE)
   float speed{0.0f};
   float heading{0.0f};
+  bool heading_ready{true};          // heading known well enough to start a mission
+  const char* heading_source{"MAG"};  // "MAG" or "GPS"
 
   bool gps_valid{false};
   double gps_latitude{0.0};

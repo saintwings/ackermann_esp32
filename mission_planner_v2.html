@@ -2265,17 +2265,16 @@
                 const isSelected = robotId === selectedRobotId;
                 
                 if (marker.arrowSvg) {
-                    const arrow = marker.arrowSvg.querySelector('path');
-                    if (arrow) {
-                        // Highlight selected robot with thicker white border and shadow
+                    // Highlight selected robot with thicker white border and shadow
+                    marker.arrowSvg.querySelectorAll('path, circle').forEach((shape) => {
                         if (isSelected) {
-                            arrow.setAttribute('stroke-width', '3');
-                            arrow.setAttribute('filter', 'drop-shadow(0 0 8px rgba(255,255,255,0.8))');
+                            shape.setAttribute('stroke-width', '3');
+                            shape.setAttribute('filter', 'drop-shadow(0 0 8px rgba(255,255,255,0.8))');
                         } else {
-                            arrow.setAttribute('stroke-width', '2');
-                            arrow.setAttribute('filter', 'none');
+                            shape.setAttribute('stroke-width', '2');
+                            shape.setAttribute('filter', 'none');
                         }
-                    }
+                    });
                 }
             });
         }
@@ -2366,7 +2365,7 @@
                             </div>
                             <div class="value-row">
                                 <span class="value-key">Heading:</span>
-                                <span class="value-data">${status.heading.toFixed(1)}°</span>
+                                <span class="value-data">${headingText(status)}</span>
                             </div>
                             ${status.battery_level !== undefined ? 
                                 `<div class="value-row">
@@ -2424,7 +2423,7 @@
             if (telemetry && telemetry.status) {
                 const status = telemetry.status;
                 document.getElementById('status-speed').textContent = (status.speed || 0).toFixed(2) + ' m/s';
-                document.getElementById('status-heading').textContent = (status.heading || 0).toFixed(1) + '°';
+                document.getElementById('status-heading').textContent = headingText(status);
                 document.getElementById('status-battery').textContent = (status.battery_level || 0).toFixed(0) + '%';
             } else {
                 document.getElementById('status-speed').textContent = '--';
@@ -5217,6 +5216,26 @@
             }
         }
         
+        // Firmware without heading_ready (older builds, other robots) is treated as ready.
+        function isHeadingReady(status) {
+            return !status || status.heading_ready !== false;
+        }
+
+        function headingText(status) {
+            if (!status) return '--';
+            if (!isHeadingReady(status)) return 'not calibrated (drive straight 3-5 m)';
+            const src = status.heading_source ? ` (${status.heading_source})` : '';
+            return (status.heading || 0).toFixed(1) + '°' + src;
+        }
+
+        // Arrow = heading known, ready for a mission; dashed circle = heading not calibrated.
+        function setRobotMarkerShape(svg, ready) {
+            const arrow = svg.querySelector('path');
+            const circle = svg.querySelector('circle');
+            if (arrow) arrow.style.display = ready ? '' : 'none';
+            if (circle) circle.style.display = ready ? 'none' : '';
+        }
+
         async function updateRobotOnMap(robotId, telemetry) {
             if (!mapInitialized) return;
             
@@ -5272,7 +5291,19 @@
                 arrow.setAttribute('stroke', '#ffffff');
                 arrow.setAttribute('stroke-width', '2');
                 
+                // Circle shown instead of the arrow while the heading isn't calibrated
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', '20');
+                circle.setAttribute('cy', '20');
+                circle.setAttribute('r', '10');
+                circle.setAttribute('fill', markerColor);
+                circle.setAttribute('stroke', '#ffffff');
+                circle.setAttribute('stroke-width', '2');
+                circle.setAttribute('stroke-dasharray', '4 3');
+
                 arrowSvg.appendChild(arrow);
+                arrowSvg.appendChild(circle);
+                setRobotMarkerShape(arrowSvg, isHeadingReady(status));
                 markerDiv.appendChild(arrowSvg);
                 
                 const marker = new AdvancedMarkerElement({
@@ -5294,7 +5325,7 @@
                             <b>${robotName}</b><br>
                             Type: ${robotType}<br>
                             Speed: ${speed.toFixed(2)} m/s<br>
-                            Heading: ${yaw.toFixed(1)}°
+                            Heading: ${headingText(status)}
                         </div>
                     `
                 });
@@ -5332,13 +5363,15 @@
                 // Update arrow rotation
                 if (marker.arrowSvg) {
                     marker.arrowSvg.style.transform = `rotate(${Number.isFinite(yaw) ? yaw : 0}deg)`;
+                    setRobotMarkerShape(marker.arrowSvg, isHeadingReady(status));
                     
                     // Update selection styling if this is the selected robot
                     const isSelected = robotId === selectedRobotId;
-                    const arrow = marker.arrowSvg.querySelector('path');
-                    if (arrow && isSelected) {
-                        arrow.setAttribute('stroke-width', '3');
-                        arrow.setAttribute('filter', 'drop-shadow(0 0 8px rgba(255,255,255,0.8))');
+                    if (isSelected) {
+                        marker.arrowSvg.querySelectorAll('path, circle').forEach((shape) => {
+                            shape.setAttribute('stroke-width', '3');
+                            shape.setAttribute('filter', 'drop-shadow(0 0 8px rgba(255,255,255,0.8))');
+                        });
                     }
                 }
                 
@@ -5347,7 +5380,7 @@
                         <b>${robotName}</b><br>
                         Type: ${robotType}<br>
                         Speed: ${speed.toFixed(2)} m/s<br>
-                        Heading: ${yaw.toFixed(1)}°
+                        Heading: ${headingText(status)}
                     </div>
                 `);
                 

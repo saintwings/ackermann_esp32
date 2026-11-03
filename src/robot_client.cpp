@@ -215,6 +215,8 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   status["battery_level"] = telemetry.battery_level;
   status["speed"] = telemetry.speed;
   status["heading"] = telemetry.heading;
+  status["heading_ready"] = telemetry.heading_ready;
+  status["heading_source"] = telemetry.heading_source;
   status["e_stop"] = telemetry.e_stop;
   status["e_stop_reason"] = telemetry.e_stop_reason;
   status["motors_released"] = telemetry.motors_released;

@@ -143,14 +143,21 @@ struct HeadingFusion {
   uint32_t corrections = 0;    // GPS course samples applied since boot
   float last_gps_err_deg = 0.0f;  // GPS course - fused heading at the last sample
   float last_mag_err_deg = 0.0f;  // GPS course - magnetometer heading at the last sample
+  uint32_t samples = 0;        // GPS course samples logged (fixed + float)
   bool anchor_valid = false;
+  bool segment_float = false;  // an RTK float epoch is in the current segment
   double anchor_lat = 0.0, anchor_lon = 0.0;
   float anchor_game_deg = 0.0f;
   unsigned long last_gps_update_ms = 0;
+  unsigned long last_forward_ms = 0;  // last NavTask cycle with a forward drive target
 };
 static HeadingFusion heading_fusion;
+// PS2 reads glitch for a poll or two (R1/stick read as released), which zeroes the drive
+// target while the robot keeps rolling; count it as still driving forward for this long.
+static constexpr unsigned long HEADING_FORWARD_HOLD_MS = 1000;
 static float estimateHeadingDeg();
 static float magHeadingDeg();
+static bool headingReadyForMission();
 static void handleUsbSerialControl();
 
 static String usb_serial_line_buffer;
@@ -430,8 +437,17 @@ static constexpr unsigned long NAV_SERIAL_PERIOD_MS = 100;  // NAV line for comp
 #ifndef HEADING_GPS_GAIN
 #define HEADING_GPS_GAIN 0.3f
 #endif
+#ifndef DEBUG_LOG_HEADING
+#define DEBUG_LOG_HEADING 0
+#endif
 #ifndef HEADING_GPS_MAX_HERR_M
 #define HEADING_GPS_MAX_HERR_M 0.05f
+#endif
+#ifndef HEADING_GPS_FLOAT_MIN_BASELINE_M
+#define HEADING_GPS_FLOAT_MIN_BASELINE_M 2.0f
+#endif
+#ifndef HEADING_GPS_FLOAT_MAX_YAW_CHANGE_DEG
+#define HEADING_GPS_FLOAT_MAX_YAW_CHANGE_DEG 10.0f
 #endif
 static constexpr float MISSION_SLOWDOWN_RADIUS_M = 1.0f;
 static constexpr float MISSION_HEADING_SLOWDOWN_CRAWL_MPS = 0.12f;
@@ -2710,11 +2726,22 @@ static float estimateHeadingDeg() {
   return magHeadingDeg();
 }
 
+// Missions need a trustworthy heading. MAG: the IMU is reporting. GPS: at least one
+// GPS course correction since boot; until then the fused heading is only the
+// magnetometer seed, which was 20+ deg off in field tests.
+static bool headingReadyForMission() {
+  if (!imu_state.valid) return false;
+  if (heading_source == HeadingSource::Mag) return true;
+  return imu_state.game_valid && heading_fusion.offset_valid && heading_fusion.corrections > 0;
+}
+
 // NavTask: learn the game-yaw offset from GPS course over ground. On each new GPS
 // epoch while driving forward in normal mode on RTK fixed (GST error within
 // HEADING_GPS_MAX_HERR_M): once HEADING_GPS_MIN_BASELINE_M has been covered with less
 // than HEADING_GPS_MAX_YAW_CHANGE_DEG of turning, the bearing of that segment is the
 // true heading; nudge the offset toward it by HEADING_GPS_GAIN.
+// With DEBUG_LOG_HEADING, RTK float epochs also make samples over a longer baseline
+// (HEADING_GPS_FLOAT_MIN_BASELINE_M) for the mag comparison log; they never correct the offset.
 static void updateHeadingFusion() {
   HeadingFusion& hf = heading_fusion;
   if (!imu_state.valid || !imu_state.rv_valid || !imu_state.game_valid) return;
@@ -2724,40 +2751,66 @@ static void updateHeadingFusion() {
     hf.offset_valid = true;
   }
 
+  const unsigned long now_ms = millis();
+  if (control_targets.linear_mps > 0.05f) {
+    hf.last_forward_ms = now_ms;
+  } else if (control_targets.linear_mps < -0.05f) {
+    hf.last_forward_ms = 0;
+    hf.anchor_valid = false;  // reversing: course would be 180 deg off
+  }
+
   if (gps_fix.last_update_ms == hf.last_gps_update_ms) return;  // once per GPS epoch
   hf.last_gps_update_ms = gps_fix.last_update_ms;
 
-  const bool usable = gps_fix.valid && gps_fix.fix_quality == 4 && gps_fix.has_gst &&
+  const bool is_float = DEBUG_LOG_HEADING && gps_fix.fix_quality == 5;
+  const bool usable = gps_fix.valid && (gps_fix.fix_quality == 4 || is_float) && gps_fix.has_gst &&
                       gps_fix.h_err_m <= HEADING_GPS_MAX_HERR_M &&
-                      robot_mode == RobotMode::Normal && control_targets.linear_mps > 0.05f;
+                      robot_mode == RobotMode::Normal && hf.last_forward_ms != 0 &&
+                      now_ms - hf.last_forward_ms < HEADING_FORWARD_HOLD_MS;
   if (!usable) {
     hf.anchor_valid = false;
     return;
   }
+  const float max_yaw_change_deg = (hf.segment_float || is_float) ? HEADING_GPS_FLOAT_MAX_YAW_CHANGE_DEG
+                                                                   : HEADING_GPS_MAX_YAW_CHANGE_DEG;
   const bool turned = hf.anchor_valid &&
-                      fabsf(normalizeAngleDeg(game_deg - hf.anchor_game_deg)) > HEADING_GPS_MAX_YAW_CHANGE_DEG;
+                      fabsf(normalizeAngleDeg(game_deg - hf.anchor_game_deg)) > max_yaw_change_deg;
   if (!hf.anchor_valid || turned) {
     hf.anchor_valid = true;
     hf.anchor_lat = gps_fix.latitude;
     hf.anchor_lon = gps_fix.longitude;
     hf.anchor_game_deg = game_deg;
+    hf.segment_float = is_float;
     return;
   }
-  if (distanceMeters(hf.anchor_lat, hf.anchor_lon, gps_fix.latitude, gps_fix.longitude) < HEADING_GPS_MIN_BASELINE_M) {
+  hf.segment_float = hf.segment_float || is_float;
+  const float min_baseline_m = hf.segment_float ? HEADING_GPS_FLOAT_MIN_BASELINE_M : HEADING_GPS_MIN_BASELINE_M;
+  if (distanceMeters(hf.anchor_lat, hf.anchor_lon, gps_fix.latitude, gps_fix.longitude) < min_baseline_m) {
     return;
   }
 
   const float course_deg = bearingDeg(hf.anchor_lat, hf.anchor_lon, gps_fix.latitude, gps_fix.longitude);
   const float mid_game_deg = hf.anchor_game_deg + 0.5f * normalizeAngleDeg(game_deg - hf.anchor_game_deg);
   const float err_deg = normalizeAngleDeg(course_deg - (mid_game_deg + hf.offset_deg));
-  hf.offset_deg = normalizeAngleDeg(hf.offset_deg + HEADING_GPS_GAIN * err_deg);
-  hf.last_gps_err_deg = err_deg;
-  hf.last_mag_err_deg = normalizeAngleDeg(course_deg - magHeadingDeg());
-  ++hf.corrections;
+  const float mag_deg = magHeadingDeg();
+#if DEBUG_LOG_HEADING
+  // Errors are GPS course minus each source; fused is before this sample's correction.
+  Serial.printf("[HDG_S] n=%lu fix=%d course=%.1f fused=%.1f mag=%.1f fused_err=%.1f mag_err=%.1f offset=%.1f herr=%.3f v=%.2f\n",
+                (unsigned long)++hf.samples, hf.segment_float ? 5 : 4, course_deg, wrap360(mid_game_deg + hf.offset_deg), mag_deg,
+                err_deg, normalizeAngleDeg(course_deg - mag_deg), hf.offset_deg, gps_fix.h_err_m,
+                control_targets.linear_mps);
+#endif
+  if (!hf.segment_float) {
+    hf.offset_deg = normalizeAngleDeg(hf.offset_deg + HEADING_GPS_GAIN * err_deg);
+    hf.last_gps_err_deg = err_deg;
+    hf.last_mag_err_deg = normalizeAngleDeg(course_deg - mag_deg);
+    ++hf.corrections;
+  }
 
   hf.anchor_lat = gps_fix.latitude;
   hf.anchor_lon = gps_fix.longitude;
   hf.anchor_game_deg = game_deg;
+  hf.segment_float = is_float;
 }
 
 static void handleRobotClientCommand() {
@@ -2784,6 +2837,11 @@ static void handleRobotClientCommand() {
     if (motors_released && starts_mission) {
       ack_status = "rejected";
       ack_detail = "motors released: activate them first";
+    } else if (starts_mission && !headingReadyForMission()) {
+      ack_status = "rejected";
+      ack_detail = heading_source == HeadingSource::Gps
+                       ? "heading not calibrated: drive straight forward 3-5 m on RTK fixed first"
+                       : "heading not available: IMU not ready";
     } else switch (command.type) {
       case RobotCommandType::Move:
         control_targets.linear_mps = command.linear_velocity;
@@ -2994,6 +3052,8 @@ static void publishRobotTelemetry() {
     telemetry.motors_released = motors_released;
     telemetry.speed = control_targets.linear_mps;
     telemetry.heading = estimateHeadingDeg();
+    telemetry.heading_ready = headingReadyForMission();
+    telemetry.heading_source = heading_source == HeadingSource::Gps ? "GPS" : "MAG";
 
     telemetry.gps_valid = gps_fix.valid;
     telemetry.gps_latitude = gps_fix.latitude;
