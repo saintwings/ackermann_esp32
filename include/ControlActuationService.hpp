@@ -73,22 +73,10 @@ void applyDriveOutputs(bool zero_turn_mode,
   const float zero_turn_turns = steeringAngleDegToTurns(zero_turn_angle_deg);
   steering_motors.setSteeringTurns(zero_turn_turns, -zero_turn_turns);
 
-
-  Serial.println("!!zeroturn");
-  Serial.println("H , W");
-  Serial.println(wheelbase_m);
-  Serial.println(track_width_m);
-  Serial.printf("zero_turn_angle_deg: %f\n", zero_turn_angle_deg);
-
-
-
-  
+  // (No per-loop Serial prints here: this runs every control tick and would
+  // crowd the NAV/telemetry lines on the USB link.)
   float forward_mps = linear_mps;
 
-  Serial.println("speed");
-  Serial.println(forward_mps);
-
-  
   // Create differential: when rotating, one motor increases while other decreases
   float left_mps = forward_mps;
   float right_mps = -forward_mps;

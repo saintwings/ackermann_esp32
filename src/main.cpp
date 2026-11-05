@@ -1624,9 +1624,13 @@ static void updateStatusLeds() {
   status_leds.show();
 }
 
+// (v, ω) → steering angle for applyDriveOutputs(). Both axles steer, so the
+// turn radius there is R = (L/2)/tan δ and the yaw rate is ω = v·tan δ/(L/2):
+// hence tan δ = ω·(L/2)/v. (Using the single-axle tan δ = ω·L/v here made the
+// robot turn at twice the commanded ω.)
 static float convertAngularToSteeringDeg(float linear_mps, float angular_rads, float wheelbase_m, float max_angle_deg) {
   if (fabsf(linear_mps) < 0.001f) return 0.0f;
-  float tan_angle = (-angular_rads * wheelbase_m) / linear_mps;
+  float tan_angle = (-angular_rads * (wheelbase_m / 2.0f)) / linear_mps;
   float angle_deg = DoubleAckermannSteering::rad2deg(atanf(tan_angle));
   return clampf(angle_deg, -max_angle_deg, max_angle_deg);
 }
