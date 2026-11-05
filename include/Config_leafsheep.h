@@ -285,6 +285,22 @@
 // control server, and resumes automatically when the link returns.
 #define MISSION_LINK_LOSS_HOLD_MS 30000UL
 
+// ── Solar rows task (driven by the nav PC over USB serial) ───────────────────
+// A "solar_rows" mission task hands driving to the nav PC (SOLAR_TASK line, see
+// docs/solar_rows.md). The firmware re-sends SOLAR_TASK every RESEND_MS until
+// nav acknowledges, and fails the mission after ACK_TIMEOUT_MS without one.
+// While running, nav sends CMD_VEL at its control rate and SOLAR_STATUS at 1 Hz:
+// after QUIET_HOLD_MS with neither the robot holds at zero speed, after
+// QUIET_FAIL_MS the mission fails.
+#define SOLAR_TASK_RESEND_MS 1000UL
+#define SOLAR_ACK_TIMEOUT_MS 10000UL
+#define SOLAR_NAV_QUIET_HOLD_MS 2000UL
+#define SOLAR_NAV_QUIET_FAIL_MS 30000UL
+// Drive held at zero after nav switches MODE (pivot turns) while the wheels steer
+// into place. Separate from MISSION_MODE_SWITCH_SETTLE_MS so it can be tuned for
+// solar pivots; starts equal to it. Each pivot turn switches twice.
+#define SOLAR_MODE_SWITCH_SETTLE_MS 1500UL
+
 // ── Mission auto zero-turn ───────────────────────────────────────────────────
 // During GotoWaypoint / CoveragePath tasks, switch to zero-turn (rotate in place)
 // when |heading error| to the target exceeds ENTER_DEG, and switch back to normal

@@ -251,6 +251,15 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   mission["coverage_progress_index"] = telemetry.mission_coverage_progress_index;
   mission["coverage_total"] = telemetry.mission_coverage_total;
 
+  // Only while a solar_rows run is active (saves ~40 bytes per message over SIM).
+  if (telemetry.solar_active) {
+    JsonObject solar = payload["solar"].to<JsonObject>();
+    solar["active"] = true;
+    solar["run"] = telemetry.solar_run;
+    solar["state"] = telemetry.solar_state;
+    if (telemetry.solar_status.length() > 0) solar["status"] = serialized(telemetry.solar_status);
+  }
+
   JsonArray pots = payload["pots"].to<JsonArray>();
   for (int i = 0; i < telemetry.pot_count; ++i) {
     JsonObject pot = pots.add<JsonObject>();

@@ -82,6 +82,13 @@ struct RobotTelemetry {
   int mission_coverage_progress_index{-1};
   int mission_coverage_total{0};
 
+  // Solar rows task (nav PC drives): state = idle | waiting_nav | running | paused |
+  // nav_quiet; status = last SOLAR_STATUS JSON from nav (validated), "" = none.
+  bool solar_active{false};
+  uint32_t solar_run{0};
+  const char* solar_state{"idle"};
+  String solar_status{};
+
   // DS3502 digital pots
   static constexpr int kMaxPots = 4;
   int pot_count{0};

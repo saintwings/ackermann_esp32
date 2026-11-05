@@ -164,7 +164,7 @@ static String usb_serial_line_buffer;
 static bool usb_serial_line_overflow = false;
 // NAV line on USB serial for a companion computer; toggled by "NAV ON" / "NAV OFF".
 static bool nav_serial_output = false;
-static constexpr size_t USB_SERIAL_MAX_LINE_LENGTH = 96;
+static constexpr size_t USB_SERIAL_MAX_LINE_LENGTH = 512;  // SOLAR_STATUS lines from the nav PC are ~250 chars
 static constexpr unsigned long USB_CMD_VEL_DEFAULT_TIMEOUT_MS = 250;
 static constexpr unsigned long USB_CMD_VEL_MIN_TIMEOUT_MS = 50;
 static constexpr unsigned long USB_CMD_VEL_MAX_TIMEOUT_MS = 5000;
@@ -465,6 +465,7 @@ enum class MissionTaskType : uint8_t {
   SetSpeed,       // set a DS3502 speed output (Speed1..N) in percent
   MoveActuator,   // move the linear actuator, optionally waiting until it arrives
   WaitInput,      // hold still until a PCF8574 input reaches a state
+  SolarRows,      // hand driving to the nav PC for a block of solar-panel lanes
 };
 
 struct MissionWaypointPlan {
@@ -493,6 +494,10 @@ struct MissionTaskPlan {
   // MoveActuator: io_value = position %, io_wait, wait_ms = timeout.
   // WaitInput: io_index = input (1-based), output_state = wanted state (true = active),
   // wait_ms = timeout (0 = none).
+  // SolarRows: waypoint_index / waypoint_index_end = lane-0 centre line A / B,
+  // loop_count = lane count, io_value = lane pitch (m), speed_mps = row speed,
+  // spiral_direction = next lane side (+1 left, -1 right), output_state = pivot
+  // turns (true) or Ackermann U-turns (false).
   uint8_t io_index{0};
   float   io_value{0.0f};
   bool    io_wait{false};
@@ -779,6 +784,41 @@ static bool parseMissionPlan(const String& mission_json) {
       t.io_wait  = task["wait"] | true;
       t.wait_ms  = static_cast<unsigned long>(max(1.0f, task["timeout"] | 30.0f) * 1000.0f);
       mission_tasks[mission_task_count++] = t;
+    } else if (type == "solar_rows") {
+      // Lane-0 points: waypoint indices (server-compiled / batched upload) or
+      // embedded {"lat","lon"} objects appended to the waypoint list here.
+      int wa = task["waypoint_a"] | -1;
+      int wb = task["waypoint_b"] | -1;
+      if (wa < 0 || wb < 0) {
+        JsonObjectConst a = task["lane0_a"].as<JsonObjectConst>();
+        JsonObjectConst b = task["lane0_b"].as<JsonObjectConst>();
+        if (!a.isNull() && !b.isNull() && mission_waypoint_count + 2 <= MISSION_MAX_WAYPOINTS) {
+          wa = static_cast<int>(mission_waypoint_count);
+          mission_waypoints[mission_waypoint_count++] = {a["lat"] | 0.0, a["lon"] | 0.0, 0.0};
+          wb = static_cast<int>(mission_waypoint_count);
+          mission_waypoints[mission_waypoint_count++] = {b["lat"] | 0.0, b["lon"] | 0.0, 0.0};
+        }
+      }
+      MissionTaskPlan t{};
+      t.type               = MissionTaskType::SolarRows;
+      t.waypoint_index     = wa;
+      t.waypoint_index_end = wb;
+      t.loop_count         = task["lane_count"] | 1;
+      t.io_value           = task["pitch_m"] | 1.5f;
+      t.speed_mps          = clampf(task["speed"] | 0.3f, 0.05f, MAX_LINEAR_MPS);
+      String side = task["side"] | "left";
+      String turn = task["turn_mode"] | "pivot";
+      t.spiral_direction   = (side == "right") ? -1 : 1;
+      t.output_state       = (turn != "ackermann");
+      // Invalid settings are kept as an invalid task so the mission fails at it
+      // with a reason instead of silently skipping a block of rows.
+      if (t.loop_count < 1 || t.loop_count > 200 || t.io_value < 0.5f || t.io_value > 10.0f ||
+          (side != "left" && side != "right") || (turn != "pivot" && turn != "ackermann")) {
+        Serial.printf("[MISSION] solar_rows: invalid settings (lanes=%d pitch=%.2f side=%s turn=%s)\n",
+                      t.loop_count, t.io_value, side.c_str(), turn.c_str());
+        t.waypoint_index = -1;
+      }
+      mission_tasks[mission_task_count++] = t;
     } else if (type == "wait_input") {
       String state_str = task["state"] | "active";
       MissionTaskPlan t{};
@@ -954,6 +994,7 @@ static bool missionTaskNeedsGps(MissionTaskType type) {
     case MissionTaskType::SetSpeed:
     case MissionTaskType::MoveActuator:
     case MissionTaskType::WaitInput:
+    case MissionTaskType::SolarRows:   // nav PC handles RTK loss itself (LiDAR in rows)
       return false;
     default:
       return true;
@@ -982,6 +1023,271 @@ static void advanceMissionTask(unsigned long now) {
   ++mission_task_cursor;
   mission_task_started_ms = now;
   mission_active_task_cursor = static_cast<size_t>(-1);
+}
+
+// ── Solar rows task ─────────────────────────────────────────────────────────
+// The nav PC (rainav-fast-lio) drives a block of solar lanes with LiDAR + RTK;
+// the mission only hands over and supervises. USB-serial protocol (one line each):
+//   ESP32 -> nav: SOLAR_TASK {"run","task_idx","lane0_a":[lat,lon],"lane0_b":[lat,lon],
+//                 "lane_count","pitch_m","side","turn_mode","speed"}   (re-sent until ACK)
+//                 SOLAR_PAUSE <pause|link_lost> · SOLAR_RESUME ·
+//                 SOLAR_STOP <cancel|estop|mission_failed|mission_ended|new_mission|
+//                             task_changed|no_ack|nav_silent>
+//   nav -> ESP32: SOLAR_ACK · SOLAR_STATUS (1 Hz) · SOLAR_DONE · SOLAR_FAIL {"why"}
+//                 (JSON with "run"; other runs are ignored), CMD_VEL / MODE as usual.
+// See docs/solar_rows.md.
+static constexpr size_t SOLAR_STATUS_MAX = 384;
+
+struct SolarLink {
+  bool active{false};
+  uint32_t run{0};
+  size_t task_idx{0};
+  unsigned long mission_started_ms{0};  // identifies the mission the run belongs to
+  bool acked{false};
+  unsigned long started_ms{0};          // ACK timeout base
+  unsigned long last_send_ms{0};        // last SOLAR_TASK
+  unsigned long last_nav_ms{0};         // last CMD_VEL / SOLAR_* line from nav
+  bool nav_paused{false};               // nav has been told SOLAR_PAUSE
+  const char* pause_reason{"pause"};    // reason of the current pause (pause | link_lost | estop)
+  unsigned long mode_switch_ms{0};      // last serial MODE change: drive held for the settle time
+  bool quiet_hold{false};               // holding because nav went quiet
+  bool done_pending{false};
+  bool fail_pending{false};
+  char fail_why[96]{};
+  char status[SOLAR_STATUS_MAX]{};      // last SOLAR_STATUS JSON ("" = none)
+};
+static SolarLink solar_link;
+static uint32_t solar_run_counter = 0;
+
+// For SOLAR_END_GUARD_MS after a run ends: nonzero CMD_VEL and MODE ZERO_TURN from
+// serial are dropped (a late pivot line, or nav missing SOLAR_STOP after a cancel),
+// and SOLAR_STOP is repeated every second when the ESP32 ended the run.
+static constexpr unsigned long SOLAR_END_GUARD_MS = 3000;
+static unsigned long solar_guard_until_ms = 0;
+static unsigned long solar_guard_last_stop_ms = 0;
+static const char* solar_guard_stop_reason = nullptr;
+
+static bool solarGuardActive(unsigned long now) {
+  return solar_guard_until_ms != 0 && static_cast<long>(solar_guard_until_ms - now) > 0;
+}
+
+static const char* solarStateString() {
+  if (!solar_link.active) return "idle";
+  if (!solar_link.acked) return "waiting_nav";
+  if (solar_link.nav_paused) return "paused";
+  if (solar_link.quiet_hold) return "nav_quiet";
+  return "running";
+}
+
+static void solarForceNormalMode() {
+  mission_auto_zero_turn = false;
+  mission_mode_switch_pending = false;
+  if (robot_mode != RobotMode::Normal) {
+    robot_mode = RobotMode::Normal;   // direct, like setMissionAutoZeroTurn (no 200 ms block)
+    Serial.println("[SOLAR] mode -> NORMAL");
+  }
+}
+
+// Ends the nav run (every exit path goes through here). stop_reason != nullptr:
+// tell nav to stop; nullptr: nav ended it itself (DONE / FAIL).
+static void solarEnd(const char* stop_reason) {
+  if (!solar_link.active) return;
+  if (stop_reason) Serial.printf("SOLAR_STOP %s\n", stop_reason);
+  solar_guard_until_ms = millis() + SOLAR_END_GUARD_MS;
+  solar_guard_last_stop_ms = millis();
+  solar_guard_stop_reason = stop_reason;
+  Serial.printf("[SOLAR] run %lu ended (%s)\n", static_cast<unsigned long>(solar_link.run),
+                stop_reason ? stop_reason : "reported by nav");
+  solar_link.active = false;
+  solar_link.nav_paused = false;
+  solar_link.quiet_hold = false;
+  solar_link.done_pending = false;
+  solar_link.fail_pending = false;
+  solar_link.status[0] = '\0';
+  solarForceNormalMode();
+  serial_override_until_ms = 0;   // the next task drives at once
+  control_targets.linear_mps = 0.0f;
+  control_targets.angle_deg = 0.0f;
+  control_targets.remote_move_expire_ms = millis() + 150;
+}
+
+// First thing in updateMissionExecutor(): end a run whose task is no longer current.
+static void solarSupervise() {
+  if (!solar_link.active) {
+    const unsigned long now = millis();
+    if (solar_guard_stop_reason && solarGuardActive(now) && now - solar_guard_last_stop_ms >= 1000) {
+      Serial.printf("SOLAR_STOP %s\n", solar_guard_stop_reason);   // in case nav missed it
+      solar_guard_last_stop_ms = now;
+    }
+    return;
+  }
+  const char* why = nullptr;
+  if (!mission_ctx.active) {
+    switch (mission_ctx.state) {
+      case MissionState::Cancelled: why = "cancel"; break;
+      case MissionState::EStop:     why = "estop"; break;
+      case MissionState::Failed:    why = "mission_failed"; break;
+      default:                      why = "mission_ended"; break;
+    }
+  } else if (mission_ctx.state == MissionState::Queued ||
+             mission_ctx.started_ms != solar_link.mission_started_ms) {
+    why = "new_mission";
+  } else if (mission_task_cursor != solar_link.task_idx || mission_task_cursor >= mission_task_count ||
+             mission_tasks[mission_task_cursor].type != MissionTaskType::SolarRows) {
+    why = "task_changed";
+  }
+  if (why) solarEnd(why);
+}
+
+static void solarSendTask(const MissionTaskPlan& task) {
+  const MissionWaypointPlan& a = mission_waypoints[task.waypoint_index];
+  const MissionWaypointPlan& b = mission_waypoints[task.waypoint_index_end];
+  Serial.printf("SOLAR_TASK {\"run\":%lu,\"task_idx\":%u,\"lane0_a\":[%.8f,%.8f],\"lane0_b\":[%.8f,%.8f],"
+                "\"lane_count\":%d,\"pitch_m\":%.3f,\"side\":\"%s\",\"turn_mode\":\"%s\",\"speed\":%.2f}\n",
+                static_cast<unsigned long>(solar_link.run), static_cast<unsigned>(solar_link.task_idx),
+                a.lat, a.lon, b.lat, b.lon, task.loop_count, task.io_value,
+                task.spiral_direction < 0 ? "right" : "left", task.output_state ? "pivot" : "ackermann",
+                task.speed_mps);
+}
+
+// Mission paused (web / MISSION_PAUSE): tell nav once.
+static void solarOnMissionPaused() {
+  if (!solar_link.active || solar_link.nav_paused) return;
+  Serial.println("SOLAR_PAUSE pause");
+  solar_link.nav_paused = true;
+  solar_link.pause_reason = "pause";
+}
+
+// Running a SolarRows task. Replaces the GPS gates and the serial-override yield
+// of the other tasks: nav owns the motion, this only supervises.
+static void runSolarTask(const MissionTaskPlan& task, unsigned long now) {
+  mission_debug_valid = false;
+  if (!solar_link.active) {
+    const bool pts_ok = task.waypoint_index >= 0 && task.waypoint_index_end >= 0 &&
+                        static_cast<size_t>(task.waypoint_index) < mission_waypoint_count &&
+                        static_cast<size_t>(task.waypoint_index_end) < mission_waypoint_count;
+    if (!pts_ok) {
+      failMission("solar_rows: invalid task (lane points or settings)");
+      return;
+    }
+    const MissionWaypointPlan& a = mission_waypoints[task.waypoint_index];
+    const MissionWaypointPlan& b = mission_waypoints[task.waypoint_index_end];
+    if (distanceMeters(a.lat, a.lon, b.lat, b.lon) < 1.0f) {
+      failMission("solar_rows: lane0_a and lane0_b are less than 1 m apart");
+      return;
+    }
+    setMissionAutoZeroTurn(false);
+    resetMissionSpeedSlew();
+    solar_link = SolarLink{};
+    solar_link.active = true;
+    solar_link.run = ++solar_run_counter;
+    solar_link.task_idx = mission_task_cursor;
+    solar_link.mission_started_ms = mission_ctx.started_ms;
+    solar_link.started_ms = now;
+    solar_link.last_nav_ms = now;
+    Serial.printf("[SOLAR] task %u: run %lu, handing driving to the nav PC\n",
+                  static_cast<unsigned>(mission_task_cursor), static_cast<unsigned long>(solar_link.run));
+  }
+
+  if (solar_link.fail_pending) {
+    char why[sizeof(solar_link.fail_why) + 8];
+    snprintf(why, sizeof(why), "solar: %s", solar_link.fail_why);
+    solarEnd(nullptr);
+    failMission(why);
+    return;
+  }
+  if (solar_link.done_pending) {
+    solarEnd(nullptr);
+    Serial.printf("[SOLAR] task %u done\n", static_cast<unsigned>(mission_task_cursor));
+    advanceMissionTask(now);
+    return;
+  }
+
+  // E-stop (e.g. PS2, which leaves the mission Running) and server link loss pause
+  // nav; one combined edge, so clearing one reason can't resume while the other
+  // holds. Back from a mission pause also resumes here. Each edge is sent once.
+  const char* pause_reason = e_stop_active ? "estop" : (serverLinkLost(now) ? "link_lost" : nullptr);
+  const bool want_pause = pause_reason != nullptr;
+  if (want_pause != solar_link.nav_paused) {
+    if (want_pause) Serial.printf("SOLAR_PAUSE %s\n", pause_reason);
+    else            Serial.println("SOLAR_RESUME");
+    solar_link.nav_paused = want_pause;
+    if (want_pause) solar_link.pause_reason = pause_reason;
+    if (!want_pause) {
+      solar_link.last_nav_ms = now;              // don't count the pause as nav silence
+      if (!solar_link.acked) solar_link.started_ms = now;
+    }
+  }
+
+  if (!solar_link.acked) {
+    if (solar_link.last_send_ms == 0 || now - solar_link.last_send_ms >= SOLAR_TASK_RESEND_MS) {
+      solarSendTask(task);
+      solar_link.last_send_ms = now;
+    }
+    if (now - solar_link.started_ms > SOLAR_ACK_TIMEOUT_MS) {
+      solarEnd("no_ack");
+      failMission("solar: nav PC not answering SOLAR_TASK");
+      return;
+    }
+    holdMissionStill(now);
+    return;
+  }
+
+  const unsigned long quiet_ms = now - solar_link.last_nav_ms;
+  if (quiet_ms > SOLAR_NAV_QUIET_FAIL_MS) {
+    solarEnd("nav_silent");
+    failMission("solar: nav PC silent");
+    return;
+  }
+  const bool quiet = quiet_ms > SOLAR_NAV_QUIET_HOLD_MS;
+  if (quiet != solar_link.quiet_hold) {
+    solar_link.quiet_hold = quiet;
+    if (quiet) Serial.printf("[SOLAR] nav PC quiet for %lu ms: holding\n", quiet_ms);
+    else       Serial.println("[SOLAR] nav PC back");
+  }
+  // Hold at zero unless nav is actively commanding (its CMD_VEL keeps the override up).
+  if (quiet || want_pause || !serialOverrideActive(now)) holdMissionStill(now);
+}
+
+// SOLAR_ACK / SOLAR_STATUS / SOLAR_DONE / SOLAR_FAIL from nav (USB serial, nav lock held).
+static void handleSolarLine(const String& line, const String& upper) {
+  const int sp = line.indexOf(' ');
+  const String tag = (sp < 0) ? upper : upper.substring(0, sp);
+  if (sp < 0 || line.length() - sp > SOLAR_STATUS_MAX) {
+    Serial.printf("[SOLAR] ignored %s: no payload or too long\n", tag.c_str());
+    return;
+  }
+  const char* json = line.c_str() + sp + 1;
+  JsonDocument doc;
+  if (deserializeJson(doc, json) != DeserializationError::Ok || !doc.is<JsonObject>()) {
+    Serial.printf("[SOLAR] ignored %s: bad JSON\n", tag.c_str());
+    return;
+  }
+  const long run = doc["run"] | -1L;
+  if (!solar_link.active || run != static_cast<long>(solar_link.run)) {
+    Serial.printf("[SOLAR] ignored %s for run %ld (current %s%lu)\n", tag.c_str(), run,
+                  solar_link.active ? "" : "none, last ", static_cast<unsigned long>(solar_link.run));
+    return;
+  }
+  solar_link.last_nav_ms = millis();
+  const bool first_ack = !solar_link.acked &&
+                         (tag == "SOLAR_ACK" || tag == "SOLAR_STATUS");
+  if (first_ack) {
+    solar_link.acked = true;
+    Serial.printf("[SOLAR] nav accepted run %lu\n", static_cast<unsigned long>(solar_link.run));
+    // Paused before nav took the task: nav ignored the earlier SOLAR_PAUSE.
+    if (solar_link.nav_paused) Serial.printf("SOLAR_PAUSE %s\n", solar_link.pause_reason);
+  }
+  if (tag == "SOLAR_STATUS") {
+    strlcpy(solar_link.status, json, sizeof(solar_link.status));
+  } else if (tag == "SOLAR_DONE") {
+    solar_link.done_pending = true;
+  } else if (tag == "SOLAR_FAIL") {
+    strlcpy(solar_link.fail_why, doc["why"] | "nav reported a failure", sizeof(solar_link.fail_why));
+    solar_link.fail_pending = true;
+  } else if (tag != "SOLAR_ACK") {
+    Serial.printf("[SOLAR] unknown line %s\n", tag.c_str());
+  }
 }
 
 // SetOutput / SetSpeed / MoveActuator / WaitInput. Returns false if the task is not one
@@ -1069,6 +1375,7 @@ static bool runMissionIoTask(MissionTaskPlan& task, unsigned long now) {
 }
 
 static void updateMissionExecutor() {
+  solarSupervise();
   static unsigned long invalid_sensor_since_ms = 0;
   unsigned long& gps_hold_since_ms = mission_gps_hold_since_ms;
   if (!mission_ctx.active) {
@@ -1095,6 +1402,7 @@ static void updateMissionExecutor() {
   }
 
   if (mission_ctx.state == MissionState::Paused) {
+    solarOnMissionPaused();
     mission_debug_valid = false;
     setMissionAutoZeroTurn(false);
     resetMissionSpeedSlew();
@@ -1106,6 +1414,18 @@ static void updateMissionExecutor() {
     mission_debug_valid = false;
     gps_hold_since_ms = 0;
     mission_link_hold_since_ms = 0;
+    return;
+  }
+
+  // Solar rows: nav drives; runs before the serial-override yield and the GPS /
+  // link holds below, which it replaces (see runSolarTask()).
+  if (mission_task_cursor < mission_task_count &&
+      mission_tasks[mission_task_cursor].type == MissionTaskType::SolarRows) {
+    gps_hold_since_ms = 0;
+    invalid_sensor_since_ms = 0;
+    mission_ctx.phase = static_cast<uint8_t>(mission_task_cursor);
+    mission_ctx.waypoint_index = mission_tasks[mission_task_cursor].waypoint_index;
+    runSolarTask(mission_tasks[mission_task_cursor], now);
     return;
   }
 
@@ -2444,7 +2764,12 @@ static void handleUsbSerialLine(const String& raw_line) {
   upper.toUpperCase();
 
   if (upper == "HELP" || upper == "?") {
-    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
+    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, SOLAR_ACK|STATUS|DONE|FAIL {json} (nav PC), CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
+    return;
+  }
+
+  if (upper.startsWith("SOLAR_")) {
+    handleSolarLine(line, upper);
     return;
   }
 
@@ -2579,6 +2904,25 @@ static void handleUsbSerialLine(const String& raw_line) {
     args.trim();
     args.toUpperCase();
 
+    // Solar run: nav switches modes for every pivot. Switch directly (no 200 ms
+    // applyModeInit delay under the nav lock); the drive loop re-applies the
+    // steering for robot_mode, and CMD_VEL is held at zero for the settle time.
+    const bool want_zt = (args == "ZERO_TURN" || args == "ZERO" || args == "1");
+    const bool want_normal = (args == "NORMAL" || args == "0");
+    if (solar_link.active && (want_zt || want_normal)) {
+      const RobotMode m = want_zt ? RobotMode::ZeroTurn : RobotMode::Normal;
+      if (robot_mode != m) {
+        robot_mode = m;
+        solar_link.mode_switch_ms = millis();
+        Serial.printf("[USB_SERIAL] MODE set to %s (solar run)\n", want_zt ? "ZERO_TURN" : "NORMAL");
+      }
+      return;
+    }
+    if (want_zt && solarGuardActive(millis())) {
+      Serial.println("[USB_SERIAL] MODE ZERO_TURN rejected: solar run just ended");
+      return;
+    }
+
     if (args == "NORMAL" || args == "0") {
       if (robot_mode != RobotMode::Normal) {
         robot_mode = RobotMode::Normal;
@@ -2649,6 +2993,26 @@ static void handleUsbSerialLine(const String& raw_line) {
       if (timeout_ms == 0) timeout_ms = USB_CMD_VEL_DEFAULT_TIMEOUT_MS;
       const unsigned long t = max(USB_CMD_VEL_MIN_TIMEOUT_MS, min(timeout_ms, USB_CMD_VEL_MAX_TIMEOUT_MS));
       serial_override_until_ms = millis() + t;
+    }
+
+    if (solar_link.active) {
+      const unsigned long t = millis();
+      solar_link.last_nav_ms = t;
+      // Paused, nav not yet on the task, or steering still moving after a MODE
+      // switch: no motion, whatever nav sends.
+      if (solar_link.nav_paused || !solar_link.acked || mission_ctx.state == MissionState::Paused ||
+          (solar_link.mode_switch_ms != 0 && t - solar_link.mode_switch_ms < SOLAR_MODE_SWITCH_SETTLE_MS)) {
+        linear_mps = 0.0f;
+        angular_rads = 0.0f;
+      }
+    } else if (solarGuardActive(millis()) && (linear_mps != 0.0f || angular_rads != 0.0f)) {
+      static unsigned long logged_guard_until = 0;   // log once per guard window
+      if (logged_guard_until != solar_guard_until_ms) {
+        logged_guard_until = solar_guard_until_ms;
+        Serial.println("[SOLAR] CMD_VEL dropped: solar run just ended (logged once)");
+      }
+      linear_mps = 0.0f;
+      angular_rads = 0.0f;
     }
 
     // change direction form this //
@@ -3072,6 +3436,10 @@ static void publishRobotTelemetry() {
                              now - gps_fix.last_gst_ms < GPS_STALE_TIMEOUT_MS)
                                 ? gps_fix.h_err_m : -1.0f;
 
+    telemetry.solar_active = solar_link.active;
+    telemetry.solar_run = solar_link.run;
+    telemetry.solar_state = solarStateString();
+    if (solar_link.active && solar_link.status[0] != '\0') telemetry.solar_status = solar_link.status;
     telemetry.mission_active = mission_ctx.active && (mission_ctx.state == MissionState::Queued || mission_ctx.state == MissionState::Running || mission_ctx.state == MissionState::Paused);
     telemetry.mission_name = mission_ctx.name;
     telemetry.mission_state = missionStateToString(mission_ctx.state);
@@ -3183,7 +3551,7 @@ void setup() {
     delay(10);
   }
   delay(1000);
-  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
+  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, SOLAR_ACK|STATUS|DONE|FAIL {json} (nav PC), CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
   Serial.println("[USB_SERIAL]   FUNC_<n> ON|OFF drives a GPIO actuator directly; FUNC_<n> <degrees> DEG moves a CAN actuator then returns it to 0");
   Serial.println("[USB_SERIAL]   FUNC_<n> <degrees> REL_DEG moves a CAN actuator relative to its current position and just holds there");

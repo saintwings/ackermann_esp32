@@ -797,6 +797,49 @@ class ControlServer:
             sanitized.append({'lat': lat, 'lon': lon, 'heading': heading})
         return sanitized
 
+    @staticmethod
+    def _compile_solar_task(task: dict) -> dict:
+        """Validate a solar_rows task; returns the firmware task (without lane points)."""
+        def point(name):
+            p = task.get(name)
+            if not isinstance(p, dict):
+                raise ValueError(f"solar_rows: {name} must be {{lat, lon}}")
+            try:
+                lat, lon = float(p.get('lat')), float(p.get('lon'))
+            except (TypeError, ValueError):
+                raise ValueError(f"solar_rows: {name} has no valid lat/lon")
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError(f"solar_rows: {name} lat/lon out of range")
+            task[name] = {'lat': lat, 'lon': lon}
+            return lat, lon
+
+        alat, alon = point('lane0_a')
+        blat, blon = point('lane0_b')
+        dn = (blat - alat) * 111320.0
+        de = (blon - alon) * 111320.0 * math.cos(math.radians(alat))
+        if math.hypot(dn, de) < 1.0:
+            raise ValueError("solar_rows: lane0_a and lane0_b are less than 1 m apart")
+        try:
+            lanes = int(task.get('lane_count', 1))
+            pitch = float(task.get('pitch_m', 1.5))
+            speed = float(task.get('speed', 0.3))
+        except (TypeError, ValueError):
+            raise ValueError("solar_rows: lane_count / pitch_m / speed must be numbers")
+        if not 1 <= lanes <= 200:
+            raise ValueError("solar_rows: lane_count must be 1-200")
+        if not 0.5 <= pitch <= 10.0:
+            raise ValueError("solar_rows: pitch_m must be 0.5-10 m")
+        if not 0.05 <= speed <= 2.0:
+            raise ValueError("solar_rows: speed must be 0.05-2.0 m/s")
+        side = task.get('side', 'left')
+        turn = task.get('turn_mode', 'pivot')
+        if side not in ('left', 'right'):
+            raise ValueError("solar_rows: side must be left or right")
+        if turn not in ('pivot', 'ackermann'):
+            raise ValueError("solar_rows: turn_mode must be pivot or ackermann")
+        return {'type': 'solar_rows', 'lane_count': lanes, 'pitch_m': pitch, 'speed': speed,
+                'side': side, 'turn_mode': turn}
+
     def _compile_mission_payload(self, payload: dict) -> dict:
         """Compile mission payload into firmware-ready waypoint-index tasks."""
         source = payload.get('source_mission') if isinstance(payload.get('source_mission'), dict) else None
@@ -837,6 +880,18 @@ class ControlServer:
                 continue
 
             task_type = task.get('type', '')
+            if task_type == 'solar_rows':
+                # Lane-0 points become two mission waypoints (so batched uploads work);
+                # the firmware hands the block to the nav PC (docs/solar_rows.md).
+                compiled_task = self._compile_solar_task(task)
+                if len(runtime_waypoints) + 2 > max_waypoints:
+                    raise ValueError(f"Mission exceeds firmware waypoint limit ({max_waypoints}) at solar_rows task")
+                compiled_task['waypoint_a'] = len(runtime_waypoints)
+                runtime_waypoints.append({'lat': task['lane0_a']['lat'], 'lon': task['lane0_a']['lon'], 'alt': 0.0})
+                compiled_task['waypoint_b'] = len(runtime_waypoints)
+                runtime_waypoints.append({'lat': task['lane0_b']['lat'], 'lon': task['lane0_b']['lon'], 'alt': 0.0})
+                runtime_tasks.append(compiled_task)
+                continue
             if task_type != 'coverage_path':
                 runtime_tasks.append(dict(task))
                 continue
