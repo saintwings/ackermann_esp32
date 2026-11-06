@@ -258,7 +258,7 @@
 #define DRIVE_WHEEL_DIAMETER_M 0.23f
 
 // ── Robot motion limits ──────────────────────────────────────────────────────
-#define MAX_LINEAR_SPEED_MS 0.5f       // Maximum forward/reverse speed (m/s)
+#define MAX_LINEAR_SPEED_MS 0.8f       // Maximum forward/reverse speed (m/s)
 #define MAX_STEERING_ANGLE_DEG 45.0f   // Maximum steering angle (degrees)
 #define STEER_MAX_WHEEL_ANGLE_DEG 45.0f // Mechanical limit of each steered wheel; inner wheel saturates here
 
@@ -277,8 +277,8 @@
 // ── Waypoint arrival ─────────────────────────────────────────────────────────
 // Waypoint arrival radius (m): a waypoint counts as reached inside this distance.
 // Coverage-path points use the tighter radius so rows stay straight.
-#define MISSION_WAYPOINT_REACHED_M 1.5f
-#define MISSION_COVERAGE_WAYPOINT_REACHED_M 0.5f
+#define MISSION_WAYPOINT_REACHED_M 0.3f
+#define MISSION_COVERAGE_WAYPOINT_REACHED_M 0.3f
 
 // ── Server link loss ─────────────────────────────────────────────────────────
 // A running mission holds in place after this long without the
@@ -309,8 +309,10 @@
 #define MISSION_AUTO_ZERO_TURN_ENABLE 1
 #define MISSION_ZERO_TURN_ENTER_DEG 45.0f
 #define MISSION_ZERO_TURN_EXIT_DEG 10.0f
-// Wheel speed used while rotating in place (m/s).
-#define MISSION_ZERO_TURN_SPEED_MPS 0.15f
+// Turn rate while rotating in place (rad/s; 0.5 rad/s ~ 29 deg/s). Converted to wheel
+// speed with this robot's size: v = rate * r, r = 0.5 * sqrt(W^2 + H^2) (wheel to
+// centre); the wheel speed is capped at MAX_LINEAR_SPEED_MS.
+#define MISSION_ZERO_TURN_RATE_RADS 0.4f   // = 0.5 m/s wheel speed on this robot (r = 0.65 m)
 // Smooth mode transition (both directions):
 //   1. ramp the drive speed down to 0 in the current mode (MISSION_SPEED_SLEW_MPS2)
 //   2. switch mode, hold the drive at 0 for MISSION_MODE_SWITCH_SETTLE_MS while the

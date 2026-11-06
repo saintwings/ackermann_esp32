@@ -406,6 +406,8 @@ static void applyModeInit(RobotMode mode);
 
 static constexpr float WHEELBASE_M = ROBOT_GEOMETRY_H_M;
 static constexpr float TRACK_WIDTH_M = ROBOT_GEOMETRY_W_M;
+// Zero-turn: distance from each wheel to the turn centre, for rad/s <-> wheel m/s.
+static const float ZERO_TURN_WHEEL_RADIUS_M = 0.5f * sqrtf(WHEELBASE_M * WHEELBASE_M + TRACK_WIDTH_M * TRACK_WIDTH_M);
 static constexpr float MAX_LINEAR_MPS = MAX_LINEAR_SPEED_MS;
 static constexpr float MAX_STEER_DEG = MAX_STEERING_ANGLE_DEG;
 static constexpr float WHEEL_DIAMETER_M = DRIVE_WHEEL_DIAMETER_M;
@@ -1770,7 +1772,7 @@ static void updateMissionExecutor() {
     // Zero-turn drive: +linear_mps spins clockwise (heading increasing). A positive
     // heading_error_deg means the target is counter-clockwise, so rotate the other way.
     const float rotate_dir = (heading_error_deg > 0.0f ? -1.0f : 1.0f) * MISSION_ZERO_TURN_DIRECTION_SIGN;
-    target_speed_mps = rotate_dir * clampf(MISSION_ZERO_TURN_SPEED_MPS, 0.0f, MAX_LINEAR_MPS);
+    target_speed_mps = rotate_dir * clampf(MISSION_ZERO_TURN_RATE_RADS * ZERO_TURN_WHEEL_RADIUS_M, 0.0f, MAX_LINEAR_MPS);
   } else {
     target_speed_mps = clampf(active_waypoint_task->speed_mps, 0.05f, MAX_LINEAR_MPS);
     if (fabsf(heading_error_deg) > 70.0f) {
