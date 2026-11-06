@@ -1964,17 +1964,18 @@ static bool missionBlocksManualVelocityControl() {
           mission_ctx.state == MissionState::Paused);
 }
 
+// angular_rads arrives sign-flipped by the CMD_VEL handler (+ = clockwise here).
 static void applyUsbVelocityCommand(float linear_mps, float angular_rads, unsigned long timeout_ms) {
-  const float linear_limited = clampf(linear_mps, -MAX_LINEAR_MPS, MAX_LINEAR_MPS);
-  
-  // In zero-turn mode, angular_rads controls rotation intensity (scaled to steering angle range)
-  // In normal mode, convert angular_rads to steering angle using Ackermann geometry
+  float linear_limited = clampf(linear_mps, -MAX_LINEAR_MPS, MAX_LINEAR_MPS);
+
+  // Zero-turn: the angular value sets the turn rate, clamped to ZERO_TURN_MAX_RATE_RADS
+  // and converted to wheel speed (applyDriveOutputs: +wheel speed spins clockwise).
+  // The linear value is ignored. Normal mode: Ackermann geometry.
   float angle_deg;
   if (robot_mode == RobotMode::ZeroTurn) {
-    // Scale angular velocity to [-MAX_STEER_DEG, MAX_STEER_DEG] range
-    // Assuming typical angular_rads in [-pi, pi], scale to steering deg range
-    float angular_deg = (angular_rads * 180.0f / M_PI);
-    angle_deg = clampf(angular_deg * 0.5f, -MAX_STEER_DEG, MAX_STEER_DEG);
+    const float rate_rads = clampf(angular_rads, -ZERO_TURN_MAX_RATE_RADS, ZERO_TURN_MAX_RATE_RADS);
+    linear_limited = clampf(rate_rads * ZERO_TURN_WHEEL_RADIUS_M, -MAX_LINEAR_MPS, MAX_LINEAR_MPS);
+    angle_deg = 0.0f;
   } else {
     // Normal Ackermann mode
     angle_deg = convertAngularToSteeringDeg(linear_limited, angular_rads, WHEELBASE_M, MAX_STEER_DEG);
@@ -3861,7 +3862,10 @@ static void controlTask(void* /*pvParameters*/) {
           remote_active,
           ly,
           lx,
-          MAX_LINEAR_MPS,
+          // Zero-turn: the stick sets the spin, limited to ZERO_TURN_MAX_RATE_RADS.
+          robot_mode == RobotMode::ZeroTurn
+              ? min(MAX_LINEAR_MPS, ZERO_TURN_MAX_RATE_RADS * ZERO_TURN_WHEEL_RADIUS_M)
+              : MAX_LINEAR_MPS,
           MAX_STEER_DEG);
 
         // Released motors get no commands: a GIM8108 position command could re-power it.

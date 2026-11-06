@@ -261,6 +261,13 @@
 #define MAX_LINEAR_SPEED_MS 0.5f       // Maximum forward/reverse speed (m/s)
 #define MAX_STEERING_ANGLE_DEG 35.0f   // Maximum steering angle (degrees)
 #define STEER_MAX_WHEEL_ANGLE_DEG 30.0f // Mechanical limit of each steered wheel; inner wheel saturates here
+// Zero-turn turn-rate limit for manual / PC control (rad/s; 0.4 rad/s ~ 23 deg/s):
+//   PS2:     full stick turns the robot at this rate.
+//   CMD_VEL: in ZERO_TURN mode the angular value (rad/s, + = counter-clockwise) sets
+//            the turn rate and is clamped to this; the linear value is ignored.
+// Converted to wheel speed like MISSION_ZERO_TURN_RATE_RADS, never above
+// MAX_LINEAR_SPEED_MS. Missions use MISSION_ZERO_TURN_RATE_RADS instead.
+#define ZERO_TURN_MAX_RATE_RADS 0.4f
 
 
 // =============================================================================

@@ -64,8 +64,9 @@ parse only lines that start with `NAV `.
 | `STATUS?` | One status line | Same | `[USB_SERIAL] status mode=... mission=...` |
 
 `CMD_VEL` timeouts are clamped to 50–5000 ms; the default is 250 ms. Commands are
-rejected while the e-stop is active. In zero-turn mode the angular value sets rotation
-intensity rather than an Ackermann curve.
+rejected while the e-stop is active. In zero-turn mode the angular value is the turn
+rate in rad/s (+ = counter-clockwise), clamped to `ZERO_TURN_MAX_RATE_RADS`; the linear
+value is ignored. Example: `CMD_VEL 0 0.3 250` turns left at 0.3 rad/s.
 
 With `NAV ON` the robot sends one line every 100 ms:
 

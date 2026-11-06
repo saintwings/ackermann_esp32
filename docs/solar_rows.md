@@ -61,7 +61,7 @@ One line per message. Every reply from nav is JSON carrying the `run` number of 
 | `SOLAR_STATUS {"run","task_idx","phase","lane","visit","visits","s","len","d","src","conf","rtk","obst"}` | Sent at 1 Hz. Stored (up to 383 chars) and sent to the web UI in telemetry. |
 | `SOLAR_DONE {"run","task_idx"}` | All lanes done. The mission goes to the next task. |
 | `SOLAR_FAIL {"run","task_idx","why"}` | The mission fails with "solar: \<why\>". |
-| `CMD_VEL …`, `MODE ZERO_TURN|NORMAL` | Driving, as usual. Pivots use the existing zero-turn mode. During a run, `MODE` switches directly (no 200 ms `applyModeInit` delay under the nav lock) and `CMD_VEL` is held at zero for `SOLAR_MODE_SWITCH_SETTLE_MS` while the wheels steer. |
+| `CMD_VEL …`, `MODE ZERO_TURN|NORMAL` | Driving, as usual. Pivots use the existing zero-turn mode, where `CMD_VEL 0 <rate>` turns at `<rate>` rad/s (+ = counter-clockwise, clamped to `ZERO_TURN_MAX_RATE_RADS`; the linear value is ignored). During a run, `MODE` switches directly (no 200 ms `applyModeInit` delay under the nav lock) and `CMD_VEL` is held at zero for `SOLAR_MODE_SWITCH_SETTLE_MS` while the wheels steer. |
 
 ## Firmware behaviour during the task
 
