@@ -499,10 +499,13 @@ struct MissionTaskPlan {
   // SolarRows: waypoint_index / waypoint_index_end = lane-0 centre line A / B,
   // loop_count = lane count, io_value = lane pitch (m), speed_mps = row speed,
   // spiral_direction = next lane side (+1 left, -1 right), output_state = pivot
-  // turns (true) or Ackermann U-turns (false).
+  // turns (true) or Ackermann U-turns (false). Optional per-row list: lanes_count
+  // rows from lanes_wp_start, two waypoints per row (entrance, end) in driving order.
   uint8_t io_index{0};
   float   io_value{0.0f};
   bool    io_wait{false};
+  int      lanes_wp_start{-1};
+  uint16_t lanes_count{0};
 };
 
 MissionWaypointPlan mission_waypoints[MISSION_MAX_WAYPOINTS];
@@ -801,11 +804,47 @@ static bool parseMissionPlan(const String& mission_json) {
           mission_waypoints[mission_waypoint_count++] = {b["lat"] | 0.0, b["lon"] | 0.0, 0.0};
         }
       }
+      // Optional per-row list: "lanes_wp_start"/"lanes_count" (server-compiled
+      // waypoint indices) or embedded "lanes": [[{lat,lon},{lat,lon}], ...].
+      int lanes_start = task["lanes_wp_start"] | -1;
+      int lanes_n     = task["lanes_count"] | 0;
+      bool lanes_bad  = false;
+      JsonArrayConst lanes = task["lanes"].as<JsonArrayConst>();
+      if (lanes_start < 0 && !lanes.isNull() && lanes.size() > 0) {
+        lanes_n = static_cast<int>(lanes.size());
+        if (lanes_n > SOLAR_MAX_LANES || mission_waypoint_count + 2 * lanes_n > MISSION_MAX_WAYPOINTS) {
+          lanes_bad = true;
+        } else {
+          lanes_start = static_cast<int>(mission_waypoint_count);
+          for (JsonArrayConst row : lanes) {
+            for (size_t k = 0; k < 2; ++k) {
+              JsonVariantConst p = row[k];
+              const double lat = p.is<JsonArrayConst>() ? (p[0] | 0.0) : (p["lat"] | 0.0);
+              const double lon = p.is<JsonArrayConst>() ? (p[1] | 0.0) : (p["lon"] | 0.0);
+              mission_waypoints[mission_waypoint_count++] = {lat, lon, 0.0};
+            }
+          }
+        }
+      }
+      // Index range is checked at task start: batched uploads parse tasks before the
+      // waypoints arrive.
+      if (lanes_n != 0 && (lanes_start < 0 || lanes_n < 1 || lanes_n > SOLAR_MAX_LANES)) {
+        lanes_bad = true;
+      }
       MissionTaskPlan t{};
       t.type               = MissionTaskType::SolarRows;
       t.waypoint_index     = wa;
       t.waypoint_index_end = wb;
       t.loop_count         = task["lane_count"] | 1;
+      if (lanes_n > 0 && !lanes_bad) {
+        t.lanes_wp_start = lanes_start;
+        t.lanes_count    = static_cast<uint16_t>(lanes_n);
+        t.loop_count     = lanes_n;                      // the row list sets the count
+        if (wa < 0 || wb < 0) {                          // no lane0_a/b: use row 1
+          t.waypoint_index     = lanes_start;
+          t.waypoint_index_end = lanes_start + 1;
+        }
+      }
       t.io_value           = task["pitch_m"] | 1.5f;
       t.speed_mps          = clampf(task["speed"] | 0.3f, 0.05f, MAX_LINEAR_MPS);
       String side = task["side"] | "left";
@@ -815,9 +854,10 @@ static bool parseMissionPlan(const String& mission_json) {
       // Invalid settings are kept as an invalid task so the mission fails at it
       // with a reason instead of silently skipping a block of rows.
       if (t.loop_count < 1 || t.loop_count > 200 || t.io_value < 0.5f || t.io_value > 10.0f ||
-          (side != "left" && side != "right") || (turn != "pivot" && turn != "ackermann")) {
-        Serial.printf("[MISSION] solar_rows: invalid settings (lanes=%d pitch=%.2f side=%s turn=%s)\n",
-                      t.loop_count, t.io_value, side.c_str(), turn.c_str());
+          (side != "left" && side != "right") || (turn != "pivot" && turn != "ackermann") || lanes_bad) {
+        Serial.printf("[MISSION] solar_rows: invalid settings (lanes=%d pitch=%.2f side=%s turn=%s rows=%d/%d%s)\n",
+                      t.loop_count, t.io_value, side.c_str(), turn.c_str(), lanes_n, SOLAR_MAX_LANES,
+                      lanes_bad ? " bad row list" : "");
         t.waypoint_index = -1;
       }
       mission_tasks[mission_task_count++] = t;
@@ -1144,12 +1184,33 @@ static void solarSupervise() {
 static void solarSendTask(const MissionTaskPlan& task) {
   const MissionWaypointPlan& a = mission_waypoints[task.waypoint_index];
   const MissionWaypointPlan& b = mission_waypoints[task.waypoint_index_end];
-  Serial.printf("SOLAR_TASK {\"run\":%lu,\"task_idx\":%u,\"lane0_a\":[%.8f,%.8f],\"lane0_b\":[%.8f,%.8f],"
-                "\"lane_count\":%d,\"pitch_m\":%.3f,\"side\":\"%s\",\"turn_mode\":\"%s\",\"speed\":%.2f}\n",
-                static_cast<unsigned long>(solar_link.run), static_cast<unsigned>(solar_link.task_idx),
-                a.lat, a.lon, b.lat, b.lon, task.loop_count, task.io_value,
-                task.spiral_direction < 0 ? "right" : "left", task.output_state ? "pivot" : "ackermann",
-                task.speed_mps);
+  // Built in one buffer and written with one call: other tasks print to Serial too,
+  // and a split write could interleave with their lines.
+  String line;
+  line.reserve(256 + 60 * static_cast<size_t>(task.lanes_count));
+  char buf[200];
+  snprintf(buf, sizeof(buf),
+           "SOLAR_TASK {\"run\":%lu,\"task_idx\":%u,\"lane0_a\":[%.8f,%.8f],\"lane0_b\":[%.8f,%.8f],",
+           static_cast<unsigned long>(solar_link.run), static_cast<unsigned>(solar_link.task_idx),
+           a.lat, a.lon, b.lat, b.lon);
+  line += buf;
+  snprintf(buf, sizeof(buf),
+           "\"lane_count\":%d,\"pitch_m\":%.3f,\"side\":\"%s\",\"turn_mode\":\"%s\",\"speed\":%.2f",
+           task.loop_count, task.io_value, task.spiral_direction < 0 ? "right" : "left",
+           task.output_state ? "pivot" : "ackermann", task.speed_mps);
+  line += buf;
+  if (task.lanes_count > 0) {
+    line += ",\"lanes\":[";
+    for (uint16_t i = 0; i < task.lanes_count; ++i) {
+      const MissionWaypointPlan& e = mission_waypoints[task.lanes_wp_start + 2 * i];
+      const MissionWaypointPlan& x = mission_waypoints[task.lanes_wp_start + 2 * i + 1];
+      snprintf(buf, sizeof(buf), "%s[[%.8f,%.8f],[%.8f,%.8f]]", i ? "," : "", e.lat, e.lon, x.lat, x.lon);
+      line += buf;
+    }
+    line += "]";
+  }
+  line += "}\n";
+  Serial.write(reinterpret_cast<const uint8_t*>(line.c_str()), line.length());
 }
 
 // Mission paused (web / MISSION_PAUSE): tell nav once.
@@ -1167,7 +1228,9 @@ static void runSolarTask(const MissionTaskPlan& task, unsigned long now) {
   if (!solar_link.active) {
     const bool pts_ok = task.waypoint_index >= 0 && task.waypoint_index_end >= 0 &&
                         static_cast<size_t>(task.waypoint_index) < mission_waypoint_count &&
-                        static_cast<size_t>(task.waypoint_index_end) < mission_waypoint_count;
+                        static_cast<size_t>(task.waypoint_index_end) < mission_waypoint_count &&
+                        (task.lanes_count == 0 ||
+                         static_cast<size_t>(task.lanes_wp_start) + 2u * task.lanes_count <= mission_waypoint_count);
     if (!pts_ok) {
       failMission("solar_rows: invalid task (lane points or settings)");
       return;

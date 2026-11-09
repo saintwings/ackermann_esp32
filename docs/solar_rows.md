@@ -35,8 +35,13 @@ The web planner adds steps 1 and 2 when you tick "Drive to the lane entrance fir
 | `side` | `left` / `right`: where lane 1 is, looking from A to B |
 | `turn_mode` | `pivot` (zero-turn, about 0.8 m headland) or `ackermann` (U-turn, about 1.6 m headland) |
 | `speed` | Row speed (m/s). It is clamped to the firmware limits and to nav's `robot.max_speed`. |
+| `lanes` | Optional. Each row's entrance and end, in driving order: `[[{lat,lon},{lat,lon}], …]` (`[lat,lon]` arrays also work). 1–`SOLAR_MAX_LANES` (60) rows. When present, nav uses it instead of `lane0_a/b`, `lane_count` and `side`, so rows can differ in position, length and spacing. Keep sending `lane0_a/b` etc. too (set from the first rows) for older nav versions. |
 
-`control_server.py` validates the task and turns A and B into two mission waypoints, so batched uploads work. The firmware task then carries `waypoint_a` / `waypoint_b` indices. The firmware also accepts the embedded `lane0_a` / `lane0_b` objects directly.
+### Rows from marked waypoints
+
+In the planner, choose **Rows from: Marked waypoints** and pick the first and last waypoint. The waypoints must come in pairs, in driving order: WP0 = row 1 entrance, WP1 = row 1 end, WP2 = row 2 entrance (beside row 1's end), and so on. The planner checks what it can before adding the task: an even count, each row at least 1 m, and each row running back the other way within 30°. Nav makes the rest of its checks at task start (each entrance within 3 m along and at least 0.5 m across from the previous row's end) and fails with `SOLAR_FAIL` and a reason. The planner fills `lane0_a/b`, `lane_count`, `pitch_m` and `side` from the first rows, copies the rows into the task (moving the waypoints later doesn't change it; edit and re-save the task), and offers to remove Go-to tasks for those waypoints. See also nav's `docs/solar_lanes.md`, section "Rows from marked waypoints".
+
+`control_server.py` validates the task and turns A and B into two mission waypoints, so batched uploads work. The firmware task then carries `waypoint_a` / `waypoint_b` indices. A `lanes` list becomes two more waypoints per row, and the task carries `lanes_wp_start` / `lanes_count`. The firmware also accepts the embedded `lane0_a` / `lane0_b` objects and `lanes` list directly (not with batched uploads).
 
 If the settings are invalid, the firmware keeps the task and fails the mission when it reaches it ("solar_rows: invalid task"). It never silently skips a block.
 
@@ -48,7 +53,7 @@ One line per message. Every reply from nav is JSON carrying the `run` number of 
 
 | Line | When |
 |---|---|
-| `SOLAR_TASK {"run":R,"task_idx":i,"lane0_a":[lat,lon],"lane0_b":[lat,lon],"lane_count":N,"pitch_m":x,"side":"left","turn_mode":"pivot","speed":v}` | At task start. Re-sent every `SOLAR_TASK_RESEND_MS` until `SOLAR_ACK` or `SOLAR_STATUS` arrives. `run` goes up on every task start. |
+| `SOLAR_TASK {"run":R,"task_idx":i,"lane0_a":[lat,lon],"lane0_b":[lat,lon],"lane_count":N,"pitch_m":x,"side":"left","turn_mode":"pivot","speed":v[,"lanes":[[[lat,lon],[lat,lon]],…]]}` | At task start. Re-sent every `SOLAR_TASK_RESEND_MS` until `SOLAR_ACK` or `SOLAR_STATUS` arrives. `run` goes up on every task start. `lanes` is included only when the task has one (8 decimals, about 57 characters per row, so 60 rows make a line of about 3.6 KB). |
 | `SOLAR_PAUSE pause` / `link_lost` / `estop` | Mission paused, server link lost for `MISSION_LINK_LOSS_HOLD_MS`, or an e-stop that leaves the mission running (PS2). Sent once per pause; e-stop and link loss are one combined pause, so clearing one doesn't resume while the other holds. |
 | `SOLAR_RESUME` | The pause ended. Sent once. |
 | `SOLAR_STOP <reason>` | The run ended on the ESP32 side. Reasons: `cancel`, `estop`, `mission_failed`, `mission_ended`, `new_mission`, `task_changed`, `no_ack`, `nav_silent`. Repeated every second for 3 s in case nav missed it. Nav also ends a run on its own when the `NAV` line's `mission` stops being `running` / `paused`. |
