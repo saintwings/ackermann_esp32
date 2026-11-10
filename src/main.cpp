@@ -467,7 +467,7 @@ enum class MissionTaskType : uint8_t {
   SetSpeed,       // set a DS3502 speed output (Speed1..N) in percent
   MoveActuator,   // move the linear actuator, optionally waiting until it arrives
   WaitInput,      // hold still until a PCF8574 input reaches a state
-  SolarRows,      // hand driving to the nav PC for a block of solar-panel lanes
+  SolarRows,      // hand driving to the nav PC along a route through the solar rows
 };
 
 struct MissionWaypointPlan {
@@ -496,16 +496,13 @@ struct MissionTaskPlan {
   // MoveActuator: io_value = position %, io_wait, wait_ms = timeout.
   // WaitInput: io_index = input (1-based), output_state = wanted state (true = active),
   // wait_ms = timeout (0 = none).
-  // SolarRows: waypoint_index / waypoint_index_end = lane-0 centre line A / B,
-  // loop_count = lane count, io_value = lane pitch (m), speed_mps = row speed,
-  // spiral_direction = next lane side (+1 left, -1 right), output_state = pivot
-  // turns (true) or Ackermann U-turns (false). Optional per-row list: lanes_count
-  // rows from lanes_wp_start, two waypoints per row (entrance, end) in driving order.
+  // SolarRows: route_count points from route_wp_start, in driving order;
+  // speed_mps = row speed. waypoint_index = -1 marks an invalid task.
   uint8_t io_index{0};
   float   io_value{0.0f};
   bool    io_wait{false};
-  int      lanes_wp_start{-1};
-  uint16_t lanes_count{0};
+  int      route_wp_start{-1};
+  uint16_t route_count{0};
 };
 
 MissionWaypointPlan mission_waypoints[MISSION_MAX_WAYPOINTS];
@@ -790,75 +787,39 @@ static bool parseMissionPlan(const String& mission_json) {
       t.wait_ms  = static_cast<unsigned long>(max(1.0f, task["timeout"] | 30.0f) * 1000.0f);
       mission_tasks[mission_task_count++] = t;
     } else if (type == "solar_rows") {
-      // Lane-0 points: waypoint indices (server-compiled / batched upload) or
-      // embedded {"lat","lon"} objects appended to the waypoint list here.
-      int wa = task["waypoint_a"] | -1;
-      int wb = task["waypoint_b"] | -1;
-      if (wa < 0 || wb < 0) {
-        JsonObjectConst a = task["lane0_a"].as<JsonObjectConst>();
-        JsonObjectConst b = task["lane0_b"].as<JsonObjectConst>();
-        if (!a.isNull() && !b.isNull() && mission_waypoint_count + 2 <= MISSION_MAX_WAYPOINTS) {
-          wa = static_cast<int>(mission_waypoint_count);
-          mission_waypoints[mission_waypoint_count++] = {a["lat"] | 0.0, a["lon"] | 0.0, 0.0};
-          wb = static_cast<int>(mission_waypoint_count);
-          mission_waypoints[mission_waypoint_count++] = {b["lat"] | 0.0, b["lon"] | 0.0, 0.0};
-        }
-      }
-      // Optional per-row list: "lanes_wp_start"/"lanes_count" (server-compiled
-      // waypoint indices) or embedded "lanes": [[{lat,lon},{lat,lon}], ...].
-      int lanes_start = task["lanes_wp_start"] | -1;
-      int lanes_n     = task["lanes_count"] | 0;
-      bool lanes_bad  = false;
-      JsonArrayConst lanes = task["lanes"].as<JsonArrayConst>();
-      if (lanes_start < 0 && !lanes.isNull() && lanes.size() > 0) {
-        lanes_n = static_cast<int>(lanes.size());
-        if (lanes_n > SOLAR_MAX_LANES || mission_waypoint_count + 2 * lanes_n > MISSION_MAX_WAYPOINTS) {
-          lanes_bad = true;
-        } else {
-          lanes_start = static_cast<int>(mission_waypoint_count);
-          for (JsonArrayConst row : lanes) {
-            for (size_t k = 0; k < 2; ++k) {
-              JsonVariantConst p = row[k];
-              const double lat = p.is<JsonArrayConst>() ? (p[0] | 0.0) : (p["lat"] | 0.0);
-              const double lon = p.is<JsonArrayConst>() ? (p[1] | 0.0) : (p["lon"] | 0.0);
-              mission_waypoints[mission_waypoint_count++] = {lat, lon, 0.0};
-            }
+      // Route only: "route_wp_start"/"route_count" (server-compiled / batched upload)
+      // or embedded "route": [{lat,lon} | [lat,lon], ...] appended to the waypoint
+      // list here. 2..SOLAR_MAX_ROUTE_POINTS points. Index ranges are checked at task
+      // start: batched uploads parse tasks before the waypoints arrive.
+      int route_start = task["route_wp_start"] | -1;
+      int route_n     = task["route_count"] | 0;
+      JsonArrayConst route = task["route"].as<JsonArrayConst>();
+      if (route_start < 0 && !route.isNull() && route.size() > 0) {
+        route_n = static_cast<int>(route.size());
+        if (route_n <= SOLAR_MAX_ROUTE_POINTS && mission_waypoint_count + route_n <= MISSION_MAX_WAYPOINTS) {
+          route_start = static_cast<int>(mission_waypoint_count);
+          for (JsonVariantConst p : route) {
+            const double lat = p.is<JsonArrayConst>() ? (p[0] | 0.0) : (p["lat"] | 0.0);
+            const double lon = p.is<JsonArrayConst>() ? (p[1] | 0.0) : (p["lon"] | 0.0);
+            mission_waypoints[mission_waypoint_count++] = {lat, lon, 0.0};
           }
         }
       }
-      // Index range is checked at task start: batched uploads parse tasks before the
-      // waypoints arrive.
-      if (lanes_n != 0 && (lanes_start < 0 || lanes_n < 1 || lanes_n > SOLAR_MAX_LANES)) {
-        lanes_bad = true;
-      }
       MissionTaskPlan t{};
-      t.type               = MissionTaskType::SolarRows;
-      t.waypoint_index     = wa;
-      t.waypoint_index_end = wb;
-      t.loop_count         = task["lane_count"] | 1;
-      if (lanes_n > 0 && !lanes_bad) {
-        t.lanes_wp_start = lanes_start;
-        t.lanes_count    = static_cast<uint16_t>(lanes_n);
-        t.loop_count     = lanes_n;                      // the row list sets the count
-        if (wa < 0 || wb < 0) {                          // no lane0_a/b: use row 1
-          t.waypoint_index     = lanes_start;
-          t.waypoint_index_end = lanes_start + 1;
-        }
-      }
-      t.io_value           = task["pitch_m"] | 1.5f;
-      t.speed_mps          = clampf(task["speed"] | 0.3f, 0.05f, MAX_LINEAR_MPS);
-      String side = task["side"] | "left";
-      String turn = task["turn_mode"] | "pivot";
-      t.spiral_direction   = (side == "right") ? -1 : 1;
-      t.output_state       = (turn != "ackermann");
-      // Invalid settings are kept as an invalid task so the mission fails at it
-      // with a reason instead of silently skipping a block of rows.
-      if (t.loop_count < 1 || t.loop_count > 200 || t.io_value < 0.5f || t.io_value > 10.0f ||
-          (side != "left" && side != "right") || (turn != "pivot" && turn != "ackermann") || lanes_bad) {
-        Serial.printf("[MISSION] solar_rows: invalid settings (lanes=%d pitch=%.2f side=%s turn=%s rows=%d/%d%s)\n",
-                      t.loop_count, t.io_value, side.c_str(), turn.c_str(), lanes_n, SOLAR_MAX_LANES,
-                      lanes_bad ? " bad row list" : "");
+      t.type      = MissionTaskType::SolarRows;
+      t.speed_mps = clampf(task["speed"] | 0.3f, 0.05f, MAX_LINEAR_MPS);
+      // An invalid task is kept so the mission fails at it with a reason instead of
+      // silently skipping the block (e.g. an older lane-based task with no route).
+      if (route_start < 0 || route_n < 2 || route_n > SOLAR_MAX_ROUTE_POINTS) {
+        Serial.printf("[MISSION] solar_rows: needs a route of 2-%d points (got %d)%s\n",
+                      SOLAR_MAX_ROUTE_POINTS, route_n,
+                      task["lane0_a"].isNull() ? "" : "; lane-based tasks are no longer supported");
         t.waypoint_index = -1;
+      } else {
+        t.route_wp_start     = route_start;
+        t.route_count        = static_cast<uint16_t>(route_n);
+        t.waypoint_index     = route_start;
+        t.waypoint_index_end = route_start + route_n - 1;
       }
       mission_tasks[mission_task_count++] = t;
     } else if (type == "wait_input") {
@@ -1068,10 +1029,10 @@ static void advanceMissionTask(unsigned long now) {
 }
 
 // ── Solar rows task ─────────────────────────────────────────────────────────
-// The nav PC (rainav-fast-lio) drives a block of solar lanes with LiDAR + RTK;
-// the mission only hands over and supervises. USB-serial protocol (one line each):
-//   ESP32 -> nav: SOLAR_TASK {"run","task_idx","lane0_a":[lat,lon],"lane0_b":[lat,lon],
-//                 "lane_count","pitch_m","side","turn_mode","speed"}   (re-sent until ACK)
+// The nav PC (rainav-fast-lio) drives a route through the solar rows with LiDAR +
+// RTK; the mission only hands over and supervises. USB-serial protocol (one line each):
+//   ESP32 -> nav: SOLAR_TASK {"run","task_idx","route":[[lat,lon],...],"speed"}
+//                 (re-sent until ACK)
 //                 SOLAR_PAUSE <pause|link_lost> · SOLAR_RESUME ·
 //                 SOLAR_STOP <cancel|estop|mission_failed|mission_ended|new_mission|
 //                             task_changed|no_ack|nav_silent>
@@ -1182,34 +1143,21 @@ static void solarSupervise() {
 }
 
 static void solarSendTask(const MissionTaskPlan& task) {
-  const MissionWaypointPlan& a = mission_waypoints[task.waypoint_index];
-  const MissionWaypointPlan& b = mission_waypoints[task.waypoint_index_end];
   // Built in one buffer and written with one call: other tasks print to Serial too,
   // and a split write could interleave with their lines.
   String line;
-  line.reserve(256 + 60 * static_cast<size_t>(task.lanes_count));
-  char buf[200];
-  snprintf(buf, sizeof(buf),
-           "SOLAR_TASK {\"run\":%lu,\"task_idx\":%u,\"lane0_a\":[%.8f,%.8f],\"lane0_b\":[%.8f,%.8f],",
+  line.reserve(128 + 30 * static_cast<size_t>(task.route_count));
+  char buf[96];
+  snprintf(buf, sizeof(buf), "SOLAR_TASK {\"run\":%lu,\"task_idx\":%u,\"speed\":%.2f,\"route\":[",
            static_cast<unsigned long>(solar_link.run), static_cast<unsigned>(solar_link.task_idx),
-           a.lat, a.lon, b.lat, b.lon);
+           task.speed_mps);
   line += buf;
-  snprintf(buf, sizeof(buf),
-           "\"lane_count\":%d,\"pitch_m\":%.3f,\"side\":\"%s\",\"turn_mode\":\"%s\",\"speed\":%.2f",
-           task.loop_count, task.io_value, task.spiral_direction < 0 ? "right" : "left",
-           task.output_state ? "pivot" : "ackermann", task.speed_mps);
-  line += buf;
-  if (task.lanes_count > 0) {
-    line += ",\"lanes\":[";
-    for (uint16_t i = 0; i < task.lanes_count; ++i) {
-      const MissionWaypointPlan& e = mission_waypoints[task.lanes_wp_start + 2 * i];
-      const MissionWaypointPlan& x = mission_waypoints[task.lanes_wp_start + 2 * i + 1];
-      snprintf(buf, sizeof(buf), "%s[[%.8f,%.8f],[%.8f,%.8f]]", i ? "," : "", e.lat, e.lon, x.lat, x.lon);
-      line += buf;
-    }
-    line += "]";
+  for (uint16_t i = 0; i < task.route_count; ++i) {
+    const MissionWaypointPlan& p = mission_waypoints[task.route_wp_start + i];
+    snprintf(buf, sizeof(buf), "%s[%.8f,%.8f]", i ? "," : "", p.lat, p.lon);
+    line += buf;
   }
-  line += "}\n";
+  line += "]}\n";
   Serial.write(reinterpret_cast<const uint8_t*>(line.c_str()), line.length());
 }
 
@@ -1226,19 +1174,10 @@ static void solarOnMissionPaused() {
 static void runSolarTask(const MissionTaskPlan& task, unsigned long now) {
   mission_debug_valid = false;
   if (!solar_link.active) {
-    const bool pts_ok = task.waypoint_index >= 0 && task.waypoint_index_end >= 0 &&
-                        static_cast<size_t>(task.waypoint_index) < mission_waypoint_count &&
-                        static_cast<size_t>(task.waypoint_index_end) < mission_waypoint_count &&
-                        (task.lanes_count == 0 ||
-                         static_cast<size_t>(task.lanes_wp_start) + 2u * task.lanes_count <= mission_waypoint_count);
+    const bool pts_ok = task.waypoint_index >= 0 && task.route_wp_start >= 0 && task.route_count >= 2 &&
+                        static_cast<size_t>(task.route_wp_start) + task.route_count <= mission_waypoint_count;
     if (!pts_ok) {
-      failMission("solar_rows: invalid task (lane points or settings)");
-      return;
-    }
-    const MissionWaypointPlan& a = mission_waypoints[task.waypoint_index];
-    const MissionWaypointPlan& b = mission_waypoints[task.waypoint_index_end];
-    if (distanceMeters(a.lat, a.lon, b.lat, b.lon) < 1.0f) {
-      failMission("solar_rows: lane0_a and lane0_b are less than 1 m apart");
+      failMission("solar_rows: invalid task (needs a route of 2+ points; lane-based tasks are no longer supported)");
       return;
     }
     setMissionAutoZeroTurn(false);

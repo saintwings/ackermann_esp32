@@ -1,49 +1,38 @@
 # Solar rows task
 
-A `solar_rows` mission task drives a block of solar-panel lanes. The ESP32 doesn't drive it itself: it hands the block to the nav PC (`rainav-fast-lio`), which steers along each lane with LiDAR and uses RTK GPS for lane positions, row ends and turns. The ESP32 supervises the run and moves on to the next mission task when nav reports done.
+A `solar_rows` mission task drives a route through a block of solar-panel rows. The ESP32 doesn't drive it itself. It hands the route to the nav PC (`rainav-fast-lio`), which drives it with LiDAR and RTK GPS. The ESP32 supervises the run and moves on to the next mission task when nav reports done.
 
-A typical mission:
+The task is **route only**: a free route through marked waypoints, in driving order, any shape (headland, aisle entrance, aisle end, next aisle, …). Nav centres with LiDAR inside aisles, follows the GPS line elsewhere, and pivots at corners over 20° after checking there is room to turn. It waits for obstacles in aisles and detours around them with A* on open ground. If the robot is more than 0.5 m from the first point, nav drives there first, so no approach Go-to tasks are needed. Nav merges points closer than 0.3 m. See nav's `docs/solar_lanes.md` ("Solar route").
 
-1. `goto_waypoint` to a point 5 m before lane 0
-2. `goto_waypoint` to a point 2 m before lane 0, so the robot arrives facing along the lane
-3. `solar_rows`
-4. `goto_waypoint` home
-
-The web planner adds steps 1 and 2 when you tick "Drive to the lane entrance first".
+The older lane-based forms are no longer supported: lane 0 + count/pitch/side, and a `lanes` list of marked row pairs. The planner flags such tasks in saved missions and won't upload them. The server rejects them, and the firmware fails the mission when it reaches one. Nav refuses any `SOLAR_TASK` without `route`. To fix an old mission, delete the old task and add a new Solar Rows task through the same waypoints.
 
 ## Requirements
 
 - The nav PC runs `fastlio_nav` with `solar.enabled: true` and `gps_fusion.enabled: true` (e.g. `config/navigation_solar.yaml`). It must hold this USB port. Stop nav before flashing, because it holds the port.
 - The heading-ready gate applies at mission start as usual. In GPS heading mode, drive 3–5 m straight on RTK fixed first.
-- When the task starts, the robot must be within about 2 m of lane 0's centre line, at most 4 m before A, and facing within 50° of A→B. Otherwise nav refuses and the mission fails with the reason.
 
 ## Mission JSON
 
 ```json
 {"type": "solar_rows",
- "lane0_a": {"lat": 13.7563067, "lon": 100.5018185},
- "lane0_b": {"lat": 13.7563067, "lon": 100.5020035},
- "lane_count": 4, "pitch_m": 1.5, "side": "left",
- "turn_mode": "pivot", "speed": 0.3}
+ "route": [{"lat": 13.7563067, "lon": 100.5018185},
+           {"lat": 13.7563067, "lon": 100.5020035},
+           {"lat": 13.7563202, "lon": 100.5020035}],
+ "route_waypoints": [3, 5],
+ "speed": 0.3}
 ```
 
 | Field | Meaning |
 |---|---|
-| `lane0_a`, `lane0_b` | Centre line of the first lane: entrance (A) and far end (B), at least 1 m apart |
-| `lane_count` | Lanes to drive, 1–200. The robot alternates direction in each lane. |
-| `pitch_m` | Row centre-to-centre spacing, 0.5–10 m |
-| `side` | `left` / `right`: where lane 1 is, looking from A to B |
-| `turn_mode` | `pivot` (zero-turn, about 0.8 m headland) or `ackermann` (U-turn, about 1.6 m headland) |
-| `speed` | Row speed (m/s). It is clamped to the firmware limits and to nav's `robot.max_speed`. |
-| `lanes` | Optional. Each row's entrance and end, in driving order: `[[{lat,lon},{lat,lon}], …]` (`[lat,lon]` arrays also work). 1–`SOLAR_MAX_LANES` (60) rows. When present, nav uses it instead of `lane0_a/b`, `lane_count` and `side`, so rows can differ in position, length and spacing. Keep sending `lane0_a/b` etc. too (set from the first rows) for older nav versions. |
+| `route` | The route: `[{lat,lon}, …]` (or `[lat,lon]` arrays), 2–`SOLAR_MAX_ROUTE_POINTS` (60) points in driving order, at least 1 m long in total |
+| `speed` | Row speed, 0.05–2.0 m/s. It is clamped to the firmware limits and to nav's `robot.max_speed`. |
+| `route_waypoints` | Planner only: the `[first, last]` mission waypoints the route was copied from. Used when the task is edited. |
 
-### Rows from marked waypoints
+In the planner, add a **Solar Rows** task and pick the first and last waypoint. The planner checks 2–60 points and at least 1 m in total. It copies the points into the task, so moving the waypoints later doesn't change the task; edit and re-save it instead. It also offers to remove the Go-to tasks for those waypoints. The map draws the route.
 
-In the planner, choose **Rows from: Marked waypoints** and pick the first and last waypoint. The waypoints must come in pairs, in driving order: WP0 = row 1 entrance, WP1 = row 1 end, WP2 = row 2 entrance (beside row 1's end), and so on. The planner checks what it can before adding the task: an even count, each row at least 1 m, and each row running back the other way within 30°. Nav makes the rest of its checks at task start (each entrance within 3 m along and at least 0.5 m across from the previous row's end) and fails with `SOLAR_FAIL` and a reason. The planner fills `lane0_a/b`, `lane_count`, `pitch_m` and `side` from the first rows, copies the rows into the task (moving the waypoints later doesn't change it; edit and re-save the task), and offers to remove Go-to tasks for those waypoints. See also nav's `docs/solar_lanes.md`, section "Rows from marked waypoints".
+`control_server.py` validates the task and turns each route point into one mission waypoint, so batched uploads work. The firmware task then carries `route_wp_start` / `route_count`. The firmware also accepts an embedded `route` list directly (not with batched uploads).
 
-`control_server.py` validates the task and turns A and B into two mission waypoints, so batched uploads work. The firmware task then carries `waypoint_a` / `waypoint_b` indices. A `lanes` list becomes two more waypoints per row, and the task carries `lanes_wp_start` / `lanes_count`. The firmware also accepts the embedded `lane0_a` / `lane0_b` objects and `lanes` list directly (not with batched uploads).
-
-If the settings are invalid, the firmware keeps the task and fails the mission when it reaches it ("solar_rows: invalid task"). It never silently skips a block.
+If the task is invalid, the firmware keeps it and fails the mission when it reaches it ("solar_rows: invalid task"). This covers no route, fewer than 2 points, or more than 60. It never silently skips a block.
 
 ## USB-serial protocol
 
@@ -53,7 +42,7 @@ One line per message. Every reply from nav is JSON carrying the `run` number of 
 
 | Line | When |
 |---|---|
-| `SOLAR_TASK {"run":R,"task_idx":i,"lane0_a":[lat,lon],"lane0_b":[lat,lon],"lane_count":N,"pitch_m":x,"side":"left","turn_mode":"pivot","speed":v[,"lanes":[[[lat,lon],[lat,lon]],…]]}` | At task start. Re-sent every `SOLAR_TASK_RESEND_MS` until `SOLAR_ACK` or `SOLAR_STATUS` arrives. `run` goes up on every task start. `lanes` is included only when the task has one (8 decimals, about 57 characters per row, so 60 rows make a line of about 3.6 KB). |
+| `SOLAR_TASK {"run":R,"task_idx":i,"speed":v,"route":[[lat,lon],…]}` | At task start. Re-sent every `SOLAR_TASK_RESEND_MS` until `SOLAR_ACK` or `SOLAR_STATUS` arrives. `run` goes up on every task start. Points have 8 decimals, about 27 characters each, so 60 points make a line of about 1.7 KB. |
 | `SOLAR_PAUSE pause` / `link_lost` / `estop` | Mission paused, server link lost for `MISSION_LINK_LOSS_HOLD_MS`, or an e-stop that leaves the mission running (PS2). Sent once per pause; e-stop and link loss are one combined pause, so clearing one doesn't resume while the other holds. |
 | `SOLAR_RESUME` | The pause ended. Sent once. |
 | `SOLAR_STOP <reason>` | The run ended on the ESP32 side. Reasons: `cancel`, `estop`, `mission_failed`, `mission_ended`, `new_mission`, `task_changed`, `no_ack`, `nav_silent`. Repeated every second for 3 s in case nav missed it. Nav also ends a run on its own when the `NAV` line's `mission` stops being `running` / `paused`. |
@@ -63,14 +52,14 @@ One line per message. Every reply from nav is JSON carrying the `run` number of 
 | Line | Effect |
 |---|---|
 | `SOLAR_ACK {"run","task_idx"}` | Nav accepted the task. |
-| `SOLAR_STATUS {"run","task_idx","phase","lane","visit","visits","s","len","d","src","conf","rtk","obst"}` | Sent at 1 Hz. Stored (up to 383 chars) and sent to the web UI in telemetry. |
-| `SOLAR_DONE {"run","task_idx"}` | All lanes done. The mission goes to the next task. |
+| `SOLAR_STATUS {"run","task_idx","phase","visit","visits","s","len","d","src","conf","rtk","obst"}` | Sent at 1 Hz. `visit`/`visits` count route legs. `phase` is one of `FOLLOW`, `CORNER`, `CREEP`, `DETOUR`, `BACKOFF`, `WATCH`, `FAULT` or `DONE`. Stored (up to 383 chars) and sent to the web UI in telemetry. |
+| `SOLAR_DONE {"run","task_idx"}` | The route is done. The mission goes to the next task. |
 | `SOLAR_FAIL {"run","task_idx","why"}` | The mission fails with "solar: \<why\>". |
 | `CMD_VEL …`, `MODE ZERO_TURN|NORMAL` | Driving, as usual. Pivots use the existing zero-turn mode, where `CMD_VEL 0 <rate>` turns at `<rate>` rad/s (+ = counter-clockwise, clamped to `ZERO_TURN_MAX_RATE_RADS`; the linear value is ignored). During a run, `MODE` switches directly (no 200 ms `applyModeInit` delay under the nav lock) and `CMD_VEL` is held at zero for `SOLAR_MODE_SWITCH_SETTLE_MS` while the wheels steer. |
 
 ## Firmware behaviour during the task
 
-- **Not applied:** the GPS accuracy gate and the GPS/IMU-invalid abort. Nav handles RTK loss itself: it keeps following the LiDAR inside a row, waits at the row end for RTK fixed, and stops after 1.5 m blind. Auto zero-turn and the mission speed slew are also off, because nav owns the motion.
+- **Not applied:** the GPS accuracy gate and the GPS/IMU-invalid abort. Nav handles RTK loss itself (LiDAR inside aisles; see nav's docs). Auto zero-turn and the mission speed slew are also off, because nav owns the motion.
 - **Still applied:**
   - E-stop and limit switches. `CMD_VEL` is rejected. Limit-switch and server e-stops end the mission, so nav gets `SOLAR_STOP estop`. The PS2 e-stop leaves the mission running, so nav gets `SOLAR_PAUSE estop`, then `SOLAR_RESUME` after release.
   - Server link-loss hold, as a pause.
@@ -87,4 +76,4 @@ The settings are in section 9 of `include/Config_*.h`.
 
 Sent only while a run is active: `payload.solar = {"active": true, "run": R, "state": "idle|waiting_nav|running|paused|nav_quiet", "status": {…last SOLAR_STATUS…}}`
 
-The mission planner shows this under the mission status. The lanes from the task are drawn on the map, with lane 0 in yellow.
+The mission planner shows this under the mission status ("Leg: visit / visits"). The route is drawn on the map, with its first leg in yellow.

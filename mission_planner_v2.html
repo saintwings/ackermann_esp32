@@ -2856,7 +2856,7 @@
             h += `<div style="color: ${color}; font-weight: bold;">☀ SOLAR ROWS — ${ioEscape(stateText)}</div>`;
             if (st) {
                 const num = (v, d = 2) => Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--';
-                h += `<strong>Lane:</strong> ${st.visit ?? '--'} / ${st.visits ?? '--'} (lane ${st.lane ?? '--'}) · <strong>Phase:</strong> ${ioEscape(String(st.phase || '--'))}<br>`;
+                h += `<strong>Leg:</strong> ${st.visit ?? '--'} / ${st.visits ?? '--'} · <strong>Phase:</strong> ${ioEscape(String(st.phase || '--'))}<br>`;
                 h += `<strong>Along:</strong> ${num(st.s, 1)} / ${num(st.len, 1)} m · <strong>Off centre:</strong> ${num(Number(st.d) * 100, 0)} cm<br>`;
                 h += `<strong>Guidance:</strong> ${ioEscape(String(st.src || '--'))} (LiDAR conf ${num(st.conf)}) · <strong>RTK:</strong> ${st.rtk ? 'fixed' : '<span style="color:#FFB300">not fixed</span>'}`;
                 if (st.obst) h += ' · <span style="color:#F44336; font-weight: bold;">OBSTACLE — holding</span>';
@@ -3093,7 +3093,7 @@
             coverageName: 'Coverage A',
             waitDuration: 5,
             loopCount: 2,
-            solar: { lanes: 4, pitch: 1.5, side: 'left', turn: 'pivot', speed: 0.3, approach: true }
+            solar: { speed: 0.3 }
         };
 
         // Coverage planning state (reuses mission waypoints by index)
@@ -3715,22 +3715,15 @@
 
             for (const task of runtimeTasks) {
                 if (task.type !== 'solar_rows') continue;
-                if (!task.lane0_a || !task.lane0_b) return { error: 'Solar rows task has no lane 0 points' };
-                task.waypoint_a = runtimeWaypoints.length;
-                runtimeWaypoints.push({ lat: task.lane0_a.lat, lon: task.lane0_a.lon, name: `SOLAR-A-${task.waypoint_a}` });
-                task.waypoint_b = runtimeWaypoints.length;
-                runtimeWaypoints.push({ lat: task.lane0_b.lat, lon: task.lane0_b.lon, name: `SOLAR-B-${task.waypoint_b}` });
-                if (Array.isArray(task.lanes) && task.lanes.length) {
-                    // Each row's entrance and end become two consecutive waypoints.
-                    task.lanes_wp_start = runtimeWaypoints.length;
-                    task.lanes_count = task.lanes.length;
-                    task.lanes.forEach((row, k) => {
-                        runtimeWaypoints.push({ lat: row[0].lat, lon: row[0].lon, name: `SOLAR-R${k + 1}-IN` });
-                        runtimeWaypoints.push({ lat: row[1].lat, lon: row[1].lon, name: `SOLAR-R${k + 1}-END` });
-                    });
-                    delete task.lanes;
-                    delete task.lane_waypoints;
+                if (isLegacySolarTask(task)) {
+                    return { error: `Task ${runtimeTasks.indexOf(task) + 1} is an older lane-based solar rows task: ${SOLAR_LEGACY_MSG}` };
                 }
+                // Each route point becomes one waypoint.
+                task.route_wp_start = runtimeWaypoints.length;
+                task.route_count = task.route.length;
+                task.route.forEach((p, k) => runtimeWaypoints.push({ lat: p.lat, lon: p.lon, name: `SOLAR-RT${k + 1}` }));
+                delete task.route;
+                delete task.route_waypoints;
             }
 
             for (const task of runtimeTasks) {
@@ -4064,96 +4057,36 @@
                 `;
             } else if (taskType === 'solar_rows') {
                 const sp = lastTaskParams.solar;
-                const pt = (id, label) => `
-                    <div class="form-group">
-                        <label>${label}</label>
-                        <div style="display: flex; gap: 4px;">
-                            <input type="number" id="task-solar-${id}-lat" placeholder="lat" step="0.0000001" style="flex: 1; min-width: 0;">
-                            <input type="number" id="task-solar-${id}-lon" placeholder="lon" step="0.0000001" style="flex: 1; min-width: 0;">
-                        </div>
-                        <div style="display: flex; gap: 4px; margin-top: 4px;">
-                            <button class="btn-secondary" style="flex: 1; padding: 4px; font-size: 11px;" onclick="solarPointFromWaypoint('${id}')">⇐ Selected WP</button>
-                            <button class="btn-secondary" style="flex: 1; padding: 4px; font-size: 11px;" onclick="solarPointFromRobot('${id}')">⇐ Robot position</button>
-                        </div>
-                    </div>`;
                 const wpOpts = missionWaypoints.map((wp, i) =>
                     `<option value="${i}">${i}: ${ioEscape(String(wp.name || 'WP-' + i))}</option>`).join('');
                 options.innerHTML = `
                     <div class="form-group">
-                        <label>Rows from</label>
-                        <select id="task-solar-mode" onchange="updateSolarModeFields()">
-                            <option value="line">Lane 0 + spacing (straight, evenly spaced rows)</option>
-                            <option value="wps">Marked waypoints (each pair = one row: entrance → end)</option>
-                        </select>
-                    </div>
-                    <div id="task-solar-wps-fields" style="display: none;">
-                        <div class="form-group">
-                            <label>First waypoint (row 1 entrance)</label>
-                            <select id="task-solar-wp-from">${wpOpts}</select>
-                        </div>
-                        <div class="form-group">
-                            <label>Last waypoint (last row end)</label>
-                            <select id="task-solar-wp-to">${wpOpts}</select>
-                        </div>
-                        <div class="io-note">Mark the rows in driving order: WP0 = row 1 entrance, WP1 = row 1 end,
-                            WP2 = row 2 entrance (beside row 1's end), ... Rows alternate direction and may differ in
-                            length and spacing. At most ${SOLAR_MAX_LANES} rows.</div>
-                    </div>
-                    <div id="task-solar-line-fields">
-                    ${pt('a', 'Lane 0 start (A, centre of the lane entrance)')}
-                    ${pt('b', 'Lane 0 end (B, centre of the far end)')}
-                    <div class="form-group">
-                        <label>Number of lanes</label>
-                        <input type="number" id="task-solar-lanes" value="${sp.lanes}" min="1" max="200" step="1">
+                        <label>First waypoint (route start)</label>
+                        <select id="task-solar-wp-from">${wpOpts}</select>
                     </div>
                     <div class="form-group">
-                        <label>Lane spacing (row centre to centre, m)</label>
-                        <input type="number" id="task-solar-pitch" value="${sp.pitch}" min="0.5" max="10" step="0.05">
-                    </div>
-                    <div class="form-group">
-                        <label>Next lane is</label>
-                        <select id="task-solar-side">
-                            <option value="left" ${sp.side === 'left' ? 'selected' : ''}>Left of A→B</option>
-                            <option value="right" ${sp.side === 'right' ? 'selected' : ''}>Right of A→B</option>
-                        </select>
-                    </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Turn at row ends</label>
-                        <select id="task-solar-turn">
-                            <option value="pivot" ${sp.turn === 'pivot' ? 'selected' : ''}>Pivot (zero-turn, ~0.8 m headland)</option>
-                            <option value="ackermann" ${sp.turn === 'ackermann' ? 'selected' : ''}>Ackermann U-turn (~1.6 m headland)</option>
-                        </select>
+                        <label>Last waypoint (route end)</label>
+                        <select id="task-solar-wp-to">${wpOpts}</select>
                     </div>
                     <div class="form-group">
                         <label>Row speed (m/s)</label>
                         <input type="number" id="task-solar-speed" value="${sp.speed}" min="0.05" max="2" step="0.05">
                     </div>
-                    <label class="io-note" style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                        <input type="checkbox" id="task-solar-approach" ${sp.approach ? 'checked' : ''}>
-                        Drive to the lane entrance first (adds two Go-to tasks on the first row's line, before its entrance)
-                    </label>
-                    <div class="io-note">The nav PC drives this task with LiDAR + RTK GPS and must be running with solar enabled.
-                        "Robot position" is the GPS antenna; the nav PC <code>mark</code> command gives the robot centre.</div>
+                    <div class="io-note">Route through waypoints: the nav PC drives through every waypoint in order, any shape:
+                        LiDAR centring inside aisles, the GPS line elsewhere, a pivot at corners over 20°, and it waits
+                        for or drives around obstacles. If the robot is away from the first waypoint, nav drives there
+                        first. 2–${SOLAR_MAX_ROUTE_POINTS} waypoints. The nav PC must be running with solar enabled.</div>
                 `;
                 const last = Math.max(0, missionWaypoints.length - 1);
                 document.getElementById('task-solar-wp-to').value = String(last);
+                const editing = editingTaskIndex >= 0 ? missionTasks[editingTaskIndex] : null;
                 if (solarDraft) {
                     restoreSolarDraft(solarDraft);
-                } else if (editingTaskIndex >= 0 && missionTasks[editingTaskIndex]?.type === 'solar_rows') {
-                    const t = missionTasks[editingTaskIndex];
-                    setSolarPointInputs('a', t.lane0_a);
-                    setSolarPointInputs('b', t.lane0_b);
-                    if (Array.isArray(t.lanes) && t.lanes.length) {
-                        document.getElementById('task-solar-mode').value = 'wps';
-                        if (Array.isArray(t.lane_waypoints) && missionWaypoints[t.lane_waypoints[1]]) {
-                            document.getElementById('task-solar-wp-from').value = String(t.lane_waypoints[0]);
-                            document.getElementById('task-solar-wp-to').value = String(t.lane_waypoints[1]);
-                        }
-                    }
-                    document.getElementById('task-solar-approach').checked = false;
+                } else if (editing?.type === 'solar_rows' && Array.isArray(editing.route_waypoints) &&
+                           missionWaypoints[editing.route_waypoints[1]]) {
+                    document.getElementById('task-solar-wp-from').value = String(editing.route_waypoints[0]);
+                    document.getElementById('task-solar-wp-to').value = String(editing.route_waypoints[1]);
                 }
-                updateSolarModeFields();
             }
 
             if (taskType === 'spiral') {
@@ -4162,18 +4095,16 @@
         }
 
         // ── Solar rows task helpers ────────────────────────────────────────────
-        const SOLAR_MAX_LANES = 60;   // firmware SOLAR_MAX_LANES (rows in a "lanes" list)
-        const SOLAR_DRAFT_IDS = ['task-solar-mode', 'task-solar-wp-from', 'task-solar-wp-to',
-            'task-solar-a-lat', 'task-solar-a-lon', 'task-solar-b-lat', 'task-solar-b-lon',
-            'task-solar-lanes', 'task-solar-pitch', 'task-solar-side', 'task-solar-turn',
-            'task-solar-speed', 'task-solar-approach'];
+        // Solar rows are route-only: the nav PC drives a route through marked waypoints.
+        const SOLAR_MAX_ROUTE_POINTS = 60;   // firmware SOLAR_MAX_ROUTE_POINTS
+        const SOLAR_DRAFT_IDS = ['task-solar-wp-from', 'task-solar-wp-to', 'task-solar-speed'];
 
         function captureSolarDraft() {
-            if (!document.getElementById('task-solar-mode')) return null;
+            if (!document.getElementById('task-solar-wp-from')) return null;
             const d = {};
             for (const id of SOLAR_DRAFT_IDS) {
                 const el = document.getElementById(id);
-                if (el) d[id] = el.type === 'checkbox' ? el.checked : el.value;
+                if (el) d[id] = el.value;
             }
             return d;
         }
@@ -4182,86 +4113,18 @@
             for (const id of SOLAR_DRAFT_IDS) {
                 const el = document.getElementById(id);
                 if (!el || !(id in d)) continue;
-                if (el.type === 'checkbox') el.checked = d[id];
-                else if (el.tagName !== 'SELECT' || [...el.options].some((o) => o.value === d[id])) el.value = d[id];
+                if (el.tagName !== 'SELECT' || [...el.options].some((o) => o.value === d[id])) el.value = d[id];
             }
         }
 
-        function updateSolarModeFields() {
-            const wps = document.getElementById('task-solar-mode')?.value === 'wps';
-            document.getElementById('task-solar-wps-fields').style.display = wps ? '' : 'none';
-            document.getElementById('task-solar-line-fields').style.display = wps ? 'none' : '';
+        // An older lane-based solar_rows task (lane0 + spacing, or marked row pairs)
+        // that the nav PC no longer drives.
+        function isLegacySolarTask(task) {
+            return task?.type === 'solar_rows' && !(Array.isArray(task.route) && task.route.length >= 2);
         }
 
-        // Rows from marked waypoints from..to (pairs: entrance, end). Same checks as the
-        // nav PC where they can be made here. Returns { lanes, pitch, side } or { error }.
-        function solarLanesFromWaypoints(from, to) {
-            const W = missionWaypoints;
-            if (!(from >= 0 && to > from && W[to])) return { error: 'Pick the first and last waypoint of the rows (last after first)' };
-            const n = to - from + 1;
-            if (n % 2) return { error: `Waypoints ${from}…${to} are ${n} points: rows need pairs (entrance, end)` };
-            if (n / 2 > SOLAR_MAX_LANES) return { error: `${n / 2} rows: at most ${SOLAR_MAX_LANES}` };
-            const lanes = [];
-            for (let i = from; i <= to; i += 2) {
-                lanes.push([{ lat: Number(W[i].lat), lon: Number(W[i].lon) },
-                            { lat: Number(W[i + 1].lat), lon: Number(W[i + 1].lon) }]);
-            }
-            for (let k = 0; k < lanes.length; k++) {
-                const d = solarEnu(lanes[k][0], lanes[k][1]);
-                if (d.len < 1.0) return { error: `Row ${k + 1} (WP ${from + 2 * k} → ${from + 2 * k + 1}) is shorter than 1 m` };
-                if (k > 0) {
-                    const q = solarEnu(lanes[k - 1][0], lanes[k - 1][1]);
-                    const dot = (q.e * d.e + q.n * d.n) / (q.len * d.len);
-                    if (dot > -Math.cos(30 * Math.PI / 180)) {
-                        return { error: `Row ${k + 1} must run back the other way: mark its entrance at the end where row ${k} finished` };
-                    }
-                }
-            }
-            // pitch / side from the first rows (for the lane0 fields older nav versions use)
-            let pitch = 1.5, side = 'left';
-            if (lanes.length > 1) {
-                const d0 = solarEnu(lanes[0][0], lanes[0][1]), ue = d0.e / d0.len, un = d0.n / d0.len;
-                const across = lanes.slice(1).map((row, k) => {
-                    const v = solarEnu(lanes[k][1], row[0]);          // previous end → this entrance
-                    return -v.e * un + v.n * ue;                      // + = left of row 1
-                });
-                pitch = across.reduce((sum, v) => sum + Math.abs(v), 0) / across.length;
-                side = across[0] > 0 ? 'left' : 'right';
-            }
-            return { lanes, pitch: Number(Math.max(0.5, Math.min(10, pitch)).toFixed(3)), side };
-        }
-
-        function setSolarPointInputs(id, p) {
-            if (!p) return;
-            document.getElementById(`task-solar-${id}-lat`).value = Number(p.lat).toFixed(8);
-            document.getElementById(`task-solar-${id}-lon`).value = Number(p.lon).toFixed(8);
-        }
-
-        function readSolarPoint(id) {
-            const lat = Number(document.getElementById(`task-solar-${id}-lat`).value);
-            const lon = Number(document.getElementById(`task-solar-${id}-lon`).value);
-            if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) return null;
-            return { lat, lon };
-        }
-
-        function solarPointFromWaypoint(id) {
-            const wp = missionWaypoints[selectedWaypointIndex];
-            if (!wp) {
-                updateStatusMessage('Select a waypoint on the map or in the list first', 'error');
-                return;
-            }
-            setSolarPointInputs(id, wp);
-        }
-
-        function solarPointFromRobot(id) {
-            const telemetry = selectedRobotId ? latestTelemetry.get(selectedRobotId) : null;
-            const gps = telemetry && telemetry.gps ? telemetry.gps : null;
-            if (!hasUsableGpsFix(gps)) {
-                updateStatusMessage('No valid GPS position for the selected robot yet', 'error');
-                return;
-            }
-            setSolarPointInputs(id, { lat: Number(gps.latitude), lon: Number(gps.longitude) });
-        }
+        const SOLAR_LEGACY_MSG = 'only "Route through waypoints" is supported now: ' +
+                                 'delete it and add a new Solar Rows task through the same waypoints';
 
         // Local metres between two lat/lon points: { e, n, len }
         function solarEnu(a, b) {
@@ -4270,42 +4133,17 @@
             return { e, n, len: Math.hypot(e, n) };
         }
 
-        function solarOffset(p, de, dn) {
-            return {
-                lat: p.lat + dn / 111320.0,
-                lon: p.lon + de / (111320.0 * Math.cos(p.lat * Math.PI / 180))
-            };
-        }
-
-        // Lane centre lines [{a, b}] in the order the robot drives them (serpentine).
+        // Route legs [{a, b}] in driving order (for the map preview).
         function solarLaneLines(task) {
-            if (Array.isArray(task.lanes) && task.lanes.length) {
-                return task.lanes.map((row) => ({ a: row[0], b: row[1] }));
+            if (Array.isArray(task.route) && task.route.length > 1) {
+                return task.route.slice(1).map((p, k) => ({ a: task.route[k], b: p }));
             }
-            const a = task.lane0_a, b = task.lane0_b;
-            if (!a || !b) return [];
-            const d = solarEnu(a, b);
-            if (d.len < 1.0) return [];
-            const ue = d.e / d.len, un = d.n / d.len;
-            const s = task.side === 'right' ? -1 : 1;
-            const ne = -un * s, nn = ue * s;                // toward lane 1 (same as nav)
-            const lines = [];
-            for (let i = 0; i < (task.lane_count || 1); i++) {
-                const off = i * (task.pitch_m || 1.5);
-                const la = solarOffset(a, ne * off, nn * off), lb = solarOffset(b, ne * off, nn * off);
-                lines.push(i % 2 === 0 ? { a: la, b: lb } : { a: lb, b: la });
-            }
-            return lines;
+            return [];
         }
 
         function formatSolarTaskDescription(task) {
-            if (Array.isArray(task.lanes) && task.lanes.length) {
-                const wps = Array.isArray(task.lane_waypoints) ? ` through WP ${task.lane_waypoints[0]}…${task.lane_waypoints[1]}` : '';
-                return `Solar rows${wps}: ${task.lanes.length} marked rows, ${task.turn_mode} turns @ ${task.speed} m/s`;
-            }
-            const len = task.lane0_a && task.lane0_b ? solarEnu(task.lane0_a, task.lane0_b).len : 0;
-            return `Solar rows: ${task.lane_count} × ${len.toFixed(1)} m lanes, ${task.pitch_m} m apart, ` +
-                   `${task.turn_mode} turns @ ${task.speed} m/s`;
+            const wps = Array.isArray(task.route_waypoints) ? ` WP ${task.route_waypoints[0]}…${task.route_waypoints[1]}` : '';
+            return `Solar route${wps}: ${task.route.length} waypoints, nav drives @ ${task.speed} m/s`;
         }
         
         function addTask() {
@@ -4418,80 +4256,35 @@
                 if (!Number.isFinite(task.timeout) || task.timeout < 1) task.timeout = 30;
                 task.description = `${IO_LABELS.actuator} → ${task.position}%` + (task.wait ? ` (wait, ${task.timeout}s timeout)` : '');
             } else if (taskType === 'solar_rows') {
-                const fromWps = document.getElementById('task-solar-mode').value === 'wps';
-                let a, b, wpFrom = -1, wpTo = -1;
-                if (fromWps) {
-                    wpFrom = parseInt(document.getElementById('task-solar-wp-from').value, 10);
-                    wpTo = parseInt(document.getElementById('task-solar-wp-to').value, 10);
-                    const r = solarLanesFromWaypoints(wpFrom, wpTo);
-                    if (r.error) {
-                        updateStatusMessage(r.error, 'error');
-                        return;
-                    }
-                    task.lanes = r.lanes;
-                    task.lane_waypoints = [wpFrom, wpTo];
-                    a = r.lanes[0][0];
-                    b = r.lanes[0][1];
-                    task.lane_count = r.lanes.length;
-                    task.pitch_m = r.pitch;
-                    task.side = r.side;
-                } else {
-                    a = readSolarPoint('a');
-                    b = readSolarPoint('b');
-                    if (!a || !b) {
-                        updateStatusMessage('Set lane 0 start (A) and end (B)', 'error');
-                        return;
-                    }
-                    if (solarEnu(a, b).len < 1.0) {
-                        updateStatusMessage('Lane 0 A and B must be at least 1 m apart', 'error');
-                        return;
-                    }
-                    task.lane_count = parseInt(document.getElementById('task-solar-lanes').value, 10);
-                    task.pitch_m = Number(document.getElementById('task-solar-pitch').value);
-                    task.side = document.getElementById('task-solar-side').value;
+                const wpFrom = parseInt(document.getElementById('task-solar-wp-from').value, 10);
+                const wpTo = parseInt(document.getElementById('task-solar-wp-to').value, 10);
+                if (!(wpFrom >= 0 && wpTo > wpFrom && missionWaypoints[wpTo])) {
+                    updateStatusMessage('Pick the first and last waypoint of the route (last after first)', 'error');
+                    return;
                 }
-                task.lane0_a = a;
-                task.lane0_b = b;
-                task.turn_mode = document.getElementById('task-solar-turn').value;
+                if (wpTo - wpFrom + 1 > SOLAR_MAX_ROUTE_POINTS) {
+                    updateStatusMessage(`${wpTo - wpFrom + 1} waypoints: a route has at most ${SOLAR_MAX_ROUTE_POINTS}`, 'error');
+                    return;
+                }
+                task.route = missionWaypoints.slice(wpFrom, wpTo + 1).map((wp) => ({ lat: Number(wp.lat), lon: Number(wp.lon) }));
+                let len = 0;
+                for (let k = 1; k < task.route.length; k++) len += solarEnu(task.route[k - 1], task.route[k]).len;
+                if (len < 1.0) {
+                    updateStatusMessage('The route is shorter than 1 m', 'error');
+                    return;
+                }
+                task.route_waypoints = [wpFrom, wpTo];
                 task.speed = normalizeMissionSpeed(document.getElementById('task-solar-speed').value, lastTaskParams.solar.speed);
-                if (!Number.isInteger(task.lane_count) || task.lane_count < 1 || task.lane_count > 200) {
-                    updateStatusMessage('Number of lanes must be 1-200', 'error');
-                    return;
-                }
-                if (!Number.isFinite(task.pitch_m) || task.pitch_m < 0.5 || task.pitch_m > 10) {
-                    updateStatusMessage('Lane spacing must be 0.5-10 m', 'error');
-                    return;
-                }
                 task.description = formatSolarTaskDescription(task);
-                const approach = document.getElementById('task-solar-approach').checked;
-                if (!fromWps) {
-                    lastTaskParams.solar = { lanes: task.lane_count, pitch: task.pitch_m, side: task.side,
-                                             turn: task.turn_mode, speed: task.speed, approach };
-                } else {
-                    lastTaskParams.solar = { ...lastTaskParams.solar, turn: task.turn_mode, speed: task.speed, approach };
-                    // Go-to tasks for the row waypoints are redundant: the row task drives them.
-                    const isRowGoto = (t, i) => i !== editingTaskIndex && t.type === 'goto_waypoint' &&
-                                                t.waypoint >= wpFrom && t.waypoint <= wpTo;
-                    const redundant = missionTasks.filter(isRowGoto).length;
-                    if (redundant && confirm(`Remove the ${redundant} Go-to task(s) for waypoints ${wpFrom}…${wpTo}? The row task drives those points itself.`)) {
-                        const editing = editingTaskIndex >= 0 ? missionTasks[editingTaskIndex] : null;
-                        missionTasks = missionTasks.filter((t, i) => !isRowGoto(t, i));
-                        if (editing) editingTaskIndex = missionTasks.indexOf(editing);
-                    }
-                }
-                if (approach && editingTaskIndex < 0) {
-                    // Two points on the A→B line before A: the robot reaches the entrance
-                    // facing along the lane (the nav PC needs it within ~2 m and 50°).
-                    const d = solarEnu(a, b), ue = d.e / d.len, un = d.n / d.len;
-                    const far = solarOffset(a, -ue * 5.0, -un * 5.0), near = solarOffset(a, -ue * 2.0, -un * 2.0);
-                    const n0 = missionWaypoints.length;
-                    missionWaypoints.push({ lat: far.lat, lon: far.lon, name: `SOLAR-IN-${n0}` });
-                    missionWaypoints.push({ lat: near.lat, lon: near.lon, name: `SOLAR-IN-${n0 + 1}` });
-                    const approachSpeed = Math.min(task.speed, 0.5);
-                    [n0, n0 + 1].forEach((wi) => missionTasks.push({
-                        type: 'goto_waypoint', waypoint: wi, speed: approachSpeed,
-                        description: `Go to ${missionWaypoints[wi].name} @ ${approachSpeed} m/s`
-                    }));
+                lastTaskParams.solar = { speed: task.speed };
+                // Go-to tasks for the route waypoints are redundant: the task drives them.
+                const isRowGoto = (t, i) => i !== editingTaskIndex && t.type === 'goto_waypoint' &&
+                                            t.waypoint >= wpFrom && t.waypoint <= wpTo;
+                const redundant = missionTasks.filter(isRowGoto).length;
+                if (redundant && confirm(`Remove the ${redundant} Go-to task(s) for waypoints ${wpFrom}…${wpTo}? This task drives those points itself.`)) {
+                    const editing = editingTaskIndex >= 0 ? missionTasks[editingTaskIndex] : null;
+                    missionTasks = missionTasks.filter((t, i) => !isRowGoto(t, i));
+                    if (editing) editingTaskIndex = missionTasks.indexOf(editing);
                 }
             } else if (taskType === 'wait_input') {
                 task.input = parseInt(document.getElementById('task-input-index').value, 10);
@@ -4574,10 +4367,6 @@
                 document.getElementById('task-act-wait').value = task.wait === false ? 'no' : 'yes';
                 document.getElementById('task-act-timeout').value = task.timeout;
             } else if (task.type === 'solar_rows') {
-                document.getElementById('task-solar-lanes').value = task.lane_count;
-                document.getElementById('task-solar-pitch').value = task.pitch_m;
-                document.getElementById('task-solar-side').value = task.side;
-                document.getElementById('task-solar-turn').value = task.turn_mode;
                 document.getElementById('task-solar-speed').value = task.speed;
             } else if (task.type === 'wait_input') {
                 document.getElementById('task-input-index').value = String(task.input);
@@ -5242,10 +5031,10 @@
                     detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">📍 start: ${task.radius}m → end: ${finalRadius.toFixed(1)}m | spacing: ${task.spacing}m/loop | ${task.loops} loops | 🔄 ${task.direction.toUpperCase()}</div>`;
                 } else if (task.type === 'wait') {
                     detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">⏱️ ${task.duration} seconds</div>`;
-                } else if (task.type === 'solar_rows' && Array.isArray(task.lanes) && task.lanes.length) {
-                    detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">Row 1 entrance ${Number(task.lanes[0][0].lat).toFixed(6)}, ${Number(task.lanes[0][0].lon).toFixed(6)} · ${task.lanes.length} rows</div>`;
-                } else if (task.type === 'solar_rows' && task.lane0_a) {
-                    detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">A ${task.lane0_a.lat.toFixed(6)}, ${task.lane0_a.lon.toFixed(6)} · next lane ${task.side}</div>`;
+                } else if (isLegacySolarTask(task)) {
+                    detailInfo = `<div style="font-size: 10px; color: #F44336; margin-top: 4px;">⚠ Older lane-based task: ${SOLAR_LEGACY_MSG}. It will not upload.</div>`;
+                } else if (task.type === 'solar_rows') {
+                    detailInfo = `<div style="font-size: 10px; color: #888; margin-top: 4px;">Route start ${Number(task.route[0].lat).toFixed(6)}, ${Number(task.route[0].lon).toFixed(6)} · ${task.route.length} points</div>`;
                 }
                 
                 div.innerHTML = `
@@ -5496,6 +5285,7 @@
                     missionWaypoints = missionData.waypoints;
                     missionTasks = missionData.tasks;
                     selectedWaypointIndex = -1;
+                    const legacySolar = missionTasks.map((t, i) => isLegacySolarTask(t) ? i + 1 : 0).filter(Boolean);
                     editingTaskIndex = -1;
 
                     // Load coverage state if present (backward-compatible)
@@ -5546,7 +5336,12 @@
                     renderCoverageResultSummary(coverageLastResult);
 
                     const displayName = missionData.name ? ` "${missionData.name}"` : '';
-                    updateStatusMessage(`Mission imported:${displayName} ${missionWaypoints.length} waypoints, ${missionTasks.length} tasks`);
+                    if (legacySolar.length) {
+                        updateStatusMessage(`Mission imported, but solar task(s) ${legacySolar.join(', ')} are older lane-based tasks: ` +
+                                            `${SOLAR_LEGACY_MSG}. The mission will not upload until then.`, 'error');
+                    } else {
+                        updateStatusMessage(`Mission imported:${displayName} ${missionWaypoints.length} waypoints, ${missionTasks.length} tasks`);
+                    }
                     
                 } catch (error) {
                     console.error('Import error:', error);

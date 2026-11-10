@@ -303,9 +303,10 @@
 #define SOLAR_ACK_TIMEOUT_MS 10000UL
 #define SOLAR_NAV_QUIET_HOLD_MS 2000UL
 #define SOLAR_NAV_QUIET_FAIL_MS 30000UL
-// Most rows in a "lanes" list (rows marked as waypoint pairs). Each row adds about
-// 57 chars to the SOLAR_TASK line (60 rows ~ 3.5 KB) and 2 mission waypoints.
-#define SOLAR_MAX_LANES 60
+// Most points in a solar route (free route through marked waypoints). Each point
+// adds about 27 chars to the SOLAR_TASK line (60 points ~ 1.7 KB) and 1 mission
+// waypoint.
+#define SOLAR_MAX_ROUTE_POINTS 60
 // Drive held at zero after nav switches MODE (pivot turns) while the wheels steer
 // into place. Separate from MISSION_MODE_SWITCH_SETTLE_MS so it can be tuned for
 // solar pivots; starts equal to it. Each pivot turn switches twice.

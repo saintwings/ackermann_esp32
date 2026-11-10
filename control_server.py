@@ -50,7 +50,7 @@ UPLOAD_BATCH_SIZE      = 200   # waypoints per batch (fits in 16 KB rx buffer)
 UPLOAD_BATCH_THRESHOLD = 200   # use batching when total waypoints exceed this
 UPLOAD_BATCH_TIMEOUT   = 15.0  # seconds to wait for each batch ACK
 UPLOAD_MAX_RETRIES     = 3     # retries per batch before aborting
-SOLAR_MAX_LANES        = 60    # firmware SOLAR_MAX_LANES (rows in a solar_rows "lanes" list)
+SOLAR_MAX_ROUTE_POINTS = 60    # firmware SOLAR_MAX_ROUTE_POINTS (points in a solar_rows "route")
 
 # ============================================================================
 # Logging Setup
@@ -800,80 +800,50 @@ class ControlServer:
 
     @staticmethod
     def _compile_solar_task(task: dict) -> dict:
-        """Validate a solar_rows task; returns the firmware task (without lane points)."""
-        def point(name):
-            p = task.get(name)
-            if not isinstance(p, dict):
-                raise ValueError(f"solar_rows: {name} must be {{lat, lon}}")
-            try:
-                lat, lon = float(p.get('lat')), float(p.get('lon'))
-            except (TypeError, ValueError):
-                raise ValueError(f"solar_rows: {name} has no valid lat/lon")
-            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-                raise ValueError(f"solar_rows: {name} lat/lon out of range")
-            task[name] = {'lat': lat, 'lon': lon}
-            return lat, lon
+        """Validate a solar_rows task (route only); returns the firmware task.
 
-        alat, alon = point('lane0_a')
-        blat, blon = point('lane0_b')
-        dn = (blat - alat) * 111320.0
-        de = (blon - alon) * 111320.0 * math.cos(math.radians(alat))
-        if math.hypot(dn, de) < 1.0:
-            raise ValueError("solar_rows: lane0_a and lane0_b are less than 1 m apart")
+        The nav PC drives only a free route through marked waypoints:
+        task['route'] = [{lat,lon} | [lat,lon], ...] in driving order. The caller
+        turns the route into mission waypoints. Older lane-based tasks (lane0_a/b +
+        lane_count/pitch/side, or a "lanes" row list) are refused.
+        """
+        def latlon(p, what):
+            try:
+                if isinstance(p, dict):
+                    lat, lon = float(p.get('lat')), float(p.get('lon'))
+                else:
+                    lat, lon = float(p[0]), float(p[1])
+            except (TypeError, ValueError, IndexError, KeyError):
+                raise ValueError(f"solar_rows: {what} has no valid lat/lon")
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError(f"solar_rows: {what} lat/lon out of range")
+            return {'lat': lat, 'lon': lon}
+
+        def dist_m(p, q):
+            dn = (q['lat'] - p['lat']) * 111320.0
+            de = (q['lon'] - p['lon']) * 111320.0 * math.cos(math.radians(p['lat']))
+            return math.hypot(dn, de)
+
+        route = task.get('route')
+        if not route:
+            raise ValueError("solar_rows: only routes are supported now; this task has no \"route\" "
+                             "(older lane-based task?). Delete it in the planner and add a new "
+                             "Solar Rows task through the same waypoints")
+        if task.get('lanes'):
+            raise ValueError("solar_rows: \"lanes\" row lists are no longer supported; use a route")
+        if not isinstance(route, list) or not 2 <= len(route) <= SOLAR_MAX_ROUTE_POINTS:
+            raise ValueError(f"solar_rows: route must be a list of 2-{SOLAR_MAX_ROUTE_POINTS} points")
+        route = [latlon(p, f"route point {k + 1}") for k, p in enumerate(route)]
+        if sum(dist_m(route[k], route[k + 1]) for k in range(len(route) - 1)) < 1.0:
+            raise ValueError("solar_rows: route is shorter than 1 m")
+        task['route'] = route
         try:
-            lanes = int(task.get('lane_count', 1))
-            pitch = float(task.get('pitch_m', 1.5))
             speed = float(task.get('speed', 0.3))
         except (TypeError, ValueError):
-            raise ValueError("solar_rows: lane_count / pitch_m / speed must be numbers")
-        if not 1 <= lanes <= 200:
-            raise ValueError("solar_rows: lane_count must be 1-200")
-        if not 0.5 <= pitch <= 10.0:
-            raise ValueError("solar_rows: pitch_m must be 0.5-10 m")
+            raise ValueError("solar_rows: speed must be a number")
         if not 0.05 <= speed <= 2.0:
             raise ValueError("solar_rows: speed must be 0.05-2.0 m/s")
-        side = task.get('side', 'left')
-        turn = task.get('turn_mode', 'pivot')
-        if side not in ('left', 'right'):
-            raise ValueError("solar_rows: side must be left or right")
-        if turn not in ('pivot', 'ackermann'):
-            raise ValueError("solar_rows: turn_mode must be pivot or ackermann")
-        compiled = {'type': 'solar_rows', 'lane_count': lanes, 'pitch_m': pitch, 'speed': speed,
-                    'side': side, 'turn_mode': turn}
-
-        # Optional per-row list (rows marked as waypoint pairs): [[{lat,lon},{lat,lon}], ...]
-        # in driving order. The nav PC checks the row-to-row geometry; here only shape,
-        # coordinates and the 1 m minimum. The caller turns it into mission waypoints.
-        rows = task.get('lanes')
-        if rows is None or rows == []:
-            task.pop('lanes', None)   # absent / empty = lane 0 + spacing
-        else:
-            if not isinstance(rows, list) or not 1 <= len(rows) <= SOLAR_MAX_LANES:
-                raise ValueError(f"solar_rows: lanes must be a list of 1-{SOLAR_MAX_LANES} rows")
-            clean = []
-            for k, row in enumerate(rows):
-                if not isinstance(row, (list, tuple)) or len(row) != 2:
-                    raise ValueError(f"solar_rows: lanes row {k + 1} must be [entrance, end]")
-                pts = []
-                for p in row:
-                    try:
-                        if isinstance(p, dict):
-                            lat, lon = float(p.get('lat')), float(p.get('lon'))
-                        else:
-                            lat, lon = float(p[0]), float(p[1])
-                    except (TypeError, ValueError, IndexError, KeyError):
-                        raise ValueError(f"solar_rows: lanes row {k + 1} has no valid lat/lon")
-                    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-                        raise ValueError(f"solar_rows: lanes row {k + 1} lat/lon out of range")
-                    pts.append({'lat': lat, 'lon': lon})
-                dn = (pts[1]['lat'] - pts[0]['lat']) * 111320.0
-                de = (pts[1]['lon'] - pts[0]['lon']) * 111320.0 * math.cos(math.radians(pts[0]['lat']))
-                if math.hypot(dn, de) < 1.0:
-                    raise ValueError(f"solar_rows: lanes row {k + 1} is shorter than 1 m")
-                clean.append(pts)
-            task['lanes'] = clean
-            compiled['lane_count'] = len(clean)
-        return compiled
+        return {'type': 'solar_rows', 'speed': speed}
 
     def _compile_mission_payload(self, payload: dict) -> dict:
         """Compile mission payload into firmware-ready waypoint-index tasks."""
@@ -916,25 +886,16 @@ class ControlServer:
 
             task_type = task.get('type', '')
             if task_type == 'solar_rows':
-                # Lane-0 points become two mission waypoints (so batched uploads work);
-                # the firmware hands the block to the nav PC (docs/solar_rows.md).
+                # Each route point becomes one mission waypoint (so batched uploads
+                # work); the firmware hands the route to the nav PC (docs/solar_rows.md).
                 compiled_task = self._compile_solar_task(task)
-                if len(runtime_waypoints) + 2 > max_waypoints:
-                    raise ValueError(f"Mission exceeds firmware waypoint limit ({max_waypoints}) at solar_rows task")
-                compiled_task['waypoint_a'] = len(runtime_waypoints)
-                runtime_waypoints.append({'lat': task['lane0_a']['lat'], 'lon': task['lane0_a']['lon'], 'alt': 0.0})
-                compiled_task['waypoint_b'] = len(runtime_waypoints)
-                runtime_waypoints.append({'lat': task['lane0_b']['lat'], 'lon': task['lane0_b']['lon'], 'alt': 0.0})
-                rows = task.get('lanes')
-                if rows:
-                    # Each row's entrance and end become two consecutive waypoints.
-                    if len(runtime_waypoints) + 2 * len(rows) > max_waypoints:
-                        raise ValueError(f"Mission exceeds firmware waypoint limit ({max_waypoints}) at solar_rows lanes")
-                    compiled_task['lanes_wp_start'] = len(runtime_waypoints)
-                    compiled_task['lanes_count'] = len(rows)
-                    for entrance, end in rows:
-                        runtime_waypoints.append({'lat': entrance['lat'], 'lon': entrance['lon'], 'alt': 0.0})
-                        runtime_waypoints.append({'lat': end['lat'], 'lon': end['lon'], 'alt': 0.0})
+                route = task['route']
+                if len(runtime_waypoints) + len(route) > max_waypoints:
+                    raise ValueError(f"Mission exceeds firmware waypoint limit ({max_waypoints}) at solar_rows route")
+                compiled_task['route_wp_start'] = len(runtime_waypoints)
+                compiled_task['route_count'] = len(route)
+                for p in route:
+                    runtime_waypoints.append({'lat': p['lat'], 'lon': p['lon'], 'alt': 0.0})
                 runtime_tasks.append(compiled_task)
                 continue
             if task_type != 'coverage_path':
