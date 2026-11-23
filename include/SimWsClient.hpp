@@ -52,7 +52,8 @@ class SimWsClient {
   bool sslOpen(const char* host, uint16_t port);
   bool wsHandshake(const char* host, const char* path);
 
-  bool cipSend(const uint8_t* data, size_t len);
+  bool cipSend(const uint8_t* data, size_t len);       // any length, split into chunks
+  bool cipSendChunk(const uint8_t* data, size_t len);  // one AT+CIPSEND (<= 1500 B)
   int  cipRecv(uint8_t* buf, size_t maxLen, uint32_t timeoutMs = 1500);
 
   bool sendWsFrame(uint8_t opcode, const uint8_t* payload, size_t payloadLen);

@@ -161,7 +161,21 @@ bool SimWsClient::sslOpen(const char* host, uint16_t port) {
   return false;
 }
 
+// AT+CIPSEND takes at most 1500 bytes per call on the A76xx: a longer frame was
+// rejected and dropped the link (telemetry with the motor list crossed 1500 B on
+// 2026-11-23 and the robot reconnected every ~5 s). TCP is a byte stream, so a
+// WebSocket frame can go out in several sends.
 bool SimWsClient::cipSend(const uint8_t* data, size_t len) {
+  constexpr size_t kMaxChunk = 1400;
+  while (len > kMaxChunk) {
+    if (!cipSendChunk(data, kMaxChunk)) return false;
+    data += kMaxChunk;
+    len -= kMaxChunk;
+  }
+  return cipSendChunk(data, len);
+}
+
+bool SimWsClient::cipSendChunk(const uint8_t* data, size_t len) {
   drainUrcs();
 
   char cmd[32];
