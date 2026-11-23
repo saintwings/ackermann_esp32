@@ -47,6 +47,12 @@ struct RobotClient::Impl {
   bool has_pending_command{false};
   unsigned long last_telemetry_ms{0};
   RobotCommand pending_command{};
+  // Change detection for the slow telemetry blocks (see sendTelemetry()).
+  bool send_full{true};          // next telemetry carries every block (set on register)
+  String io_sig{};
+  unsigned long io_sent_ms{0};
+  String motors_sig{};
+  unsigned long motors_sent_ms{0};
 };
 
 RobotClient::RobotClient() : impl_(new Impl()) {}
@@ -178,6 +184,7 @@ bool RobotClient::isConnected() const {
 }
 
 void RobotClient::sendRegister() {
+  impl_->send_full = true;   // a fresh connection gets every telemetry block
   JsonDocument doc;
   doc["type"] = MSG_ROBOT_REGISTER;
   doc["robot_id"] = ROBOT_ID;
@@ -199,11 +206,29 @@ void RobotClient::sendRegister() {
   }
 }
 
+namespace {
+
+// Float rounded to `decimals` places, or null for NAN/inf (cuts "48.2000008" to "48.2").
+void setRounded(JsonObject obj, const char* key, float value, unsigned decimals) {
+  if (!isfinite(value)) {
+    obj[key] = nullptr;
+  } else {
+    obj[key] = serialized(String(value, decimals));
+  }
+}
+
+}  // namespace
+
+// Telemetry is sized for SIM data: blocks that rarely change (motors, pots / inputs /
+// actuator) are sent only when they change, plus a full refresh every
+// kSlowRefreshMs and right after (re)connecting. The planner keeps the last copy of
+// each between messages.
 void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   if (!isConnected()) return;
   unsigned long now = millis();
   if (now - impl_->last_telemetry_ms < 200) return;
   impl_->last_telemetry_ms = now;
+  constexpr unsigned long kSlowRefreshMs = 10000;
 
   JsonDocument doc;
   doc["type"] = MSG_SENSOR_TELEMETRY;
@@ -212,24 +237,24 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
 
   JsonObject payload = doc["payload"].to<JsonObject>();
   JsonObject status = payload["status"].to<JsonObject>();
-  status["battery_level"] = telemetry.battery_level;
-  status["speed"] = telemetry.speed;
-  status["heading"] = telemetry.heading;
+  setRounded(status, "battery_level", telemetry.battery_level, 0);
+  setRounded(status, "speed", telemetry.speed, 2);
+  setRounded(status, "heading", telemetry.heading, 1);
   status["heading_ready"] = telemetry.heading_ready;
   status["heading_source"] = telemetry.heading_source;
   status["e_stop"] = telemetry.e_stop;
-  status["e_stop_reason"] = telemetry.e_stop_reason;
+  if (telemetry.e_stop) status["e_stop_reason"] = telemetry.e_stop_reason;
   status["motors_released"] = telemetry.motors_released;
 
   JsonObject gps = payload["gps"].to<JsonObject>();
   gps["valid"] = telemetry.gps_valid;
   gps["latitude"] = telemetry.gps_latitude;
   gps["longitude"] = telemetry.gps_longitude;
-  gps["altitude"] = telemetry.gps_altitude;
-  gps["hdop"] = telemetry.gps_hdop;
+  setRounded(gps, "altitude", telemetry.gps_altitude, 2);
+  setRounded(gps, "hdop", telemetry.gps_hdop, 2);
   gps["fix_quality"] = telemetry.gps_fix_quality;
   gps["satellites"] = telemetry.gps_satellites;
-  gps["h_err_m"] = telemetry.gps_h_err_m;
+  setRounded(gps, "h_err_m", telemetry.gps_h_err_m, 3);
 
   // Link health for the web UI. rtt_ms = robot<->server WebSocket ping round
   // trip (SIM only; -1 when unknown, e.g. on WiFi or before the first pong).
@@ -237,23 +262,30 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   link["source"] = _net ? _net->sourceName() : "None";
   link["rtt_ms"] = (_net && _net->source() == NetSource::SIM && _simWs) ? _simWs->lastPongRttMs() : -1L;
 
-  JsonObject odometry = payload["odometry"].to<JsonObject>();
-  odometry["speed"] = telemetry.speed;
-
+  // Idle: just the state. Otherwise the progress fields; absent ones default in the
+  // planner (holding false, coverage inactive, no task / loop).
   JsonObject mission = payload["mission"].to<JsonObject>();
   mission["active"] = telemetry.mission_active;
   mission["state"] = telemetry.mission_state;
-  mission["name"] = telemetry.mission_name;
-  mission["waypoint_index"] = telemetry.mission_waypoint_index;
-  mission["waypoint_total"] = telemetry.mission_waypoint_total;
-  mission["holding"] = telemetry.mission_holding;
-  mission["coverage_active"] = telemetry.mission_coverage_active;
-  mission["coverage_progress_index"] = telemetry.mission_coverage_progress_index;
-  mission["coverage_total"] = telemetry.mission_coverage_total;
-  mission["task_index"] = telemetry.mission_task_index;
-  mission["task_total"] = telemetry.mission_task_total;
-  mission["loop_iteration"] = telemetry.mission_loop_iteration;
-  mission["loop_total"] = telemetry.mission_loop_total;
+  if (telemetry.mission_active || telemetry.mission_state != "idle") {
+    mission["name"] = telemetry.mission_name;
+    mission["waypoint_index"] = telemetry.mission_waypoint_index;
+    mission["waypoint_total"] = telemetry.mission_waypoint_total;
+    if (telemetry.mission_holding) mission["holding"] = true;
+    if (telemetry.mission_coverage_active) {
+      mission["coverage_active"] = true;
+      mission["coverage_progress_index"] = telemetry.mission_coverage_progress_index;
+      mission["coverage_total"] = telemetry.mission_coverage_total;
+    }
+    if (telemetry.mission_active) {
+      mission["task_index"] = telemetry.mission_task_index;
+      mission["task_total"] = telemetry.mission_task_total;
+      if (telemetry.mission_loop_total > 0) {
+        mission["loop_iteration"] = telemetry.mission_loop_iteration;
+        mission["loop_total"] = telemetry.mission_loop_total;
+      }
+    }
+  }
 
   // Only while a solar_rows run is active (saves ~40 bytes per message over SIM).
   if (telemetry.solar_active) {
@@ -264,50 +296,74 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
     if (telemetry.solar_status.length() > 0) solar["status"] = serialized(telemetry.solar_status);
   }
 
-  JsonArray pots = payload["pots"].to<JsonArray>();
-  for (int i = 0; i < telemetry.pot_count; ++i) {
-    JsonObject pot = pots.add<JsonObject>();
-    pot["present"] = telemetry.pot_present[i];
-    pot["wiper"] = telemetry.pot_wiper[i];
-    pot["percent"] = telemetry.pot_wiper[i] * 100.0f / 127.0f;
-  }
-
-  if (telemetry.input_count > 0) {
-    JsonObject inputs = payload["inputs"].to<JsonObject>();
-    inputs["ok"] = telemetry.inputs_ok;
-    JsonArray values = inputs["values"].to<JsonArray>();
-    for (int i = 0; i < telemetry.input_count; ++i) values.add(((telemetry.inputs >> i) & 1) != 0);
-  }
-
-  if (telemetry.actuator_enabled) {
-    JsonObject act = payload["actuator"].to<JsonObject>();
-    act["position"] = telemetry.actuator_position_pct;
-    act["target"] = telemetry.actuator_target_pct;
-    act["state"] = telemetry.actuator_state;
-    act["fault"] = telemetry.actuator_fault;
-  }
-
-  // Motors are polled at ~1 Hz, so send them at most once a second (saves SIM data);
-  // the web UI keeps the last list between updates.
-  static unsigned long last_motors_ms = 0;
-  if (telemetry.motor_count > 0 && now - last_motors_ms >= 1000) {
-    last_motors_ms = now;
-    JsonArray motors = payload["motors"].to<JsonArray>();
-    for (int i = 0; i < telemetry.motor_count; ++i) {
-      const MotorStatus& m = telemetry.motors[i];
-      JsonObject motor = motors.add<JsonObject>();
-      motor["name"] = telemetry.motor_names[i];
-      motor["online"] = m.online;
-      motor["enabled"] = m.enabled;
-      motor["fault"] = m.fault;
-      motor["fault_code"] = m.fault_code;
-      motor["fault_text"] = m.fault_text;
-      // NAN serializes as null
-      motor["voltage"] = m.voltage_v;
-      motor["temp"] = m.temp_c;
-      motor["age_ms"] = m.updated_ms ? static_cast<long>(now - m.updated_ms) : -1L;
+  // Pots / inputs / actuator: built aside, sent when changed (whole percent, so ADC
+  // jitter on the actuator feedback doesn't count as a change) or on refresh.
+  {
+    JsonDocument io;
+    if (telemetry.pot_count > 0) {
+      JsonArray pots = io["pots"].to<JsonArray>();
+      for (int i = 0; i < telemetry.pot_count; ++i) {
+        JsonObject pot = pots.add<JsonObject>();
+        pot["present"] = telemetry.pot_present[i];
+        pot["percent"] = static_cast<int>(lroundf(telemetry.pot_wiper[i] * 100.0f / 127.0f));
+      }
+    }
+    if (telemetry.input_count > 0) {
+      JsonObject inputs = io["inputs"].to<JsonObject>();
+      inputs["ok"] = telemetry.inputs_ok;
+      JsonArray values = inputs["values"].to<JsonArray>();
+      for (int i = 0; i < telemetry.input_count; ++i) values.add(((telemetry.inputs >> i) & 1) != 0);
+    }
+    if (telemetry.actuator_enabled) {
+      JsonObject act = io["actuator"].to<JsonObject>();
+      act["position"] = static_cast<int>(lroundf(telemetry.actuator_position_pct));
+      act["target"] = static_cast<int>(lroundf(telemetry.actuator_target_pct));
+      act["state"] = telemetry.actuator_state;
+      act["fault"] = telemetry.actuator_fault;
+    }
+    String sig;
+    serializeJson(io, sig);
+    if (impl_->send_full || sig != impl_->io_sig || now - impl_->io_sent_ms >= kSlowRefreshMs) {
+      impl_->io_sig = sig;
+      impl_->io_sent_ms = now;
+      for (JsonPair kv : io.as<JsonObject>()) payload[kv.key()] = kv.value();
     }
   }
+
+  // Motors: on any change of online / enabled / fault, or on refresh (voltage and
+  // temperature only need the refresh rate).
+  if (telemetry.motor_count > 0) {
+    String sig;
+    for (int i = 0; i < telemetry.motor_count; ++i) {
+      const MotorStatus& m = telemetry.motors[i];
+      sig += m.online ? '1' : '0';
+      sig += m.enabled ? '1' : '0';
+      sig += m.fault ? '1' : '0';
+      sig += String(m.fault_code);
+      sig += m.fault_text;
+      sig += '|';
+    }
+    if (impl_->send_full || sig != impl_->motors_sig || now - impl_->motors_sent_ms >= kSlowRefreshMs) {
+      impl_->motors_sig = sig;
+      impl_->motors_sent_ms = now;
+      JsonArray motors = payload["motors"].to<JsonArray>();
+      for (int i = 0; i < telemetry.motor_count; ++i) {
+        const MotorStatus& m = telemetry.motors[i];
+        JsonObject motor = motors.add<JsonObject>();
+        motor["name"] = telemetry.motor_names[i];
+        motor["online"] = m.online;
+        motor["enabled"] = m.enabled;
+        motor["fault"] = m.fault;
+        if (m.fault) {
+          motor["fault_code"] = m.fault_code;
+          motor["fault_text"] = m.fault_text;
+        }
+        setRounded(motor, "voltage", m.voltage_v, 1);
+        setRounded(motor, "temp", m.temp_c, 0);
+      }
+    }
+  }
+  impl_->send_full = false;
 
   String json;
   serializeJson(doc, json);

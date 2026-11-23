@@ -1733,18 +1733,18 @@
                 robot.link = payload.link || null;
                 
                 // Store telemetry including mission status
+                // pots / inputs / actuator / motors are sent only when they change (and
+                // every 10 s), not in every message: keep the last copy between updates.
+                const prevTelemetry = latestTelemetry.get(robotId) || {};
                 latestTelemetry.set(robotId, {
                     gps: payload.gps,
                     status: payload.status,
-                    odometry: payload.odometry,
                     mission: payload.mission || null,
                     solar: payload.solar || null,
-                    pots: Array.isArray(payload.pots) ? payload.pots : null,
-                    inputs: payload.inputs || null,
-                    actuator: payload.actuator || null,
-                    // Sent about once a second, not in every telemetry message: keep the last list.
-                    motors: Array.isArray(payload.motors) ? payload.motors
-                        : ((latestTelemetry.get(robotId) || {}).motors || null)
+                    pots: Array.isArray(payload.pots) ? payload.pots : (prevTelemetry.pots || null),
+                    inputs: payload.inputs || prevTelemetry.inputs || null,
+                    actuator: payload.actuator || prevTelemetry.actuator || null,
+                    motors: Array.isArray(payload.motors) ? payload.motors : (prevTelemetry.motors || null)
                 });
                 
                 // Update displays
@@ -1776,7 +1776,7 @@
 
             const gps     = payload.gps     || {};
             const status  = payload.status  || {};
-            const odo     = payload.odometry || {};
+            const odo     = payload.status   || {};   // speed, heading
             const mission = payload.mission  || {};
 
             const mState = mission.state || 'idle';
