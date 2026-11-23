@@ -150,6 +150,9 @@ struct HeadingFusion {
   float anchor_game_deg = 0.0f;
   unsigned long last_gps_update_ms = 0;
   unsigned long last_forward_ms = 0;  // last NavTask cycle with a forward drive target
+  // Why the last GPS epoch did (or didn't) make a correction, for HEADING?.
+  char status[64] = "waiting for IMU and GPS";
+  unsigned long status_ms = 0;
 };
 static HeadingFusion heading_fusion;
 // PS2 reads glitch for a poll or two (R1/stick read as released), which zeroes the drive
@@ -2890,11 +2893,22 @@ static void handleUsbSerialLine(const String& raw_line) {
   }
 
   if (upper == "HEADING?") {
-    Serial.printf("[USB_SERIAL] heading src=%s heading=%.1f mag=%.1f offset=%.1f corrections=%lu fused_err=%.1f mag_err=%.1f\n",
+    Serial.printf("[USB_SERIAL] heading src=%s heading=%.1f mag=%.1f offset=%.1f corrections=%lu fused_err=%.1f mag_err=%.1f ready=%s\n",
                   heading_source == HeadingSource::Gps ? "GPS" : "MAG", estimateHeadingDeg(),
                   imu_state.valid ? magHeadingDeg() : 0.0f, heading_fusion.offset_deg,
                   (unsigned long)heading_fusion.corrections, heading_fusion.last_gps_err_deg,
-                  heading_fusion.last_mag_err_deg);
+                  heading_fusion.last_mag_err_deg, headingReadyForMission() ? "yes" : "no");
+    // Why the GPS calibration is (not) progressing, as of the last GPS epoch.
+    Serial.printf("[USB_SERIAL] heading calib: %s (%lu ms ago)\n", heading_fusion.status,
+                  heading_fusion.status_ms ? millis() - heading_fusion.status_ms : 0UL);
+    // IMU health: init result, age of the last accel/gyro/rotation report, stale events,
+    // INT pin (LOW = BNO085 has data waiting; stuck HIGH = no data / wiring).
+    Serial.printf("[USB_SERIAL] imu: init=%s valid=%s last_report=%s%lu ms ago rv=%s game=%s stale_events=%lu int_pin=%s\n",
+                  sensor_comms.imu_ready ? "ok" : "FAILED", imu_state.valid ? "yes" : "no",
+                  imu_state.last_update_ms ? "" : "never/", imu_state.last_update_ms ? millis() - imu_state.last_update_ms : 0UL,
+                  imu_state.rv_valid ? "yes" : "no", imu_state.game_valid ? "yes" : "no",
+                  (unsigned long)loop_stats.safety_stale_imu_count,
+                  digitalRead(BNO085_SPI_INT_PIN) == LOW ? "LOW" : "HIGH");
     return;
   }
 
@@ -3117,7 +3131,18 @@ static bool headingReadyForMission() {
 // (HEADING_GPS_FLOAT_MIN_BASELINE_M) for the mag comparison log; they never correct the offset.
 static void updateHeadingFusion() {
   HeadingFusion& hf = heading_fusion;
-  if (!imu_state.valid || !imu_state.rv_valid || !imu_state.game_valid) return;
+  auto setStatus = [&hf](const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(hf.status, sizeof(hf.status), fmt, args);
+    va_end(args);
+    hf.status_ms = millis();
+  };
+  if (!imu_state.valid || !imu_state.rv_valid || !imu_state.game_valid) {
+    setStatus("no IMU: %s", !imu_state.valid ? "no reports" : !imu_state.rv_valid ? "no rotation vector"
+                                                                                   : "no game rotation vector");
+    return;
+  }
   const float game_deg = gameYawDeg();
   if (!hf.offset_valid) {
     hf.offset_deg = normalizeAngleDeg(magHeadingDeg() - game_deg);
@@ -3142,6 +3167,20 @@ static void updateHeadingFusion() {
                       now_ms - hf.last_forward_ms < HEADING_FORWARD_HOLD_MS;
   if (!usable) {
     hf.anchor_valid = false;
+    // First failing condition, in the order above.
+    if (!gps_fix.valid) {
+      setStatus("no GPS fix");
+    } else if (!(gps_fix.fix_quality == 4 || is_float)) {
+      setStatus("RTK not fixed (fix=%d, need 4)", gps_fix.fix_quality);
+    } else if (!gps_fix.has_gst) {
+      setStatus("no GST from GPS (no error estimate)");
+    } else if (gps_fix.h_err_m > HEADING_GPS_MAX_HERR_M) {
+      setStatus("GPS error too high (herr=%.3f > %.3f m)", gps_fix.h_err_m, HEADING_GPS_MAX_HERR_M);
+    } else if (robot_mode != RobotMode::Normal) {
+      setStatus("zero-turn mode (need NORMAL)");
+    } else {
+      setStatus("not driving forward (cmd %.2f m/s)", control_targets.linear_mps);
+    }
     return;
   }
   const float max_yaw_change_deg = (hf.segment_float || is_float) ? HEADING_GPS_FLOAT_MAX_YAW_CHANGE_DEG
@@ -3154,11 +3193,14 @@ static void updateHeadingFusion() {
     hf.anchor_lon = gps_fix.longitude;
     hf.anchor_game_deg = game_deg;
     hf.segment_float = is_float;
+    setStatus(turned ? "turning (>%.0f deg), segment restarted" : "segment started", max_yaw_change_deg);
     return;
   }
   hf.segment_float = hf.segment_float || is_float;
   const float min_baseline_m = hf.segment_float ? HEADING_GPS_FLOAT_MIN_BASELINE_M : HEADING_GPS_MIN_BASELINE_M;
-  if (distanceMeters(hf.anchor_lat, hf.anchor_lon, gps_fix.latitude, gps_fix.longitude) < min_baseline_m) {
+  const float covered_m = distanceMeters(hf.anchor_lat, hf.anchor_lon, gps_fix.latitude, gps_fix.longitude);
+  if (covered_m < min_baseline_m) {
+    setStatus("collecting: %.2f / %.2f m straight", covered_m, min_baseline_m);
     return;
   }
 
@@ -3178,6 +3220,9 @@ static void updateHeadingFusion() {
     hf.last_gps_err_deg = err_deg;
     hf.last_mag_err_deg = normalizeAngleDeg(course_deg - mag_deg);
     ++hf.corrections;
+    setStatus("correction applied (err %.1f deg)", err_deg);
+  } else {
+    setStatus("RTK float sample (log only, not applied)");
   }
 
   hf.anchor_lat = gps_fix.latitude;
@@ -3612,6 +3657,11 @@ void setup() {
   Serial.println(GPS_UART_TX_PIN);
   SensorComms::configureGnssOutput(sensor_comms);
   SensorComms::initBno085(sensor_comms);
+  // Always printed (the detailed [IMU] lines need DEBUG_LOG_SENSOR_COMMS).
+  Serial.printf("[IMU] BNO085 %s (SPI SCK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d)\n",
+                sensor_comms.imu_ready ? "ready" : "NOT FOUND: init failed after retries",
+                BNO085_SPI_SCK_PIN, BNO085_SPI_MISO_PIN, BNO085_SPI_MOSI_PIN, BNO085_SPI_CS_PIN,
+                BNO085_SPI_INT_PIN, BNO085_SPI_RST_PIN);
 #if CONTROL_SERVER_ENABLE
   robot_client.begin(&net_manager);
 #else

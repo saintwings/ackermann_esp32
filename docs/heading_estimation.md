@@ -269,15 +269,23 @@ At runtime, these serial commands are available:
 - `HEADING GPS` / `HEADING MAG` switch the heading source. The offset is learned in both
   modes, so switching back to GPS takes effect immediately.
 - `HEADING?` prints the source, heading, magnetometer heading, offset, number of
-  corrections and the last errors.
+  corrections, the last errors and `ready=yes|no`. A second line,
+  `heading calib: <status> (<n> ms ago)`, says why the last GPS epoch did or did not
+  make a correction. It names the first condition that failed:
+  `no IMU: …`, `no GPS fix`, `RTK not fixed (fix=5, need 4)`, `no GST from GPS`,
+  `GPS error too high (herr=… > 0.050 m)`, `zero-turn mode (need NORMAL)` or
+  `not driving forward (cmd … m/s)`. Otherwise it shows progress:
+  `segment started`, `turning (>3 deg), segment restarted`,
+  `collecting: 0.32 / 0.50 m straight`, `correction applied (err … deg)` or
+  `RTK float sample (log only, not applied)`.
 
 ## Settings
 
-All of these are in `Config_2.h` (leafsheep) and `Config.h`.
+All of these are in section 5 of `include/Config_leafsheep.h` and `include/Config_ladybug.h`.
 
 | Setting | Value | Meaning |
 |---|---|---|
-| `HEADING_SOURCE_DEFAULT` | 1 (leafsheep), 0 (`Config.h`) | 0 = magnetometer, 1 = GPS-fused |
+| `HEADING_SOURCE_DEFAULT` | 1 (leafsheep), 0 (ladybug) | 0 = magnetometer, 1 = GPS-fused |
 | `HEADING_GPS_MIN_BASELINE_M` | 0.5 | Straight distance per RTK fixed sample |
 | `HEADING_GPS_MAX_YAW_CHANGE_DEG` | 3.0 | More turning than this restarts the segment |
 | `HEADING_GPS_GAIN` | 0.3 | $K$, the fraction of each error applied to the offset |
