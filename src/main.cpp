@@ -2,6 +2,7 @@
 #include "driver/twai.h"
 #include <PS2X_lib.h>
 #include <WiFi.h>
+#include <ArduinoOTA.h>
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_BNO08x.h>
@@ -117,6 +118,7 @@ static void commsTask(void* pvParameters);
 static void serialCmdTask(void* pvParameters);
 static void navTask(void* pvParameters);
 static void motorStatusTask(void* pvParameters);
+static void otaTask(void* pvParameters);
 
 // Guards GPS fix, IMU state and mission state shared between NavTask (owner),
 // CommsTask (server commands, telemetry, logging) and SerialCmdTask.
@@ -377,6 +379,9 @@ static volatile uint8_t motor_reset_request = 0;
 // steering output and no mission start until MOTOR ACTIVATE. Set by ControlTask when it
 // executes motor_power_request.
 static volatile bool motors_released = false;
+// WiFi firmware upload in progress (OtaTask): ControlTask holds the drive at zero and
+// no mission may start. Cleared on upload error; success reboots.
+static volatile bool ota_active = false;
 enum class MotorPowerRequest : uint8_t { None, Release, Activate };
 static volatile MotorPowerRequest motor_power_request = MotorPowerRequest::None;
 
@@ -3252,7 +3257,10 @@ static void handleRobotClientCommand() {
                                 command.type == RobotCommandType::MissionUploadExecute ||
                                 (command.type == RobotCommandType::PauseMission && mission_ctx.active &&
                                  mission_ctx.state == MissionState::Paused);
-    if (motors_released && starts_mission) {
+    if (ota_active && (starts_mission || command.type == RobotCommandType::Move)) {
+      ack_status = "rejected";
+      ack_detail = "firmware upload in progress";
+    } else if (motors_released && starts_mission) {
       ack_status = "rejected";
       ack_detail = "motors released: activate them first";
     } else if (starts_mission && !headingReadyForMission()) {
@@ -3777,6 +3785,21 @@ void setup() {
     nullptr,
     1);
 
+#if OTA_ENABLE
+  // Not on core 0: CommsTask busy-waits there on the modem (TINY_GSM_YIELD sleeps 1 ms
+  // per 50 ms), which starved a lower-priority OtaTask into 1 s receive timeouts
+  // (OTA error 3). On core 1 below ControlTask; it sleeps while waiting for data.
+  xTaskCreatePinnedToCore(
+    otaTask,
+    "OtaTask",
+    8192,
+    nullptr,
+    2,
+    nullptr,
+    1);
+  Serial.println("[RTOS] OtaTask pinned to Core 1");
+#endif
+
   Serial.println("[RTOS] ControlTask pinned to Core 1");
   Serial.println("[RTOS] SerialCmdTask pinned to Core 1");
   Serial.println("[RTOS] MotorStatusTask pinned to Core 1");
@@ -3814,6 +3837,10 @@ static void controlTask(void* /*pvParameters*/) {
         stopMotorsForEStop();
       }
       e_stop_applied = e_stop_active;
+
+      static bool ota_applied = false;
+      if (ota_active && !ota_applied && !motors_released) drive_motors.setWheelRpm(0, 0);
+      ota_applied = ota_active;
 
       // Motor release / activation (MOTOR RELEASE|ACTIVATE / server motor_release|activate).
       const MotorPowerRequest power_req = motor_power_request;
@@ -3881,7 +3908,7 @@ static void controlTask(void* /*pvParameters*/) {
       estop_on_combo_prev = estop_on_combo;
       estop_off_combo_prev = estop_off_combo;
 
-      if (!e_stop_active) {
+      if (!e_stop_active && !ota_active) {
         bool control_enable = ps2x.Button(PSB_R1);
         bool mode_combo_enable = ps2x.Button(PSB_R1) && ps2x.Button(PSB_R2);
         if (mode_combo_enable && ps2x.Button(PSB_TRIANGLE) && robot_mode != RobotMode::ZeroTurn) {
@@ -4105,6 +4132,134 @@ static void publishNavSerial() {
                   tlat, tlon, dist, bearingDeg(lat, lon, tlat, tlon), speed_cmd);
   }
   Serial.printf("%s}\n", buf);
+}
+
+// WiFi firmware upload (ArduinoOTA, espota protocol). NET_MODE 1/3: rides the WiFi
+// NetManager already runs. NET_MODE 0/2: WiFi STA is started here for OTA only (the SIM
+// link uses the modem's own TCP stack, so the two don't interfere); if the farm WiFi is
+// missing for OTA_AP_FALLBACK_MS, the robot starts its own hotspot (WIFI_AP_SSID, upload
+// to 192.168.4.1) and retries the farm WiFi every OTA_AP_STA_RETRY_MS while nobody is on
+// the hotspot. Uploads are only served while no mission is active: otherwise handle()
+// isn't called and espota times out.
+static void otaTask(void* /*pvParameters*/) {
+#if OTA_ENABLE
+#if NET_MODE == 0 || NET_MODE == 2
+  constexpr bool kOwnWifi = true;
+#else
+  constexpr bool kOwnWifi = false;
+#endif
+  auto staBegin = []() {
+    IPAddress ip, gw, sn, dns1, dns2;
+    ip.fromString(WIFI_STATIC_IP);   gw.fromString(WIFI_STATIC_GATEWAY);
+    sn.fromString(WIFI_STATIC_SUBNET);
+    dns1.fromString("8.8.8.8");      dns2.fromString("1.1.1.1");
+    WiFi.config(ip, gw, sn, dns1, dns2);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  };
+  if (kOwnWifi) {
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    staBegin();
+    Serial.printf("[OTA] WiFi STA for firmware upload: SSID %s, IP %s\n", WIFI_SSID, WIFI_STATIC_IP);
+  }
+  bool hotspot_on = false;
+  unsigned long sta_down_since_ms = millis();
+  unsigned long last_sta_try_ms = 0;
+  bool started = false;
+  bool was_connected = false;
+  bool blocked_logged = false;
+  for (;;) {
+    const unsigned long now = millis();
+    const bool connected = WiFi.status() == WL_CONNECTED;
+    if (connected != was_connected) {
+      was_connected = connected;
+      if (connected) {
+        // Modem power-save adds 50-250 ms latency per packet: uploads crawl or stall.
+        WiFi.setSleep(false);
+        WiFi.setAutoReconnect(true);
+        Serial.printf("[OTA] WiFi up, upload to %s:%d\n", WiFi.localIP().toString().c_str(), OTA_PORT);
+      } else if (!hotspot_on) {
+        Serial.println("[OTA] WiFi down: upload unavailable");
+      }
+    }
+
+    if (kOwnWifi) {
+      if (connected) {
+        sta_down_since_ms = now;
+        if (hotspot_on && WiFi.softAPgetStationNum() == 0) {
+          WiFi.softAPdisconnect(true);
+          WiFi.mode(WIFI_STA);
+          hotspot_on = false;
+          Serial.printf("[OTA] back on %s: hotspot off\n", WIFI_SSID);
+        }
+      } else if (!hotspot_on && now - sta_down_since_ms >= OTA_AP_FALLBACK_MS) {
+        // Stop the STA's channel scans first, or the hotspot would hop channels with them.
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false);
+        WiFi.mode(WIFI_AP_STA);
+        hotspot_on = WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
+        last_sta_try_ms = now;
+        if (hotspot_on) {
+          Serial.printf("[OTA] no %s for %lu s: hotspot '%s' up, upload to %s:%d\n", WIFI_SSID,
+                        OTA_AP_FALLBACK_MS / 1000UL, WIFI_AP_SSID, WiFi.softAPIP().toString().c_str(), OTA_PORT);
+        } else {
+          Serial.println("[OTA] hotspot failed to start");
+          sta_down_since_ms = now;   // retry the whole cycle later
+          WiFi.mode(WIFI_STA);
+          WiFi.setAutoReconnect(true);
+          staBegin();
+        }
+      } else if (hotspot_on && WiFi.softAPgetStationNum() == 0 && now - last_sta_try_ms >= OTA_AP_STA_RETRY_MS) {
+        last_sta_try_ms = now;   // one attempt; nobody is on the hotspot to disturb
+        staBegin();
+      }
+    }
+
+    const bool ready = connected || hotspot_on;
+    if (ready && !started) {
+      static int last_pct = -1;
+      ArduinoOTA.setHostname(ROBOT_NAME);
+      ArduinoOTA.setPort(OTA_PORT);
+      ArduinoOTA.setPassword(OTA_PASSWORD);
+      ArduinoOTA
+          .onStart([]() {
+            ota_active = true;
+            last_pct = -1;
+            Serial.printf("[OTA] upload started (%s): drive held at zero\n",
+                          ArduinoOTA.getCommand() == U_FLASH ? "firmware" : "filesystem");
+          })
+          .onProgress([](unsigned int done, unsigned int total) {
+            const int pct = total ? static_cast<int>(done * 100ULL / total) : 0;
+            if (pct / 10 != last_pct / 10) {
+              last_pct = pct;
+              Serial.printf("[OTA] %d%%\n", pct);
+            }
+          })
+          .onEnd([]() { Serial.println("[OTA] upload done, rebooting"); })
+          .onError([](ota_error_t err) {
+            Serial.printf("[OTA] upload failed (error %u), still running the old firmware\n",
+                          static_cast<unsigned>(err));
+            ota_active = false;
+          });
+      ArduinoOTA.begin();
+      started = true;
+    }
+    if (started && ready) {
+      if (mission_ctx.active) {
+        if (!blocked_logged) {
+          blocked_logged = true;
+          Serial.println("[OTA] uploads refused while a mission is active");
+        }
+      } else {
+        blocked_logged = false;
+        ArduinoOTA.handle();
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+#else
+  vTaskDelete(nullptr);
+#endif
 }
 
 static void motorStatusTask(void* /*pvParameters*/) {

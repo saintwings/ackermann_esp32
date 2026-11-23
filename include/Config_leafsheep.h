@@ -69,6 +69,20 @@
 // TCP server port for line-based protocol
 #define WIFI_SERVER_PORT 7777
 
+// ── WiFi firmware upload (ArduinoOTA) ────────────────────────────────────────
+// Upload with: pio run -e esp32-s3-ota -t upload (set upload_port to WIFI_STATIC_IP).
+// In SIM-only / offline NET_MODE, WiFi STA is brought up for OTA only; control and
+// NTRIP traffic stay on the SIM. Uploads are refused while a mission is active, and
+// the drive is held at zero during an upload.
+#define OTA_ENABLE   1
+#define OTA_PORT     3232
+// No farm WiFi (SIM-only NET_MODE): after this long the robot starts its own hotspot
+// (WIFI_AP_SSID / WIFI_AP_PASSWORD) for uploads at 192.168.4.1 (pio env esp32-s3-ota-ap),
+// and retries the farm WiFi every OTA_AP_STA_RETRY_MS while nobody is on the hotspot.
+#define OTA_AP_FALLBACK_MS   30000UL
+#define OTA_AP_STA_RETRY_MS  60000UL
+#define OTA_PASSWORD "leafsheep-ota"
+
 // ── SIMCOM A7670X (CAT1-A7670X-V1.02 board) ─────────────────────────────────
 // Uses ESP32-S3 UART2.  Board pins: VCC=5V rail, GND, TXD→GPIO18, RXD←GPIO17,
 // EN→GPIO21 (HIGH=on), CTS=leave open, VDD=leave open.
