@@ -3524,8 +3524,28 @@ static void publishRobotTelemetry() {
     telemetry.mission_coverage_active = false;
     telemetry.mission_coverage_progress_index = -1;
     telemetry.mission_coverage_total = 0;
+    telemetry.mission_task_index = -1;
+    telemetry.mission_task_total = static_cast<int>(mission_task_count);
+    telemetry.mission_loop_iteration = 0;
+    telemetry.mission_loop_total = 0;
 
     if (mission_ctx.active && mission_task_cursor < mission_task_count) {
+      telemetry.mission_task_index = static_cast<int>(mission_task_cursor);
+      // Innermost loop around the cursor: the first LoopEnd at/after it whose LoopStart
+      // is before it. Its remaining count is -1 on the first pass, then count-1, count-2...
+      for (size_t j = mission_task_cursor; j < mission_task_count; ++j) {
+        const MissionTaskPlan& t = mission_tasks[j];
+        if (t.type != MissionTaskType::LoopEnd || t.loop_start_index < 0 ||
+            static_cast<size_t>(t.loop_start_index) >= mission_task_cursor) {
+          continue;
+        }
+        const int total = max(1, t.loop_count);
+        const int remaining = mission_loop_remaining[j];
+        telemetry.mission_loop_total = total;
+        telemetry.mission_loop_iteration = remaining < 0 ? 1 : min(total, total - remaining + 1);
+        break;
+      }
+
       const MissionTaskPlan& active_task = mission_tasks[mission_task_cursor];
       if (active_task.type == MissionTaskType::CoveragePath &&
           active_task.waypoint_index >= 0 &&

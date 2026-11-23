@@ -250,6 +250,10 @@ void RobotClient::sendTelemetry(const RobotTelemetry& telemetry) {
   mission["coverage_active"] = telemetry.mission_coverage_active;
   mission["coverage_progress_index"] = telemetry.mission_coverage_progress_index;
   mission["coverage_total"] = telemetry.mission_coverage_total;
+  mission["task_index"] = telemetry.mission_task_index;
+  mission["task_total"] = telemetry.mission_task_total;
+  mission["loop_iteration"] = telemetry.mission_loop_iteration;
+  mission["loop_total"] = telemetry.mission_loop_total;
 
   // Only while a solar_rows run is active (saves ~40 bytes per message over SIM).
   if (telemetry.solar_active) {

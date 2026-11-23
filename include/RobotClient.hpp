@@ -81,6 +81,10 @@ struct RobotTelemetry {
   bool mission_coverage_active{false};
   int mission_coverage_progress_index{-1};
   int mission_coverage_total{0};
+  int mission_task_index{-1};       // task cursor (0-based), -1 = none
+  int mission_task_total{0};
+  int mission_loop_iteration{0};    // innermost enclosing loop: pass 1..total; 0 = not in a loop
+  int mission_loop_total{0};
 
   // Solar rows task (nav PC drives): state = idle | waiting_nav | running | paused |
   // nav_quiet; status = last SOLAR_STATUS JSON from nav (validated), "" = none.

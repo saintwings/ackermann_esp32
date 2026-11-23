@@ -1795,8 +1795,9 @@
             const hdg  = odo.heading != null ? `hdg:${Math.round(odo.heading)}°` : '';
             const wp   = mission.waypoint_index != null
                 ? `WP:${mission.waypoint_index}/${mission.waypoint_total || '?'}` : '';
+            const loop = mission.loop_total > 0 ? `loop:${mission.loop_iteration}/${mission.loop_total}` : '';
 
-            const parts = [`[${name}]`, `GPS ${lat},${lon}`, bat, spd, hdg, mState !== 'idle' ? mState : '', wp]
+            const parts = [`[${name}]`, `GPS ${lat},${lon}`, bat, spd, hdg, mState !== 'idle' ? mState : '', wp, loop]
                 .filter(Boolean).join(' ');
 
             _telemetryLog.push({
@@ -2809,6 +2810,16 @@
                     html += `<strong>GPS Error:</strong> ${herrText} (resumes below ${(GPS_HOLD_ERROR_M * 80).toFixed(0)} cm)<br>`;
                 }
                 html += `<strong>Current Waypoint:</strong> ${waypointIndex >= 0 ? waypointIndex : '--'}${currentWaypoint ? ` (${currentWaypoint.name})` : ''}<br>`;
+                const taskIndex = Number.isFinite(Number(mission.task_index)) ? Number(mission.task_index) : -1;
+                const taskTotal = Number.isFinite(Number(mission.task_total)) ? Number(mission.task_total) : 0;
+                const loopIteration = Number.isFinite(Number(mission.loop_iteration)) ? Number(mission.loop_iteration) : 0;
+                const loopTotal = Number.isFinite(Number(mission.loop_total)) ? Number(mission.loop_total) : 0;
+                if (missionActive && taskIndex >= 0 && taskTotal > 0) {
+                    html += `<strong>Task:</strong> ${taskIndex + 1} / ${taskTotal}<br>`;
+                }
+                if (missionActive && loopTotal > 0) {
+                    html += `<strong>Loop:</strong> ${loopIteration} / ${loopTotal}<br>`;
+                }
                 if (coverageActive && coverageTotal > 0) {
                     html += `<strong>Coverage Progress:</strong> ${coverageCurrentDisplay || '--'} / ${coverageTotal}<br>`;
                 }
