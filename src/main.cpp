@@ -215,6 +215,7 @@ static void logSensorsAt1Hz() {
     Serial.print(" hdop=");
     Serial.print(g.hdop, 2);
     if (g.has_gst) Serial.printf(" herr=%.3fm", g.h_err_m);
+    if (g.diff_age_s >= 0.0f) Serial.printf(" age=%.1fs", g.diff_age_s);
   } else if (g.has_gga) {
     Serial.print("uart-ok no-fix q=");
     Serial.print(g.fix_quality);
@@ -231,6 +232,7 @@ static void logSensorsAt1Hz() {
   Serial.print(" | [NTRIP] ");
 #if NTRIP_ENABLE
   Serial.print(ntrip_connected ? "connected" : "disconnected");
+  Serial.printf(" gga=%s", SensorComms::ntripGgaStatus());
 #else
   Serial.print("disabled");
 #endif
@@ -2403,9 +2405,19 @@ static const char* requestMotorPower(bool release) {
   return nullptr;
 }
 
+// Restart the F9P GNSS engine (serial GNSS_RESET, web io gnss_reset). Caller holds the
+// nav lock. Returns nullptr on success or the reason it was refused.
+static const char* requestGnssReset(GnssResetType type) {
+  if (mission_ctx.active && mission_ctx.state == MissionState::Running) {
+    return "mission running (pause it first)";
+  }
+  return SensorComms::resetGnss(sensor_comms, type) ? nullptr : "GPS UART write failed";
+}
+
 // Server "io" command: action set_speed (channel 1..N, value 0-100 %),
 // actuator_move (value 0-100 %), actuator_stop, motor_reset (channel 0 = all,
-// 1 = drive, 2 = steering), motor_release or motor_activate.
+// 1 = drive, 2 = steering), motor_release, motor_activate or gnss_reset
+// (channel 0 = hot, 1 = warm, 2 = cold).
 static const char* applyIoCommand(const String& action, int channel, float value) {
   if (action == "set_speed") {
     if (!(value >= 0.0f && value <= 100.0f)) return "percent out of range";
@@ -2425,6 +2437,12 @@ static const char* applyIoCommand(const String& action, int channel, float value
   }
   if (action == "motor_release") return requestMotorPower(true);
   if (action == "motor_activate") return requestMotorPower(false);
+  if (action == "gnss_reset") {
+    if (channel == 0) return requestGnssReset(GnssResetType::Hot);
+    if (channel == 1) return requestGnssReset(GnssResetType::Warm);
+    if (channel == 2) return requestGnssReset(GnssResetType::Cold);
+    return "gnss_reset channel must be 0 (hot), 1 (warm) or 2 (cold)";
+  }
   return "unknown io action";
 }
 
@@ -2777,7 +2795,7 @@ static void handleUsbSerialLine(const String& raw_line) {
   upper.toUpperCase();
 
   if (upper == "HELP" || upper == "?") {
-    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, SOLAR_ACK|STATUS|DONE|FAIL {json} (nav PC), CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
+    Serial.println("[USB_SERIAL] Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, GNSS_RESET [HOT|WARM|COLD], SOLAR_ACK|STATUS|DONE|FAIL {json} (nav PC), CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
     return;
   }
 
@@ -2887,6 +2905,24 @@ static void handleUsbSerialLine(const String& raw_line) {
       Serial.println("[USB_SERIAL] MISSION_RESUME accepted");
     } else {
       Serial.println("[USB_SERIAL] MISSION_RESUME rejected: no paused mission");
+    }
+    return;
+  }
+
+  // GNSS_RESET [HOT|WARM|COLD] — restart the F9P GNSS engine (default HOT). Use when RTK
+  // sits at float after coming outside; HOT gets satellites back in a few seconds.
+  if (upper == "GNSS_RESET" || upper.startsWith("GNSS_RESET ")) {
+    String arg = upper.substring(10);
+    arg.trim();
+    GnssResetType type = GnssResetType::Hot;
+    if (arg == "WARM") type = GnssResetType::Warm;
+    else if (arg == "COLD") type = GnssResetType::Cold;
+    else if (arg.length() > 0 && arg != "HOT") {
+      Serial.println("[USB_SERIAL] Invalid GNSS_RESET. Usage: GNSS_RESET [HOT|WARM|COLD]");
+      return;
+    }
+    if (const char* err = requestGnssReset(type)) {
+      Serial.printf("[USB_SERIAL] GNSS_RESET refused: %s\n", err);
     }
     return;
   }
@@ -3629,7 +3665,7 @@ void setup() {
     delay(10);
   }
   delay(1000);
-  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, SOLAR_ACK|STATUS|DONE|FAIL {json} (nav PC), CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
+  Serial.println("[USB_SERIAL] Ready. Commands: CMD_VEL <linear_mps> <angular_rad_s> [timeout_ms], STOP, MODE <NORMAL|ZERO_TURN>, STATUS?, MISSION_PAUSE, MISSION_RESUME, NAV ON|OFF, HEADING MAG|GPS, HEADING?, FUNC_<n> ON|OFF|<value> <DEG|REL_DEG>, POT <ch> <0-100>|<ch> RAW <0-127>|?, IN?, ACT <0-100>|STOP|?|JOG <duty> <ms>, INFO?, MOTOR?|RESET [ALL|DRIVE|STEER]|RELEASE|ACTIVATE, GNSS_RESET [HOT|WARM|COLD], SOLAR_ACK|STATUS|DONE|FAIL {json} (nav PC), CAN_PING <node_id> [timeout_ms], GIM_PROBE <id> [cmd_hex] [window_ms]");
   Serial.println("[USB_SERIAL]   timeout_ms=0 for infinite timeout (command persists until new command)");
   Serial.println("[USB_SERIAL]   FUNC_<n> ON|OFF drives a GPIO actuator directly; FUNC_<n> <degrees> DEG moves a CAN actuator then returns it to 0");
   Serial.println("[USB_SERIAL]   FUNC_<n> <degrees> REL_DEG moves a CAN actuator relative to its current position and just holds there");
@@ -4038,7 +4074,8 @@ static void commsTask(void* /*pvParameters*/) {
       String latest_gga;
       {
         NavLock lock;
-        if (gps_fix.valid) latest_gga = gps_fix.last_gga;
+        // Gate: weak (indoor / multipath) fixes are not sent, see NTRIP_GGA_*.
+        if (SensorComms::ggaGoodForVrs(gps_fix, millis())) latest_gga = gps_fix.last_gga;
       }
       SensorComms::forwardNtrip(sensor_comms, latest_gga);
     }

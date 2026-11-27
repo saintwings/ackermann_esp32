@@ -159,6 +159,21 @@
 #define NTRIP_USER "1200100213690"
 #define NTRIP_PASSWORD "EE14"
 
+// GGA gate: only send GGA to the VRS caster when the fix looks like open sky.
+// Indoors the F9P gives a multipath fix (few sats, metres of error); a VRS caster
+// builds its virtual base at the first GGA of a session and may never move it.
+// RTK float/fixed always passes. Set NTRIP_GGA_MAX_HERR_M 0 to skip the GST check.
+#define NTRIP_GGA_MIN_SATS 8
+#define NTRIP_GGA_MAX_HDOP 2.0f
+#define NTRIP_GGA_MAX_HERR_M 3.0f
+// VRS refresh: after the gate was closed for NTRIP_VRS_REFRESH_BAD_MS (robot indoors)
+// and then open for NTRIP_VRS_REFRESH_GOOD_MS (back outside), reconnect NTRIP so the
+// caster builds a new VRS at the outdoor position. Only when this session already sent
+// a GGA (otherwise the first good GGA creates the VRS anyway). 0 = off.
+#define NTRIP_VRS_REFRESH_ENABLE 1
+#define NTRIP_VRS_REFRESH_BAD_MS 30000
+#define NTRIP_VRS_REFRESH_GOOD_MS 10000
+
 
 // =============================================================================
 //  5. IMU / HEADING
@@ -272,16 +287,16 @@
 #define DRIVE_WHEEL_DIAMETER_M 0.2f
 
 // ── Robot motion limits ──────────────────────────────────────────────────────
-#define MAX_LINEAR_SPEED_MS 0.5f       // Maximum forward/reverse speed (m/s)
-#define MAX_STEERING_ANGLE_DEG 35.0f   // Maximum steering angle (degrees)
-#define STEER_MAX_WHEEL_ANGLE_DEG 30.0f // Mechanical limit of each steered wheel; inner wheel saturates here
+#define MAX_LINEAR_SPEED_MS 0.8f       // Maximum forward/reverse speed (m/s)
+#define MAX_STEERING_ANGLE_DEG 40.0f   // Maximum steering angle (degrees)
+#define STEER_MAX_WHEEL_ANGLE_DEG 40.0f // Mechanical limit of each steered wheel; inner wheel saturates here
 // Zero-turn turn-rate limit for manual / PC control (rad/s; 0.4 rad/s ~ 23 deg/s):
 //   PS2:     full stick turns the robot at this rate.
 //   CMD_VEL: in ZERO_TURN mode the angular value (rad/s, + = counter-clockwise) sets
 //            the turn rate and is clamped to this; the linear value is ignored.
 // Converted to wheel speed like MISSION_ZERO_TURN_RATE_RADS, never above
 // MAX_LINEAR_SPEED_MS. Missions use MISSION_ZERO_TURN_RATE_RADS instead.
-#define ZERO_TURN_MAX_RATE_RADS 0.4f
+#define ZERO_TURN_MAX_RATE_RADS 0.8f
 
 
 // =============================================================================

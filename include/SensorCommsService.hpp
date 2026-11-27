@@ -25,6 +25,8 @@ struct SensorCommsContext {
   bool& imu_ready;
 };
 
+enum class GnssResetType : uint8_t { Hot, Warm, Cold };
+
 namespace SensorComms {
 // Configure the ZED-F9P NMEA output over the GPS UART (RAM layer, every boot):
 // GGA + GST on, GSV/GSA/GLL/VTG/RMC off. Returns true if the receiver ACKed.
@@ -34,7 +36,17 @@ void updateImu(SensorCommsContext& ctx);
 void connectNtripIfNeeded(SensorCommsContext& ctx);
 // Drain + parse the GPS UART into ctx.gps_fix (NavTask; caller holds the nav lock).
 void readGps(SensorCommsContext& ctx);
+// True when the fix is good enough to give to the VRS caster (NTRIP_GGA_* gate).
+// Caller holds the nav lock (reads gps_fix).
+bool ggaGoodForVrs(const GpsFix& fix, unsigned long now_ms);
 // Send the latest GGA to the VRS caster (1 Hz) and forward one RTCM read to the
-// receiver (CommsTask). latest_gga = "" while the fix is invalid.
+// receiver (CommsTask). latest_gga = "" while the fix fails ggaGoodForVrs.
+// Also reconnects NTRIP when the fix turns good after a long weak spell (VRS refresh).
 void forwardNtrip(SensorCommsContext& ctx, const String& latest_gga);
+// What forwardNtrip did with GGA on the last tick: sent, held-weak-fix,
+// held-vrs-refresh, vrs-refresh, no-session, none.
+const char* ntripGgaStatus();
+// Restart the receiver's GNSS engine (UBX-CFG-RST, GNSS-only). Hot keeps ephemeris and
+// gets satellites back in seconds; clears a stuck RTK float. Caller holds the nav lock.
+bool resetGnss(SensorCommsContext& ctx, GnssResetType type);
 }

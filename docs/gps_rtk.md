@@ -142,6 +142,23 @@ All figures come from the robot's serial log, with the robot stationary.
 The intermediate build with looped RTCM forwarding is left out: it ran 17:38–17:41 with
 3–6 s loop passes and was reverted.
 
+## Indoor start: GGA gate, VRS refresh, GNSS reset
+
+Symptom: the robot sits indoors for a long time, goes outside, and RTK takes a long time to reach fixed (or stays at float). Restarting the GPS outside fixes it quickly.
+
+Likely causes:
+- Indoors the F9P tracks reflected signals with frequent cycle slips. Its RTK filter keeps that history and resolves ambiguities slowly once outside.
+- A VRS caster builds its virtual base at the first GGA of a session and may not move it. Before this change, an indoor multipath fix was sent as that GGA.
+
+What the firmware does now:
+- **GGA gate** (`NTRIP_GGA_MIN_SATS` 8, `NTRIP_GGA_MAX_HDOP` 2.0, `NTRIP_GGA_MAX_HERR_M` 3.0 m): GGA goes to the caster only when the fix passes all three checks. RTK float or fixed always passes.
+- **VRS refresh** (`NTRIP_VRS_REFRESH_ENABLE`, `_BAD_MS` 30 s, `_GOOD_MS` 10 s): if the gate was closed for 30 s and then open for 10 s, and this NTRIP session had already sent a GGA, the firmware reconnects NTRIP. The caster then builds a new VRS at the outdoor position. GGA is held during the 10 s wait.
+- **Manual reset**: serial command `GNSS_RESET [HOT|WARM|COLD]` (default HOT). It sends UBX-CFG-RST with resetMode 0x02 (GNSS-only restart; the receiver CPU and UART stay up). The firmware re-sends the NMEA output config 2 s later. The command is refused while a mission is running.
+
+Log fields (1 Hz line):
+- `age=` is GGA field 13, the age of the corrections. If RTK is stuck at float and `age` keeps growing, no RTCM is reaching the receiver: it is a link problem, not the receiver.
+- `[NTRIP] ... gga=` shows what happened to GGA on the last tick: `sent`, `held-weak-fix`, `held-vrs-refresh`, `vrs-refresh` or `no-session`.
+
 ## Config reference
 
 GPS settings live in `include/Config_2.h` (leafsheep); `include/Config.h` (ladybug)

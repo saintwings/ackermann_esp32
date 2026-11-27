@@ -1140,6 +1140,14 @@
                                 <span class="telemetry-label">GPS Error</span>
                                 <span class="telemetry-value" id="gps-herr">--</span>
                             </div>
+                            <div class="io-ctl-row" style="margin-top: 8px;">
+                                <select id="gnss-reset-type" style="flex: 1;" title="Hot: keeps satellite data, back in seconds. Warm: clears ephemeris (~30 s). Cold: clears everything (minutes).">
+                                    <option value="0">Hot</option>
+                                    <option value="1">Warm</option>
+                                    <option value="2">Cold</option>
+                                </select>
+                                <button class="btn-warning" style="flex: 2;" onclick="gnssReset()" title="Restart the GNSS receiver. Use when RTK stays at float after coming outside.">Reset GNSS</button>
+                            </div>
                         </div>
                         
                         <!-- Status Data -->
@@ -2574,6 +2582,16 @@
             const what = ['all motors', 'drive motors', 'steering motors'][channel];
             if (!confirm(`Clear faults and re-enable ${what}? The robot may move if it has an active command.`)) return;
             if (ioSendIo('motor_reset', channel, 0)) updateStatusMessage(`Motor reset (${what}) sent`);
+        }
+
+        // GNSS receiver restart (firmware io gnss_reset → UBX-CFG-RST). channel: 0 hot, 1 warm, 2 cold.
+        // Refused by the robot while a mission is running.
+        function gnssReset() {
+            const sel = document.getElementById('gnss-reset-type');
+            const channel = sel ? Number(sel.value) : 0;
+            const what = ['hot', 'warm', 'cold'][channel] || 'hot';
+            if (!confirm(`Restart the GNSS receiver (${what})? The position fix drops and RTK has to fix again. Refused while a mission is running.`)) return;
+            if (ioSendIo('gnss_reset', channel, 0)) updateStatusMessage(`GNSS ${what} reset sent`);
         }
 
         function ioToggleMotorPower() {

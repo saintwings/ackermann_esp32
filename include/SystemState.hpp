@@ -11,6 +11,9 @@ struct GpsFix {
   float hdop{0.0f};
   int fix_quality{0};
   int satellites{0};
+  // GGA field 13: seconds since the last correction the receiver applied; -1 = none.
+  // Grows while RTK is stuck = no RTCM reaching the receiver (NTRIP link).
+  float diff_age_s{-1.0f};
   String last_gga{};
   unsigned long last_update_ms{0};
   unsigned long last_rx_ms{0};

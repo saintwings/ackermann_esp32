@@ -14,6 +14,26 @@
 #define GPS_NAV_RATE_MS 0  // 0 = leave the receiver's measurement rate unchanged
 #endif
 
+// NTRIP GGA gate and VRS refresh (override in Config*.h)
+#ifndef NTRIP_GGA_MIN_SATS
+#define NTRIP_GGA_MIN_SATS 8
+#endif
+#ifndef NTRIP_GGA_MAX_HDOP
+#define NTRIP_GGA_MAX_HDOP 2.0f
+#endif
+#ifndef NTRIP_GGA_MAX_HERR_M
+#define NTRIP_GGA_MAX_HERR_M 3.0f
+#endif
+#ifndef NTRIP_VRS_REFRESH_ENABLE
+#define NTRIP_VRS_REFRESH_ENABLE 1
+#endif
+#ifndef NTRIP_VRS_REFRESH_BAD_MS
+#define NTRIP_VRS_REFRESH_BAD_MS 30000
+#endif
+#ifndef NTRIP_VRS_REFRESH_GOOD_MS
+#define NTRIP_VRS_REFRESH_GOOD_MS 10000
+#endif
+
 namespace {
 
 #if DEBUG_LOG_SENSOR_COMMS
@@ -99,6 +119,7 @@ bool parseGgaLine(const String& line, GpsFix& out) {
   out.satellites = fields[7].toInt();
   out.hdop = fields[8].toFloat();
   out.altitude = fields[9].toFloat();
+  out.diff_age_s = (field_count > 13 && fields[13].length() > 0) ? fields[13].toFloat() : -1.0f;
   out.last_gga = line;
   out.last_update_ms = millis();
   if (fields[2].length() > 0 && fields[4].length() > 0) {
@@ -187,6 +208,47 @@ int ubxWaitAck(HardwareSerial& uart, uint32_t timeout_ms) {
     }
   }
   return -1;
+}
+
+// ── NTRIP session state (CommsTask only) ─────────────────────────────────────
+struct VrsState {
+  bool session_sent_gga{false};    // this NTRIP session already gave the caster a position
+  bool after_long_bad{false};      // gate was closed >= NTRIP_VRS_REFRESH_BAD_MS
+  unsigned long good_since_ms{0};  // 0 = gate closed
+  unsigned long bad_since_ms{0};   // 0 = gate open
+  const char* gga_status{"none"};  // for the 1 Hz log
+};
+VrsState g_vrs;
+
+// ── GNSS reset (written under the nav lock: serial handler and NavTask) ──────
+unsigned long g_gnss_config_resend_ms = 0;  // 0 = nothing pending
+
+size_t buildGnssOutputFrame(uint8_t* frame) {
+  // Payload: version=0, layers=RAM (0x01), reserved x2, then key/value pairs.
+  // Applied to UART1 and UART2 since either may be the one wired to the ESP32.
+  uint8_t payload[4 + 2 * (sizeof(kNmeaRates) / sizeof(kNmeaRates[0])) * 5 + 6];
+  static_assert(8 + sizeof(payload) <= 128, "frame buffer too small");
+  size_t n = 0;
+  payload[n++] = 0x00;
+  payload[n++] = 0x01;
+  payload[n++] = 0x00;
+  payload[n++] = 0x00;
+  for (const NmeaRateKey& k : kNmeaRates) {
+    for (uint32_t key : {k.uart1_key, k.uart1_key + 1}) {
+      memcpy(payload + n, &key, 4);  // little-endian on ESP32
+      n += 4;
+      payload[n++] = k.rate;
+    }
+  }
+#if GPS_NAV_RATE_MS > 0
+  uint32_t rate_key = kCfgRateMeasKey;
+  uint16_t rate_ms = GPS_NAV_RATE_MS;
+  memcpy(payload + n, &rate_key, 4);
+  n += 4;
+  memcpy(payload + n, &rate_ms, 2);
+  n += 2;
+#endif
+  return ubxBuild(0x06, 0x8A, payload, static_cast<uint16_t>(n), frame);
 }
 
 }  // namespace
@@ -348,6 +410,7 @@ void connectNtripIfNeeded(SensorCommsContext& ctx) {
     ctx.ntrip_client->setTimeout(20);
     ctx.ntrip_reconnect_backoff_ms = 3000;
     ctx.ntrip_fail_count = 0;
+    g_vrs.session_sent_gga = false;  // new session: the caster has no VRS for us yet
     SENSOR_COMMS_LOG_PRINTLN("[NTRIP] Connected");
   } else {
     ctx.ntrip_connected = false;
@@ -369,32 +432,8 @@ bool configureGnssOutput(SensorCommsContext& ctx) {
   (void)ctx;
   return false;
 #else
-  // Payload: version=0, layers=RAM (0x01), reserved x2, then key/value pairs.
-  // Applied to UART1 and UART2 since either may be the one wired to the ESP32.
-  uint8_t payload[4 + 2 * (sizeof(kNmeaRates) / sizeof(kNmeaRates[0])) * 5 + 6];
-  size_t n = 0;
-  payload[n++] = 0x00;
-  payload[n++] = 0x01;
-  payload[n++] = 0x00;
-  payload[n++] = 0x00;
-  for (const NmeaRateKey& k : kNmeaRates) {
-    for (uint32_t key : {k.uart1_key, k.uart1_key + 1}) {
-      memcpy(payload + n, &key, 4);  // little-endian on ESP32
-      n += 4;
-      payload[n++] = k.rate;
-    }
-  }
-#if GPS_NAV_RATE_MS > 0
-  uint32_t rate_key = kCfgRateMeasKey;
-  uint16_t rate_ms = GPS_NAV_RATE_MS;
-  memcpy(payload + n, &rate_key, 4);
-  n += 4;
-  memcpy(payload + n, &rate_ms, 2);
-  n += 2;
-#endif
-
-  uint8_t frame[8 + sizeof(payload)];
-  size_t frame_len = ubxBuild(0x06, 0x8A, payload, static_cast<uint16_t>(n), frame);
+  uint8_t frame[128];
+  size_t frame_len = buildGnssOutputFrame(frame);
 
   // The F9P may still be booting if it powered up with the ESP32 — retry.
   for (int attempt = 1; attempt <= 5; ++attempt) {
@@ -415,6 +454,15 @@ bool configureGnssOutput(SensorCommsContext& ctx) {
 }
 
 void readGps(SensorCommsContext& ctx) {
+#if GPS_UBX_CONFIG_ENABLE
+  if (g_gnss_config_resend_ms != 0 && static_cast<long>(millis() - g_gnss_config_resend_ms) >= 0) {
+    g_gnss_config_resend_ms = 0;
+    uint8_t frame[128];
+    size_t len = buildGnssOutputFrame(frame);
+    ctx.gps_uart.write(frame, len);
+    Serial.println("[GPS] NMEA output config re-sent after GNSS reset");
+  }
+#endif
   // Drain everything waiting (bounded so a babbling UART can't starve the
   // caller). Runs in NavTask, which is never blocked by SIM modem AT traffic.
   for (int i = 0; i < 4096 && ctx.gps_uart.available(); ++i) {
@@ -434,13 +482,67 @@ void readGps(SensorCommsContext& ctx) {
   }
 }
 
+bool ggaGoodForVrs(const GpsFix& fix, unsigned long now_ms) {
+  if (!fix.valid || fix.last_gga.length() == 0) return false;
+  if (now_ms - fix.last_update_ms > 3000) return false;           // stale GGA
+  if (fix.fix_quality == 4 || fix.fix_quality == 5) return true;  // RTK fixed/float
+  if (fix.fix_quality != 1 && fix.fix_quality != 2) return false; // 6 = dead reckoning etc.
+  if (fix.satellites < NTRIP_GGA_MIN_SATS) return false;
+  if (fix.hdop <= 0.0f || fix.hdop > NTRIP_GGA_MAX_HDOP) return false;
+  if (NTRIP_GGA_MAX_HERR_M > 0.0f && fix.has_gst && now_ms - fix.last_gst_ms < 3000 &&
+      fix.h_err_m > NTRIP_GGA_MAX_HERR_M) {
+    return false;
+  }
+  return true;
+}
+
+const char* ntripGgaStatus() { return g_vrs.gga_status; }
+
 void forwardNtrip(SensorCommsContext& ctx, const String& latest_gga) {
 #if NTRIP_ENABLE
+  const unsigned long now = millis();
+  const bool good = latest_gga.length() > 0;
+  if (good) {
+    if (g_vrs.good_since_ms == 0) g_vrs.good_since_ms = now ? now : 1;
+    g_vrs.bad_since_ms = 0;
+  } else {
+    if (g_vrs.bad_since_ms == 0) g_vrs.bad_since_ms = now ? now : 1;
+    g_vrs.good_since_ms = 0;
+#if NTRIP_VRS_REFRESH_ENABLE
+    if (now - g_vrs.bad_since_ms >= NTRIP_VRS_REFRESH_BAD_MS) g_vrs.after_long_bad = true;
+#endif
+  }
+
   if (ctx.ntrip_connected && ctx.ntrip_client && ctx.ntrip_client->connected()) {
-    if (latest_gga.length() > 0 && (millis() - ctx.last_ntrip_gga_send_ms) > 1000) {
+    bool send_gga = good;
+    g_vrs.gga_status = good ? "sent" : "held-weak-fix";
+#if NTRIP_VRS_REFRESH_ENABLE
+    if (g_vrs.after_long_bad && good) {
+      if (!g_vrs.session_sent_gga) {
+        g_vrs.after_long_bad = false;  // no VRS yet: the first good GGA creates it
+      } else if (now - g_vrs.good_since_ms >= NTRIP_VRS_REFRESH_GOOD_MS) {
+        // Back under open sky after a long indoor spell: drop the session so the
+        // caster builds a new VRS at this position. Reconnect on the next tick.
+        Serial.printf("[NTRIP] VRS refresh: fix good for %lus after weak fix, reconnecting\n",
+                      (now - g_vrs.good_since_ms) / 1000UL);
+        g_vrs.after_long_bad = false;
+        ctx.ntrip_client->stop();
+        ctx.ntrip_connected = false;
+        ctx.ntrip_reconnect_backoff_ms = 3000;
+        ctx.last_ntrip_reconnect_ms = now - ctx.ntrip_reconnect_backoff_ms;
+        g_vrs.gga_status = "vrs-refresh";
+        return;
+      } else {
+        send_gga = false;  // don't move the old VRS; it is about to be replaced
+        g_vrs.gga_status = "held-vrs-refresh";
+      }
+    }
+#endif
+    if (send_gga && (now - ctx.last_ntrip_gga_send_ms) > 1000) {
       ctx.ntrip_client->print(latest_gga);
       ctx.ntrip_client->print("\r\n");
-      ctx.last_ntrip_gga_send_ms = millis();
+      ctx.last_ntrip_gga_send_ms = now;
+      g_vrs.session_sent_gga = true;
     }
 
     // One read per tick: on SIM each TinyGsmClient available()/read() can cost
@@ -456,11 +558,36 @@ void forwardNtrip(SensorCommsContext& ctx, const String& latest_gga) {
     }
   } else {
     ctx.ntrip_connected = false;
+    g_vrs.gga_status = "no-session";
   }
 #else
   (void)ctx;
   (void)latest_gga;
 #endif
+}
+
+bool resetGnss(SensorCommsContext& ctx, GnssResetType type) {
+  // UBX-CFG-RST: navBbrMask (U2), resetMode (U1), reserved (U1).
+  // navBbrMask: 0x0000 hot (keep everything), 0x0001 warm (clear ephemeris), 0xFFFF cold.
+  // resetMode 0x02 = controlled GNSS stop/start: the receiver CPU keeps running, so the
+  // UART link stays up. No ACK is sent for CFG-RST.
+  uint16_t mask = 0x0000;
+  const char* name = "hot";
+  if (type == GnssResetType::Warm) { mask = 0x0001; name = "warm"; }
+  if (type == GnssResetType::Cold) { mask = 0xFFFF; name = "cold"; }
+  uint8_t payload[4] = {static_cast<uint8_t>(mask & 0xFF), static_cast<uint8_t>(mask >> 8), 0x02, 0x00};
+  uint8_t frame[12];
+  size_t len = ubxBuild(0x06, 0x04, payload, sizeof(payload), frame);
+  size_t written = ctx.gps_uart.write(frame, len);
+  ctx.gps_uart.flush();
+  Serial.printf("[GPS] GNSS %s reset sent (UBX-CFG-RST), fix will drop and recover\n", name);
+  // Re-send the NMEA output config once the GNSS has restarted, in case the
+  // receiver reverted it. No ACK wait here: NavTask owns the UART reads.
+#if GPS_UBX_CONFIG_ENABLE
+  g_gnss_config_resend_ms = millis() + 2000;
+  if (g_gnss_config_resend_ms == 0) g_gnss_config_resend_ms = 1;
+#endif
+  return written == len;
 }
 
 }  // namespace SensorComms

@@ -159,6 +159,21 @@
 #define NTRIP_USER "1100700706272"
 #define NTRIP_PASSWORD "EC47"
 
+// GGA gate: only send GGA to the VRS caster when the fix looks like open sky.
+// Indoors the F9P gives a multipath fix (few sats, metres of error); a VRS caster
+// builds its virtual base at the first GGA of a session and may never move it.
+// RTK float/fixed always passes. Set NTRIP_GGA_MAX_HERR_M 0 to skip the GST check.
+#define NTRIP_GGA_MIN_SATS 8
+#define NTRIP_GGA_MAX_HDOP 2.0f
+#define NTRIP_GGA_MAX_HERR_M 3.0f
+// VRS refresh: after the gate was closed for NTRIP_VRS_REFRESH_BAD_MS (robot indoors)
+// and then open for NTRIP_VRS_REFRESH_GOOD_MS (back outside), reconnect NTRIP so the
+// caster builds a new VRS at the outdoor position. Only when this session already sent
+// a GGA (otherwise the first good GGA creates the VRS anyway). 0 = off.
+#define NTRIP_VRS_REFRESH_ENABLE 1
+#define NTRIP_VRS_REFRESH_BAD_MS 30000
+#define NTRIP_VRS_REFRESH_GOOD_MS 10000
+
 
 // =============================================================================
 //  5. IMU / HEADING

@@ -1038,11 +1038,12 @@ class ControlServer:
                 'payload': {'command': 'get_info'}
             }
         elif command == 'io':
-            # Speed outputs (DS3502), linear actuator and motor fault reset; the firmware
+            # Speed outputs (DS3502), linear actuator, motor fault reset and GNSS reset
+            # (gnss_reset channel 0 = hot, 1 = warm, 2 = cold); the firmware
             # validates ranges and e-stop.
             action = payload.get('action')
             if action not in ('set_speed', 'actuator_move', 'actuator_stop', 'motor_reset',
-                              'motor_release', 'motor_activate'):
+                              'motor_release', 'motor_activate', 'gnss_reset'):
                 raise ValueError(f'Unknown io action: {action}')
             return {
                 'type': MessageType.COMMAND_IO.value,
